@@ -280,6 +280,49 @@ def encode_address(addressing: int, address: int) -> bytes:
     return bytes([address])
 
 
+def stage_entries_payloads(addressing: int, entries: list, pixel_format: int = PIXEL_RGB) -> list:
+    """Build the STAGE payloads for entries addressed by light, pin, action or kind, chunked to the report capacity.
+
+    Nothing is sent. A host with its own transport sends each payload as a STAGE request, with COMMIT_AFTER on the
+    last to publish the frame.
+
+    :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
+    :param entries: (address, colour) pairs; colour as for encode_pixel
+    :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
+    :return: one payload per report, in order; none for no entries
+    """
+    capacity = stage_capacity(addressing, pixel_format)
+    payloads = []
+    for start in range(0, len(entries), capacity):
+        chunk = entries[start:start + capacity]
+        payloads.append(bytes([addressing | (pixel_format << 4), len(chunk)]) + b''.join(
+            encode_address(addressing, address) + encode_pixel(colour, pixel_format) for address, colour in chunk))
+    return payloads
+
+
+def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format: int = PIXEL_RGB) -> list:
+    """Build the STAGE payloads for consecutive LEDs or lights from a first index, chunked to the report capacity.
+
+    Nothing is sent. A streaming host sends every payload but the last with NO_REPLY, and the last with
+    COMMIT_AFTER to publish the frame, so one reply acknowledges the run.
+
+    :param addressing: ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN
+    :param first: the first LED index or light ordinal
+    :param colours: one colour per LED or light; as for encode_pixel
+    :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
+    :return: one payload per report, in order
+    """
+    if addressing not in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN) or not colours:
+        raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and at least one colour")
+    capacity = stage_capacity(addressing, pixel_format)
+    payloads = []
+    for start in range(0, len(colours), capacity):
+        chunk = colours[start:start + capacity]
+        payload = bytes([addressing | (pixel_format << 4)]) + struct.pack('<HB', first + start, len(chunk))
+        payloads.append(payload + b''.join(encode_pixel(colour, pixel_format) for colour in chunk))
+    return payloads
+
+
 def decode_hello(reply: bytes) -> dict:
     """Decode a HELLO reply.
 
@@ -512,6 +555,16 @@ class HostLightingRejected(HostLightingError):
 
 class HostLightingTimeout(HostLightingError):
     """No reply arrived in time; the board may be busy, for example writing its settings."""
+
+
+class HostLightingStale(HostLightingError):
+    """The board's state changed: the state token a read named is out of date."""
+
+    def __init__(self, page: int, token: int):
+        """Record the page and the state token that no longer match the board."""
+        self.page = page
+        self.token = token
+        super().__init__(f"page {page}: state token 0x{token:08X} is out of date")
 
 
 class HostLightingDisconnected(HostLightingError):
@@ -778,23 +831,50 @@ class HostLightingDevice:
         :raises HostLightingError: if the state keeps changing or the board stops making progress
         """
         for _ in range(attempts):
-            records: list = []
-            token = 0
-            while True:
-                reply = self.get_page(page, len(records), mask, token)
-                if reply[2] == STATUS_STALE:
-                    break
-                header = decode_page_header(reply)
-                token = header['token']
-                if header['count'] == 0:
-                    if len(records) < header['total']:
-                        raise HostLightingError(f"page {page} stalled at {len(records)} of {header['total']} "
-                                                "records")
-                    return records, token
-                records.extend(decode_records(reply))
-                if len(records) >= header['total']:
-                    return records, token
+            walked = self._walk_table(page, mask, 0)
+            if walked:
+                return walked
         raise HostLightingError(f"page {page} kept changing during {attempts} walks")
+
+    def read_table_at(self, page: int, token: int, mask: int = 0) -> list:
+        """Read every record of a table page under a state token the caller already holds.
+
+        Unlike read_table, it neither adopts a new token nor starts again. A host that read page 1 or 2 under a
+        token reads the tables under the same token, so everything it holds describes one state.
+
+        :param page: page number
+        :param token: the state token to read under; not 0
+        :param mask: field groups to return; 0 for every group
+        :return: the decoded records
+        :raises HostLightingStale: if the board's state no longer matches the token
+        :raises HostLightingError: if the board stops making progress
+        """
+        if not token:
+            raise ValueError("read_table_at needs the state token to read under")
+        walked = self._walk_table(page, mask, token)
+        if walked is None:
+            raise HostLightingStale(page, token)
+        return walked[0]
+
+    def _walk_table(self, page: int, mask: int, token: int) -> Optional[tuple[list, int]]:
+        """Walk a table page from its first record; with token 0, adopt the first reply's token.
+
+        :return: (the decoded records, their state token), or None when the board answers STALE_TOKEN
+        """
+        records: list = []
+        while True:
+            reply = self.get_page(page, len(records), mask, token)
+            if reply[2] == STATUS_STALE:
+                return None
+            header = decode_page_header(reply)
+            token = header['token']
+            if header['count'] == 0:
+                if len(records) < header['total']:
+                    raise HostLightingError(f"page {page} stalled at {len(records)} of {header['total']} records")
+                return records, token
+            records.extend(decode_records(reply))
+            if len(records) >= header['total']:
+                return records, token
 
     def read_record(self, page: int, mask: int = 0) -> tuple[dict, int]:
         """Read a one-record page (1 or 8).
@@ -908,14 +988,10 @@ class HostLightingDevice:
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
         :return: one (applied, skipped, outcome mask) tuple per report sent
         """
-        capacity = stage_capacity(addressing, pixel_format)
+        payloads = stage_entries_payloads(addressing, entries, pixel_format)
         outcomes = []
-        for start in range(0, len(entries), capacity):
-            chunk = entries[start:start + capacity]
-            last = start + capacity >= len(entries)
-            payload = bytes([addressing | (pixel_format << 4), len(chunk)]) + b''.join(
-                encode_address(addressing, address) + encode_pixel(colour, pixel_format)
-                for address, colour in chunk)
+        for index, payload in enumerate(payloads):
+            last = index == len(payloads) - 1
             reply = self.request_ok(CMD_STAGE, payload, FLAG_COMMIT_AFTER if commit and last else 0)
             outcomes.append((reply[3], reply[4], _u32(reply, 5)))
         return outcomes
@@ -935,14 +1011,7 @@ class HostLightingDevice:
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
         :return: the last report's (applied, skipped, outcome mask)
         """
-        if addressing not in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN) or not colours:
-            raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and at least one colour")
-        capacity = stage_capacity(addressing, pixel_format)
-        payloads = []
-        for start in range(0, len(colours), capacity):
-            chunk = colours[start:start + capacity]
-            payload = bytes([addressing | (pixel_format << 4)]) + struct.pack('<HB', first + start, len(chunk))
-            payloads.append(payload + b''.join(encode_pixel(colour, pixel_format) for colour in chunk))
+        payloads = stage_run_payloads(addressing, first, colours, pixel_format)
         for payload in payloads[:-1]:
             self.send(CMD_STAGE, payload, FLAG_NO_REPLY)
         reply = self.request_ok(CMD_STAGE, payloads[-1], FLAG_COMMIT_AFTER if commit else 0)
@@ -1025,6 +1094,21 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
             device.close()
         raise HostLightingError(f"multiple boards found ({ids}) - select one with --board-id")
     return candidates[0][1]
+
+
+def find_board(board_id: str) -> Optional[HostLightingDevice]:
+    """Open the board with this whole factory board ID, if it is connected.
+
+    :param board_id: the HELLO factory board ID, 16 hex digits; either case
+    :return: an opened HostLightingDevice, or None when no connected protocol 2 board has that ID
+    """
+    if len(board_id) != 16:
+        raise ValueError("find_board needs the whole 16-digit board ID; open_device takes a prefix")
+    for info in find_devices():
+        found = _probe(info, board_id)
+        if found:
+            return found[1]
+    return None
 
 
 def send_reboot(device: HostLightingDevice, command: int, payload: bytes) -> bool:

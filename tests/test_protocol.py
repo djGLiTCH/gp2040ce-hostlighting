@@ -310,6 +310,24 @@ def test_read_table_restarts_when_the_state_changes(hlp_fake_device, hlp_fake_bo
     assert starts == [0, 3, 0, 3]
 
 
+def test_read_table_at_reads_under_the_callers_token(hlp_fake_device, hlp_fake_board):
+    """Test that every read names the caller's token and an out-of-date token raises without a retry."""
+    hlp_fake_board.lights = [light_record(i, pin=2) for i in range(7)]
+    token = hlp_fake_board.token
+    lights = hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, token)
+    assert [light['first_led'] for light in lights] == list(range(7))
+    reads = [struct.unpack_from('<BHIH', read, 3) for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
+    assert [(start, expected) for _, start, expected, _ in reads] == [(0, token), (3, token), (6, token)]
+    hlp_fake_board.stale_once_at = 3
+    with pytest.raises(hl.HostLightingStale) as raised:
+        hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, token)
+    assert (raised.value.page, raised.value.token) == (hl.PAGE_LIGHTS, token)
+    assert issubclass(hl.HostLightingStale, hl.HostLightingError)
+    assert len(hlp_fake_board.sent(hl.CMD_GET_PAGE)) == 3 + 2
+    with pytest.raises(ValueError):
+        hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, 0)
+
+
 def test_read_identity_asks_again_for_groups_that_did_not_fit(hlp_fake_device, hlp_fake_board):
     """Test that page 0 is read until every string has come back."""
     assert hlp_fake_device.read_identity() == dict(enumerate(hlp_fake_board.identity))
@@ -326,6 +344,22 @@ def test_stage_entries_chunks_and_commits_once(hlp_fake_device, hlp_fake_board):
     assert [stage[2] for stage in stages] == [0, hl.FLAG_COMMIT_AFTER]
     assert stages[1][5:10] == struct.pack('<H', 11) + b'\x0b\x00\x00'
     assert outcomes == [(2, 9, 0b11), (0, 2, 0)]
+
+
+def test_stage_payloads_are_built_without_sending(hlp_fake_device, hlp_fake_board):
+    """Test that the payload builders send nothing and give the bytes the staging methods send."""
+    entries = [(ordinal, (ordinal, 0, 0)) for ordinal in range(13)]
+    payloads = hl.stage_entries_payloads(hl.ADDRESSING_LIGHT, entries, hl.PIXEL_RGB)
+    colours = [(index, 1, 2) for index in range(40)]
+    runs = hl.stage_run_payloads(hl.ADDRESSING_LED_RUN, 5, colours, hl.PIXEL_RGB)
+    assert not hlp_fake_board.requests and hl.stage_entries_payloads(hl.ADDRESSING_LIGHT, []) == []
+    assert [payload[1] for payload in payloads] == [11, 2]
+    assert [struct.unpack_from('<HB', run, 1) for run in runs] == [(5, 19), (24, 19), (43, 2)]
+    hlp_fake_device.stage_entries(hl.ADDRESSING_LIGHT, entries, hl.PIXEL_RGB)
+    assert [bytes(stage[3:3 + len(payload)]) for stage, payload in zip(hlp_fake_board.sent(hl.CMD_STAGE), payloads)] \
+        == payloads
+    with pytest.raises(ValueError):
+        hl.stage_run_payloads(hl.ADDRESSING_LIGHT, 0, colours)
 
 
 def test_fill_and_configure(hlp_fake_device, hlp_fake_board):
@@ -398,6 +432,19 @@ def test_open_device_selects_by_board_id_and_major(monkeypatch):
         hl.open_device('')
     with pytest.raises(hl.HostLightingError, match='no board'):
         hl.open_device('FF')
+
+
+def test_find_board_opens_only_the_whole_id(monkeypatch):
+    """Test that find_board returns the board with that ID, or None, and keeps no other board open."""
+    boards = {b'a': FakeBoard(), b'b': FakeBoard()}
+    boards[b'a'].answer = lambda command, sequence, request: hello_reply(sequence, board_id=bytes(8))
+    monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in boards])
+    monkeypatch.setattr(hl, 'HostLightingDevice', lambda path: fake_device(boards[path]))
+    assert hl.find_board('433030343237362e').device is boards[b'b']
+    assert not boards[b'a'].opened and boards[b'b'].opened
+    assert hl.find_board('FFFFFFFFFFFFFFFF') is None
+    with pytest.raises(ValueError):
+        hl.find_board('4330')
 
 
 def test_request_refuses_no_reply(hlp_fake_device):
