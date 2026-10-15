@@ -10,12 +10,13 @@ license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "Jacob Simpson", email = "28767380+djGLiTCH@users.noreply.github.com"},
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.14"
 dependencies = ["hidapi"]
 dynamic = ["version"]
 classifiers = [
     "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Topic :: Utilities",
