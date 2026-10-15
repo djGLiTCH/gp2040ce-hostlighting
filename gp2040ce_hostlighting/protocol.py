@@ -26,9 +26,9 @@ the board and lists its capabilities; GET_PAGE reads the pages:
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
 
-See docs/host-lighting.md in the GP2040-CE repository for the full protocol
-reference. The hlp-* commands are in hostlighting_tools, and hlp-conformance
-and hlp-bench in hostlighting_conformance. Requires the `hidapi` package
+See docs/host-lighting.md for the full protocol reference. The hlp-*
+commands are in gp2040ce_hostlighting.tools.commands, and hlp-conformance
+and hlp-bench in gp2040ce_hostlighting.tools.conformance. Requires the `hidapi` package
 (`pip install hidapi`).
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson

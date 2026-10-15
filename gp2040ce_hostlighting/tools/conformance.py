@@ -1,4 +1,4 @@
-"""Conformance checks and performance figures for GP2040-CE's Host Lighting add-on, built on hostlighting.
+"""Conformance checks and performance figures for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
 hlp-conformance checks one board against the protocol and reports each rule it checks: the HELLO
 capabilities, framing, every page and field mask, the pages' cross-references, takeover and keepalive timing,
@@ -16,7 +16,7 @@ import statistics
 import struct
 import time
 
-from gp2040ce_bintools.hostlighting import (ACTION_NONE, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
+from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CLAIM_EXCLUSIVE, CLAIM_GIVE_UP, CLAIM_TAKE,
                                             CLAIM_TAKE_OVER, CMD_CLAIM, CMD_CLEAR, CMD_COMMIT, CMD_CONFIGURE, CMD_FILL,
@@ -35,7 +35,7 @@ from gp2040ce_bintools.hostlighting import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             HostLightingRejected, decode_controller, decode_key, decode_page_header,
                                             decode_records, decode_state_changed, is_event, key_name, open_device,
                                             stage_capacity)
-from gp2040ce_bintools.hostlighting_tools import (LightsClaim, add_claim_arguments, device_parser, hlp_command,
+from gp2040ce_hostlighting.tools.commands import (LightsClaim, add_claim_arguments, device_parser, hlp_command,
                                                   holding_lights, ranged)
 
 # what a protocol 2.0 board implements, from the protocol reference; a later 2.x board lists more

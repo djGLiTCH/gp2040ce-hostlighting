@@ -1,10 +1,9 @@
-"""The hlp-* commands for GP2040-CE's Host Lighting add-on, built on hostlighting.
+"""The hlp-* commands for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
 hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light,
 hlp-stream, hlp-buttons, hlp-input-mode, hlp-reboot-webconfig and
 hlp-reboot-bootsel. Given GP2040-CE's .proto files (`-P`), they print enum
-names beside the values (`-S` uses the shipped snapshot, which may lag and
-name fewer). hostlighting_conformance shares hlp_command, device_parser,
+names beside the values. tools.conformance shares hlp_command, device_parser,
 ranged and holding_lights.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
@@ -15,14 +14,16 @@ import colorsys
 import contextlib
 import functools
 import logging
+import pathlib
+import re
 import secrets
 import struct
+import sys
 import time
+from importlib import metadata
 from typing import Iterator, Optional
 
-from gp2040ce_bintools import args as core_args
-from gp2040ce_bintools import core_parser, get_config_pb2
-from gp2040ce_bintools.hostlighting import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
+from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CLAIM_GIVE_UP, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLEAR,
                                             CMD_HELLO, CMD_REBOOT, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
@@ -38,23 +39,81 @@ from gp2040ce_bintools.hostlighting import (ADDRESS_RANGES, ADDRESSING_ACTION, A
 logger = logging.getLogger(__name__)
 
 
-def enum_names() -> dict:
-    """Name GP2040-CE's enum values from its .proto files, when the tool was given them.
-
-    :return: {enum name: {value: value name}}; empty unless -P or -S was given and the files load
-    """
-    if not (core_args.proto_files_path or core_args.use_shipped_fallback):
-        return {}
+def version() -> str:
+    """Name the installed gp2040ce-hostlighting version."""
     try:
-        config_pb2 = get_config_pb2()
-    except (RuntimeError, TypeError):
-        logger.warning("could not load the .proto files for names (-d shows why)")
-        logger.debug("loading the .proto files failed", exc_info=True)
-        return {}
+        return metadata.version('gp2040ce-hostlighting')
+    except metadata.PackageNotFoundError:
+        return 'unknown'
+
+
+# The options every hlp-* command takes. CommandParser fills common_options when a command line is parsed, so
+# importing the package changes nothing in the program that imports it.
+common_parser = argparse.ArgumentParser(add_help=False)
+common_parser.add_argument('-v', '--version', action='version',
+                           version=f"gp2040ce-hostlighting {version()} (Python {sys.version})",
+                           help="show version information and exit")
+common_parser.add_argument('-d', '--debug', action='store_true', help="enable debug logging")
+common_parser.add_argument('-P', '--proto-files-path', type=pathlib.Path, action='append',
+                           help="GP2040-CE's proto directory or its enums.proto, to print enum names beside the "
+                                "values; may be given more than once")
+common_options = argparse.Namespace(debug=False, proto_files_path=[])
+
+
+class CommandParser(argparse.ArgumentParser):
+    """An hlp-* command's parser: applies the common options once the command line is parsed."""
+
+    def parse_known_args(self, args=None, namespace=None):
+        """Parse the command line, then set up logging and the .proto paths."""
+        parsed, unknown = super().parse_known_args(args, namespace)
+        common_options.debug = parsed.debug
+        common_options.proto_files_path = parsed.proto_files_path or []
+        logging.basicConfig(level=logging.DEBUG if parsed.debug else logging.WARNING, stream=sys.stderr,
+                            format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
+        return parsed, unknown
+
+
+PROTO_COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
+PROTO_ENUM = re.compile(r'\benum\s+(\w+)\s*\{(.*?)\}', re.S)
+PROTO_VALUE = re.compile(r'^\s*(\w+)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*(?:\[[^\]]*\])?\s*;', re.M)
+
+
+def proto_enums(text: str) -> dict:
+    """Read the enum blocks of a .proto file.
+
+    :param text: the file's contents
+    :return: {enum name: {value: value name}}; where values share a number, the first name
+    """
     names: dict = {}
-    for dependency in config_pb2.DESCRIPTOR.dependencies:
-        for enum in dependency.enum_types_by_name.values():
-            names[enum.name] = {number: value.name for number, value in enum.values_by_number.items()}
+    for enum in PROTO_ENUM.finditer(PROTO_COMMENT.sub('', text)):
+        values = names.setdefault(enum.group(1), {})
+        for value in PROTO_VALUE.finditer(enum.group(2)):
+            values.setdefault(int(value.group(2), 0), value.group(1))
+    return names
+
+
+def enum_names() -> dict:
+    """Name GP2040-CE's enum values from its enums.proto, when the command was given it with -P.
+
+    -P takes the file or the directory that holds it. A directory without enums.proto is skipped.
+
+    :return: {enum name: {value: value name}}; empty unless -P was given and a file reads
+    """
+    names: dict = {}
+    for path in common_options.proto_files_path:
+        file = path.expanduser()
+        if file.is_dir():
+            file = file / 'enums.proto'
+            if not file.is_file():
+                logger.debug("no enums.proto in %s", path)
+                continue
+        try:
+            names.update(proto_enums(file.read_text(encoding='utf-8')))
+        except (OSError, UnicodeDecodeError):
+            logger.warning("could not read %s for names (-d shows why)", file)
+            logger.debug("reading the .proto file failed", exc_info=True)
+    if common_options.proto_files_path and not names:
+        logger.warning("no enum names found in the -P paths")
     return names
 
 
@@ -82,7 +141,7 @@ def device_parser(description: str) -> argparse.ArgumentParser:
     :param description: help text for the command
     :return: an ArgumentParser with core and device-selection arguments
     """
-    parser = argparse.ArgumentParser(description=description, parents=[core_parser])
+    parser = CommandParser(description=description, parents=[common_parser])
     parser.add_argument('--board-id', default='',
                         help="hex prefix of the factory board ID, to select one of several connected boards")
     return parser

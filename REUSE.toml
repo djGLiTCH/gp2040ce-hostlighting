@@ -1,0 +1,14 @@
+version = 1
+SPDX-PackageName = "gp2040ce-hostlighting"
+SPDX-PackageSupplier = "Jacob Simpson <28767380+djGLiTCH@users.noreply.github.com>"
+SPDX-PackageDownloadLocation = "https://github.com/djGLiTCH/gp2040ce-hostlighting"
+
+[[annotations]]
+path = [".gitattributes", ".gitignore", "pyproject.toml", "REUSE.toml", "*.md"]
+SPDX-FileCopyrightText = "© 2026 Jacob Simpson"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = "docs/host-lighting.md"
+SPDX-FileCopyrightText = "© 2026 Jacob Simpson"
+SPDX-License-Identifier = "MIT"

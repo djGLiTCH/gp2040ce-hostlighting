@@ -7,10 +7,10 @@ import struct
 from types import SimpleNamespace
 
 import pytest
-from hostlighting_fakes import (FakeBoard, control_record, fake_device, hello_reply, identity_reply, light_record,
-                                other_event, page_reply, state_event, state_record, summary_record)
+from fakes import (FakeBoard, control_record, fake_device, hello_reply, identity_reply, light_record, other_event,
+                   page_reply, state_event, state_record, summary_record)
 
-from gp2040ce_bintools import hostlighting as hl
+from gp2040ce_hostlighting import protocol as hl
 
 
 def test_build_request_frames_flags_and_payload():

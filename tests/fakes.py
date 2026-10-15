@@ -6,7 +6,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import struct
 import zlib
 
-from gp2040ce_bintools import hostlighting as hl
+from gp2040ce_hostlighting import protocol as hl
 
 BOARD_ID = bytes.fromhex('433030343237362E')
 

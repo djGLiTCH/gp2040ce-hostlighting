@@ -6,10 +6,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import struct
 
 import pytest
-from hostlighting_fakes import control_record, light_record, other_event, state_event, state_record, summary_record
+from fakes import control_record, light_record, other_event, state_event, state_record, summary_record
 
-from gp2040ce_bintools import hostlighting as hl
-from gp2040ce_bintools import hostlighting_tools as tools
+from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting.tools import commands as tools
 
 
 def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
@@ -117,9 +117,8 @@ def test_reboots_and_ping(hlp_run_on_fake_board, hlp_fake_board, capsys):
 
 
 def test_enum_names_needs_proto_files(monkeypatch):
-    """Test that names are looked up only when -P or -S was given."""
-    monkeypatch.setattr(tools.core_args, 'proto_files_path', [])
-    monkeypatch.setattr(tools.core_args, 'use_shipped_fallback', False)
+    """Test that names are looked up only when -P was given."""
+    monkeypatch.setattr(tools.common_options, 'proto_files_path', [])
     assert tools.enum_names() == {}
 
 
@@ -247,18 +246,42 @@ def test_stream_stops_when_the_board_has_gone(hlp_run_on_model_board, hlp_model_
     assert len(staged) == 1
 
 
-def test_enum_names_from_the_proto_files(monkeypatch):
-    """Test that enum names are read from every dependency of config.proto when -P is given."""
-    from types import SimpleNamespace
-    value = SimpleNamespace(name='BUTTON_PRESS_UP')
-    enum = SimpleNamespace(name='GpioAction', values_by_number={1: value})
-    config = SimpleNamespace(DESCRIPTOR=SimpleNamespace(dependencies=[
-        SimpleNamespace(enum_types_by_name={}), SimpleNamespace(enum_types_by_name={'GpioAction': enum})]))
-    monkeypatch.setattr(tools.core_args, 'proto_files_path', ['proto'])
-    monkeypatch.setattr(tools, 'get_config_pb2', lambda: config)
-    assert tools.enum_names() == {'GpioAction': {1: 'BUTTON_PRESS_UP'}}
-    monkeypatch.setattr(tools, 'get_config_pb2', lambda: (_ for _ in ()).throw(RuntimeError('no protos')))
+def test_enum_names_from_the_proto_files(monkeypatch, tmp_path, caplog):
+    """Test that enum names are read from enums.proto, given as a file or as its directory."""
+    enums = tmp_path / 'enums.proto'
+    enums.write_text("syntax = \"proto2\";\n"
+                     "// enum Commented { HIDDEN = 9; }\n"
+                     "enum GpioAction\n{\n"
+                     "    option (nanopb_enumopt).long_names = false;\n"
+                     "    NONE = -10; /* none */\n"
+                     "    BUTTON_PRESS_UP = 1 [deprecated = true];\n"
+                     "    BUTTON_PRESS_UP_ALIAS = 1;\n"
+                     "    SUSTAIN = 0x10;\n"
+                     "}\n", encoding='utf-8')
+    want = {'GpioAction': {-10: 'NONE', 1: 'BUTTON_PRESS_UP', 16: 'SUSTAIN'}}
+    monkeypatch.setattr(tools.common_options, 'proto_files_path', [enums])
+    assert tools.enum_names() == want
+    nanopb = tmp_path / 'nanopb'
+    nanopb.mkdir()
+    monkeypatch.setattr(tools.common_options, 'proto_files_path', [tmp_path, nanopb])
+    assert tools.enum_names() == want
+    monkeypatch.setattr(tools.common_options, 'proto_files_path', [nanopb, tmp_path / 'missing.proto'])
     assert tools.enum_names() == {}
+    assert 'could not read' in caplog.text and 'no enum names found' in caplog.text
+
+
+def test_commands_apply_the_common_options(monkeypatch, capsys):
+    """Test that parsing a command line fills the common options, and -v names this package."""
+    monkeypatch.setattr(tools, 'common_options', tools.argparse.Namespace(debug=False, proto_files_path=[]))
+    parser = tools.device_parser("test")
+    args, _ = parser.parse_known_args(['-d', '-P', 'one', '-P', 'two', '--board-id', '4330'])
+    assert args.board_id == '4330' and tools.common_options.debug
+    assert [str(path) for path in tools.common_options.proto_files_path] == ['one', 'two']
+    parser.parse_known_args([])
+    assert tools.common_options.proto_files_path == [] and not tools.common_options.debug
+    with pytest.raises(SystemExit):
+        parser.parse_args(['-v'])
+    assert capsys.readouterr().out.startswith('gp2040ce-hostlighting ')
 
 
 def test_settings_shows_and_changes(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):

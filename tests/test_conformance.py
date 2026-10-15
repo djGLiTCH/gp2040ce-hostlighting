@@ -6,10 +6,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import struct
 
 import pytest
-from hostlighting_fakes import control_record, hello_reply, light_record, summary_record
+from fakes import control_record, hello_reply, light_record, summary_record
 
-from gp2040ce_bintools import hostlighting as hl
-from gp2040ce_bintools import hostlighting_conformance as conformance
+from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting.tools import conformance
 
 
 def test_conformance_passes_on_a_conforming_board(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -639,13 +639,13 @@ def test_conformance_catches_a_saved_step_that_follows_the_step_shown(hlp_run_on
 
 def test_conformance_checks_delivery_to_a_second_handle(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch):
     """Test that the two-handle check passes, fails on one-handle delivery and notes a missing second handle."""
-    import hostlighting_fakes
+    import fakes
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert "PASS  a second handle reads the reply to the first's request" in out
     assert "PASS  and the first the reply to the second's" in out and not hlp_model_board.handles
-    copy = hostlighting_fakes.Outbox.copy
-    monkeypatch.setattr(hostlighting_fakes.Outbox, 'copy', lambda self, reports: None)
+    copy = fakes.Outbox.copy
+    monkeypatch.setattr(fakes.Outbox, 'copy', lambda self, reports: None)
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
@@ -655,8 +655,8 @@ def test_conformance_checks_delivery_to_a_second_handle(hlp_run_on_model_board, 
     def no_second_handle(prefix=''):
         if hlp_model_board.opened:
             raise OSError('open failed')
-        return hostlighting_fakes.fake_device(hlp_model_board)
-    monkeypatch.setattr(hostlighting_fakes.Outbox, 'copy', copy)
+        return fakes.fake_device(hlp_model_board)
+    monkeypatch.setattr(fakes.Outbox, 'copy', copy)
     monkeypatch.setattr(conformance, 'open_device', no_second_handle)
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
