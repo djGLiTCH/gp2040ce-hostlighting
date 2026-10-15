@@ -23,7 +23,7 @@ From a clone, `pip install -e .[dev]` installs the commands and the development 
 ## Specification
 
 `docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the document the Host Lighting add-on
-adds to GP2040-CE as `docs/host-lighting.md`. It is licensed MIT, as in GP2040-CE.
+adds to GP2040-CE as `docs/host-lighting.md`.
 
 ## The hlp-* commands
 
