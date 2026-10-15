@@ -5,10 +5,10 @@ usage 0x0002) carrying the Host Lighting Protocol (HLP) 2.0: fixed 64-byte
 reports that stage and commit LED frames and describe the board from its own
 configuration.
 
-A request is `[0] command, [1] sequence, [2] flags, [3..] payload`; its reply
+A request is `[0] command, [1] sequence, [2] flags, [3..] payload`. Its reply
 echoes the command with bit 7 set: `[0] command|0x80, [1] sequence,
 [2] status, [3..] payload`. An event arrives with `[0] = 0x80`. HELLO names
-the board and lists its capabilities; GET_PAGE reads the pages:
+the board and lists its capabilities. GET_PAGE reads the pages:
 
 * page 0 (identity): board label, board config, platform and build strings
 * page 1 (state): input mode, profile, player, animation, the brightness step
@@ -67,7 +67,7 @@ CMD_SET_ANIMATION_SPEED = 0x32
 CMD_SET_BRIGHTNESS = 0x33
 CMD_SET_INPUT_MODE = 0x70       # privileged (magic-guarded), 0x70-0x7F
 CMD_REBOOT = 0x71
-# the command groups; an addition takes the next free number in its group, and 0x50-0x6F is reserved for new
+# the command groups. An addition takes the next free number in its group, and 0x50-0x6F is reserved for new
 # groups
 COMMAND_RANGES = ((0x01, 0x0F), (0x10, 0x1F), (0x20, 0x2F), (0x30, 0x4F), (0x50, 0x6F), (0x70, 0x7F))
 
@@ -76,14 +76,14 @@ FLAG_COMMIT_AFTER = 0x01        # publish the staged frame after this command su
 FLAG_NO_REPLY = 0x02            # send no reply
 FLAG_KEEPALIVE = 0x04           # refresh a live takeover's and an unsaved brightness step's keepalive
 FLAG_HOLDER = 0x08              # sent by the holder of an exclusive claim, which refuses changes without it
-# bits 4-6 carry the claim generation the sender acts under (1-7; 0 none): a request other than CLAIM under a
+# bits 4-6 carry the claim generation the sender acts under, 1-7, or 0 for none. A request other than CLAIM under a
 # generation that is no longer current is refused, and an exclusive claim needs it beside FLAG_HOLDER
 FLAG_GENERATION_SHIFT = 4
 FLAG_GENERATION_MASK = 0x70
 GENERATION_MAX = 7
 
 REPLY_FLAG = 0x80
-EVENT_MARKER = 0x80             # [0] of an event; there is no command 0x00
+EVENT_MARKER = 0x80             # [0] of an event. There is no command 0x00
 STATUS_OK = 0
 STATUS_UNSUPPORTED = 1
 STATUS_INVALID = 2
@@ -104,12 +104,12 @@ PAGE_LIGHTS = 11
 PAGE_ANIMATIONS = 12
 PAGE_RANGES = ((0, 7), (8, 15), (16, 23), (24, 31))     # board, configuration, diagnostics, reserved
 
-# every page reply's header; the records area is [12..59] and the state token [60..63]
+# every page reply's header. The records area is [12..59] and the state token [60..63]
 RECORDS_OFFSET = 12
 RECORDS_AREA = 48
 TOKEN_OFFSET = 60
 
-# each page's field groups, in mask bit order, and their widths in bytes; page 0's groups are
+# each page's field groups, in mask bit order, and their widths in bytes. Page 0's groups are
 # strings of up to 48 bytes each
 PAGE_GROUPS = {
     PAGE_STATE: (9, 22, 4),
@@ -125,7 +125,7 @@ IDENTITY_FIELDS = ('board label', 'board config', 'platform', 'firmware version'
 IDENTITY_STRING_MAX = 48
 
 # page 10 keys: GPIO pin p is key p, Hall-effect trigger n is KEY_TRIGGER + n and PCF8575 pin n is
-# KEY_EXPANDER + n; the rest are reserved
+# KEY_EXPANDER + n. The rest are reserved
 KEY_SOURCES = (('gpio', 0, 48), ('hall_effect', 0x80, 32), ('expander', 0xC0, 16))     # (source, base, count)
 KEY_TRIGGER = KEY_SOURCES[1][1]
 KEY_EXPANDER = KEY_SOURCES[2][1]
@@ -230,7 +230,7 @@ def match_reply(reply: bytes, command: int, sequence: int) -> bool:
 
 
 def is_event(report: bytes) -> bool:
-    """Say whether a received report is an event rather than a reply."""
+    """Say whether a received report is an event."""
     return len(report) >= 3 and report[0] == EVENT_MARKER
 
 
@@ -287,9 +287,9 @@ def stage_entries_payloads(addressing: int, entries: list, pixel_format: int = P
     last to publish the frame.
 
     :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
-    :param entries: (address, colour) pairs; colour as for encode_pixel
+    :param entries: (address, colour) pairs, each colour as for encode_pixel
     :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
-    :return: one payload per report, in order; none for no entries
+    :return: one payload per report, in order, and none for no entries
     """
     capacity = stage_capacity(addressing, pixel_format)
     payloads = []
@@ -308,7 +308,7 @@ def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format:
 
     :param addressing: ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN
     :param first: the first LED index or light ordinal
-    :param colours: one colour per LED or light; as for encode_pixel
+    :param colours: one colour per LED or light, as for encode_pixel
     :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
     :return: one payload per report, in order
     """
@@ -411,7 +411,7 @@ def _profile_group(group: int, data: bytes) -> dict:
 def decode_key(key: int) -> tuple:
     """Decode a page 10 key as (source, index).
 
-    :return: ('gpio', pin), ('hall_effect', trigger) or ('expander', pin); ('unknown', key) for a key protocol
+    :return: ('gpio', pin), ('hall_effect', trigger) or ('expander', pin), or ('unknown', key) for a key protocol
         2.0 does not define, which a later 2.x board may use
     """
     for source, base, count in KEY_SOURCES:
@@ -477,7 +477,7 @@ GROUP_DECODERS = {
 def decode_records(reply: bytes) -> list:
     """Decode the records of a GET_PAGE reply, field group by field group.
 
-    Only the groups the reply echoes are present; each record is one dict of their fields.
+    Only the groups the reply echoes are present. Each record is one dict of their fields.
 
     :param reply: the reply report of a table page (1, 2, 8-12)
     :return: the records, one dict each
@@ -535,12 +535,12 @@ class HostLightingError(RuntimeError):
 
 
 class HostLightingRejected(HostLightingError):
-    """The board answered a command with a non-OK status."""
+    """The board answered a command with a status other than 0."""
 
     def __init__(self, command: int, status: int, offset: int, holder: Optional[tuple] = None):
         """Record the rejected command, its status, and the byte at fault or the claim's holder.
 
-        :param holder: for CLAIMED, (token, name, generation) as the reply shows them; token 0 when unclaimed
+        :param holder: for CLAIMED, (token, name, generation) as the reply shows them, with token 0 when unclaimed
         """
         self.command = command
         self.status = status
@@ -554,7 +554,7 @@ class HostLightingRejected(HostLightingError):
 
 
 class HostLightingTimeout(HostLightingError):
-    """No reply arrived in time; the board may be busy, for example writing its settings."""
+    """No reply arrived in time. The board may be busy, for example writing its settings."""
 
 
 class HostLightingStale(HostLightingError):
@@ -616,7 +616,7 @@ class HostLightingDevice:
     def _read(self, timeout_ms: int) -> bytes:
         """Read one report, or nothing within the timeout.
 
-        :param timeout_ms: how long to wait; 0 returns at once
+        :param timeout_ms: how long to wait, where 0 returns at once
         :raises HostLightingDisconnected: if the device cannot be read
         """
         try:
@@ -629,9 +629,9 @@ class HostLightingDevice:
 
         :param command: HLP command byte
         :param payload: the command's bytes from [3]
-        :param flags: request flags (FLAG_*); while this application holds the claim its generation is added
+        :param flags: request flags (FLAG_*). While this application holds the claim, its generation is added
             unless the flags carry one, and FLAG_HOLDER while the claim is exclusive
-        :param sequence: the sequence number to send; None for the next one
+        :param sequence: the sequence number to send, or None for the next one
         :return: the sequence number sent
         """
         if sequence is None:
@@ -642,7 +642,7 @@ class HostLightingDevice:
         if self.holding_exclusive:
             flags |= FLAG_HOLDER
         self._await(command, sequence, flags)
-        # the interface uses unnumbered reports; hidapi wants a leading 0x00 report ID on write
+        # the interface uses unnumbered reports. hidapi wants a leading 0x00 report ID on write
         try:
             self._write(b'\x00' + build_request(command, sequence, payload, flags))
         except HostLightingDisconnected:
@@ -705,13 +705,13 @@ class HostLightingDevice:
         raise HostLightingTimeout(f"no reply to command 0x{command:02X} within {timeout}s")
 
     def _await(self, command: int, sequence: int, flags: int) -> None:
-        """Note a request that will be answered; no report kept for an earlier one with its numbers answers it."""
+        """Note a request that will be answered. No report kept for an earlier one with its numbers answers it."""
         if not flags & FLAG_NO_REPLY and 0 < command < REPLY_FLAG:
             self.pending = [report for report in self.pending if not match_reply(report, command, sequence)]
             self.awaited.add((command, sequence))
 
     def _keep(self, report: bytes) -> None:
-        """Keep an event, or the reply to a request still awaited; drop another application's reply."""
+        """Keep an event, or the reply to a request still awaited, and drop another application's reply."""
         if is_event(report):
             self.events.append(report)
         elif len(report) >= 3 and (report[0] & ~REPLY_FLAG, report[1]) in self.awaited:
@@ -738,19 +738,19 @@ class HostLightingDevice:
 
         :param command: HLP command byte
         :param payload: the command's bytes from [3]
-        :param flags: request flags (FLAG_*); FLAG_NO_REPLY is for send(), since nothing comes back
+        :param flags: request flags (FLAG_*). FLAG_NO_REPLY is for send(), since nothing comes back
         :param timeout: seconds to wait for the reply
         :param accept: optional test a matching report must also pass
         :return: the reply report ([2] is the status, [3..] the payload)
         """
         if flags & FLAG_NO_REPLY:
-            raise ValueError("a request sent with FLAG_NO_REPLY gets no reply; use send()")
+            raise ValueError("a request sent with FLAG_NO_REPLY gets no reply. Use send()")
         self._drop_earlier_reports()
         return self.wait_reply(command, self.send(command, payload, flags), timeout, accept)
 
     def request_ok(self, command: int, payload: bytes = b'', flags: int = 0, timeout: float = 0.5,
                    accept=None) -> bytes:
-        """Send one request and require an OK status in the reply.
+        """Send one request and require status 0 in the reply.
 
         :param command: HLP command byte
         :param payload: the command's bytes from [3]
@@ -758,7 +758,7 @@ class HostLightingDevice:
         :param timeout: seconds to wait for the reply
         :param accept: optional test a matching report must also pass
         :return: the reply report
-        :raises HostLightingRejected: on any other status; for CLAIMED, naming the claim's holder
+        :raises HostLightingRejected: on any other status, naming the claim's holder for CLAIMED
         """
         reply = self.request(command, payload, flags, timeout, accept)
         if reply[2] != STATUS_OK:
@@ -767,7 +767,7 @@ class HostLightingDevice:
 
     @staticmethod
     def _rejected(command: int, reply: bytes) -> HostLightingRejected:
-        """Build the error for a refused request; for CLAIMED, naming the claim's holder."""
+        """Build the error for a refused request, naming the claim's holder for CLAIMED."""
         if reply[2] != STATUS_CLAIMED:
             return HostLightingRejected(command, reply[2], reply[3])
         holder = decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE]))
@@ -793,9 +793,9 @@ class HostLightingDevice:
 
         :param page: page number
         :param start: first record
-        :param mask: field groups to return; 0 for every group
+        :param mask: field groups to return, or 0 for every group
         :param token: expected state token, 0 for no check
-        :return: the reply report; its status is OK or STALE_TOKEN
+        :return: the reply report, with status 0 or 3 (STALE_TOKEN)
         :raises HostLightingRejected: on any other status
         """
         def echoes(reply: bytes) -> bool:
@@ -820,12 +820,12 @@ class HostLightingDevice:
     def read_table(self, page: int, mask: int = 0, attempts: int = 5) -> tuple[list, int]:
         """Read every record of a table page as one coherent snapshot.
 
-        The walk names the state token of its first reply in every later read; if the board's state changes
+        The walk names the state token of its first reply in every later read. If the board's state changes
         mid-walk, the board answers STALE_TOKEN and the walk starts again, so the records never mix two
         states.
 
         :param page: page number
-        :param mask: field groups to return; 0 for every group
+        :param mask: field groups to return, or 0 for every group
         :param attempts: how many times to start the walk before giving up
         :return: (the decoded records, the state token they carry)
         :raises HostLightingError: if the state keeps changing or the board stops making progress
@@ -843,8 +843,8 @@ class HostLightingDevice:
         token reads the tables under the same token, so everything it holds describes one state.
 
         :param page: page number
-        :param token: the state token to read under; not 0
-        :param mask: field groups to return; 0 for every group
+        :param token: the state token to read under, not 0
+        :param mask: field groups to return, or 0 for every group
         :return: the decoded records
         :raises HostLightingStale: if the board's state no longer matches the token
         :raises HostLightingError: if the board stops making progress
@@ -857,7 +857,7 @@ class HostLightingDevice:
         return walked[0]
 
     def _walk_table(self, page: int, mask: int, token: int) -> Optional[tuple[list, int]]:
-        """Walk a table page from its first record; with token 0, adopt the first reply's token.
+        """Walk a table page from its first record, adopting the first reply's token when token is 0.
 
         :return: (the decoded records, their state token), or None when the board answers STALE_TOKEN
         """
@@ -880,7 +880,7 @@ class HostLightingDevice:
         """Read a one-record page (1 or 8).
 
         :param page: page number
-        :param mask: field groups to return; 0 for every group
+        :param mask: field groups to return, or 0 for every group
         :return: (the decoded record, the state token)
         """
         reply = self.get_page(page, 0, mask)
@@ -916,12 +916,12 @@ class HostLightingDevice:
         :param action: CLAIM_TAKE, CLAIM_TAKE_OVER or CLAIM_GIVE_UP
         :param token: this application's non-zero token
         :param name: this application's name, up to 16 bytes
-        :param flags: request flags (FLAG_*); FLAG_KEEPALIVE also refreshes a live takeover and an unsaved
+        :param flags: request flags (FLAG_*). FLAG_KEEPALIVE also refreshes a live takeover and an unsaved
             brightness step
         :param exclusive: claim exclusively: until the claim ends, the board refuses other applications'
             requests without FLAG_HOLDER and the generation but CLAIM, and HELLO, GET_PAGE and SUBSCRIBE
             without COMMIT_AFTER or KEEPALIVE
-        :return: the holder now: (token, name); token 0 when unclaimed
+        :return: the holder now, as (token, name), with token 0 when unclaimed
         """
         payload = bytes([action]) + struct.pack('<I', token) + name[:CLAIM_NAME_SIZE].ljust(CLAIM_NAME_SIZE, b'\x00')
         payload += bytes([CLAIM_EXCLUSIVE if exclusive else 0])
@@ -940,7 +940,7 @@ class HostLightingDevice:
         """Set the takeover mode, keepalive timeout and brightness scaling.
 
         :param overlay: True for overlay takeover, False for whole-frame
-        :param keepalive_ms: keepalive timeout in ms; 0 for the default 2000; clamped to 100-10000
+        :param keepalive_ms: keepalive timeout in ms, 0 for the default 2000, clamped to 100-10000
         :param brightness: scale host pixels by the board's brightness
         :return: the settings the board applied
         """
@@ -957,9 +957,9 @@ class HostLightingDevice:
         return _u16(self.request_ok(CMD_SUBSCRIBE, struct.pack('<H', events)), 3)
 
     def next_event(self, timeout: float) -> Optional[bytes]:
-        """Wait for the next event; events that arrived while waiting for a reply come first.
+        """Wait for the next event. Events that arrived while waiting for a reply come first.
 
-        A reply to a request still awaited is kept for its wait_reply; another application's is dropped.
+        A reply to a request still awaited is kept for its wait_reply. Another application's is dropped.
 
         :param timeout: seconds to wait
         :return: the event report, or None when none arrives in time
@@ -983,7 +983,7 @@ class HostLightingDevice:
         """Stage entries addressed by light, pin, action or kind, chunked to the report capacity.
 
         :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
-        :param entries: (address, colour) pairs; colour as for encode_pixel
+        :param entries: (address, colour) pairs, each colour as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
         :return: one (applied, skipped, outcome mask) tuple per report sent
@@ -1000,13 +1000,13 @@ class HostLightingDevice:
                   commit: bool = False) -> tuple[int, int, int]:
         """Stage consecutive LEDs or lights from a first index, as a streaming host does.
 
-        The colours are chunked to the report capacity. Every report but the last goes with NO_REPLY; the last
+        The colours are chunked to the report capacity. Every report but the last goes with NO_REPLY. The last
         is answered, and publishes the frame with COMMIT_AFTER when commit is set, so one reply acknowledges
         the run.
 
         :param addressing: ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN
         :param first: the first LED index or light ordinal
-        :param colours: one colour per LED or light; as for encode_pixel
+        :param colours: one colour per LED or light, as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
         :return: the last report's (applied, skipped, outcome mask)
@@ -1066,7 +1066,7 @@ def _probe(info: dict, board_id_prefix: str) -> Optional[tuple[str, HostLighting
         device.close()
         return None
     if hello['major'] != PROTOCOL_MAJOR:
-        logger.warning("skipping a board speaking protocol %d.%d; these tools need %d.x",
+        logger.warning("skipping a board speaking protocol %d.%d. These tools need %d.x",
                        hello['major'], hello['minor'], PROTOCOL_MAJOR)
     elif hello['board_id'].startswith(board_id_prefix.upper()):
         return hello['board_id'], device
@@ -1082,8 +1082,8 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
     """
     infos = find_devices()
     if not infos:
-        raise HostLightingError("no Host Lighting interface found - is a board connected "
-                                "with the add-on enabled?")
+        raise HostLightingError("no Host Lighting interface found. Connect a board "
+                                "with the add-on enabled")
     candidates = [found for found in (_probe(info, board_id_prefix) for info in infos) if found]
     if not candidates:
         raise HostLightingError(f"no board speaking protocol {PROTOCOL_MAJOR}.x matches ID prefix "
@@ -1092,18 +1092,18 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
         ids = ', '.join(board_id for board_id, _ in candidates)
         for _, device in candidates:
             device.close()
-        raise HostLightingError(f"multiple boards found ({ids}) - select one with --board-id")
+        raise HostLightingError(f"multiple boards found ({ids}). Select one with --board-id")
     return candidates[0][1]
 
 
 def find_board(board_id: str) -> Optional[HostLightingDevice]:
     """Open the board with this whole factory board ID, if it is connected.
 
-    :param board_id: the HELLO factory board ID, 16 hex digits; either case
+    :param board_id: the HELLO factory board ID, 16 hex digits in either case
     :return: an opened HostLightingDevice, or None when no connected protocol 2 board has that ID
     """
     if len(board_id) != 16:
-        raise ValueError("find_board needs the whole 16-digit board ID; open_device takes a prefix")
+        raise ValueError("find_board needs the whole 16-digit board ID. open_device takes a prefix")
     for info in find_devices():
         found = _probe(info, board_id)
         if found:
@@ -1114,7 +1114,7 @@ def find_board(board_id: str) -> Optional[HostLightingDevice]:
 def send_reboot(device: HostLightingDevice, command: int, payload: bytes) -> bool:
     """Send a reboot-style command, tolerating the board disconnecting.
 
-    The reply is sent before the reboot, but the board may drop off the bus before it can be read; a vanished
+    The reply is sent before the reboot, but the board may drop off the bus before it can be read. A vanished
     device or a missing reply means the reboot is under way, not a failure. A rejection (an invalid mode or
     target, or a wrong guard magic) still raises.
 
@@ -1129,5 +1129,5 @@ def send_reboot(device: HostLightingDevice, command: int, payload: bytes) -> boo
     except HostLightingRejected:
         raise
     except (HostLightingError, OSError):
-        logger.debug("no acknowledgement before disconnect; reboot is proceeding")
+        logger.debug("no acknowledgement before the disconnect. The reboot is proceeding")
         return False

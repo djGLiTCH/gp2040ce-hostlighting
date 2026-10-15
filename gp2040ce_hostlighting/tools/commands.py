@@ -56,7 +56,7 @@ common_parser.add_argument('-v', '--version', action='version',
 common_parser.add_argument('-d', '--debug', action='store_true', help="enable debug logging")
 common_parser.add_argument('-P', '--proto-files-path', type=pathlib.Path, action='append',
                            help="GP2040-CE's proto directory or its enums.proto, to print enum names beside the "
-                                "values; may be given more than once")
+                                "values, and may be given more than once")
 common_options = argparse.Namespace(debug=False, proto_files_path=[])
 
 
@@ -82,7 +82,7 @@ def proto_enums(text: str) -> dict:
     """Read the enum blocks of a .proto file.
 
     :param text: the file's contents
-    :return: {enum name: {value: value name}}; where values share a number, the first name
+    :return: {enum name: {value: value name}}, with the first name where values share a number
     """
     names: dict = {}
     for enum in PROTO_ENUM.finditer(PROTO_COMMENT.sub('', text)):
@@ -97,7 +97,7 @@ def enum_names() -> dict:
 
     -P takes the file or the directory that holds it. A directory without enums.proto is skipped.
 
-    :return: {enum name: {value: value name}}; empty unless -P was given and a file reads
+    :return: {enum name: {value: value name}}, empty unless -P was given and a file reads
     """
     names: dict = {}
     for path in common_options.proto_files_path:
@@ -194,7 +194,7 @@ class LightsClaim:
         :param device: an opened HostLightingDevice
         :param name: the command's name, shown in page 1 while it holds the claim
         :param token: the claim token
-        :param exclusive: whether the claim is exclusive; each renewal claims the same way
+        :param exclusive: whether the claim is exclusive. Each renewal claims the same way
         """
         self.device = device
         self.name = name
@@ -273,7 +273,7 @@ class LightsClaim:
                 return False
             return True
         except (HostLightingError, OSError):
-            logger.warning("could not hand the lights back; the keepalive timeout restores the animations")
+            logger.warning("could not hand the lights back. The keepalive timeout restores the animations")
             return False
 
 
@@ -298,14 +298,14 @@ def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive
     holder, holder_name = device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, token, name.encode(),
                                        exclusive=exclusive)
     if holder != token:
-        raise SystemExit(f"'{holder_name}' holds the lights (claim 0x{holder:08X}); add --force to take them over")
+        raise SystemExit(f"'{holder_name}' holds the lights (claim 0x{holder:08X}). Add --force to take them over")
     claim = LightsClaim(device, name, token, exclusive)
     try:
         claim.configure(overlay=False, keepalive_ms=2000, brightness=brightness)
         yield claim
     finally:
         if claim.held and claim.hand_back():
-            print("released - on-board animations restored")
+            print("released, on-board animations restored")
 
 
 def _hue(index: float, count: int) -> tuple:
@@ -488,7 +488,7 @@ def settings():
     """Show or change a board's profile, animation, animation speeds and brightness."""
     parser = device_parser("Show a GP2040-CE board's input profile, animation, animation speeds and brightness, "
                            "or change them. The board applies a change live and saves it to its settings flash "
-                           "shortly after; a value equal to the current one writes nothing. Use it for a user's "
+                           "shortly after. A value equal to the current one writes nothing. Use it for a user's "
                            "choice, not as an effect. A profile change switches the live button mapping. "
                            "--brightness with --unsaved writes nothing: the board shows the step while this "
                            "command holds the claim, and the saved step again when it ends.")
@@ -526,7 +526,7 @@ def settings():
 
 
 def _checked_options(args: argparse.Namespace) -> tuple:
-    """Check how hlp-settings' options combine; return the speeds for --speed."""
+    """Check how hlp-settings' options combine, and return the speeds for --speed."""
     speeds = (args.idle, args.pressed, args.case)
     if args.speed is None and speeds != (SPEED_UNCHANGED,) * 3:
         raise SystemExit("--idle, --pressed and --case need --speed ORDINAL")
@@ -541,9 +541,9 @@ def _checked_options(args: argparse.Namespace) -> tuple:
 
 def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: float, force: bool,
                              exclusive: bool) -> None:
-    """Show a brightness step unsaved while holding the claim; the hand-back ends it and the saved step returns.
+    """Show a brightness step unsaved while holding the claim. The hand-back ends it and the saved step returns.
 
-    Each renewal carries KEEPALIVE, which keeps the unsaved step; were the command to stop without handing back,
+    Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without handing back,
     the step would end at the keepalive timeout.
     """
     with holding_lights(device, 'hlp-settings', force, exclusive) as claim:
@@ -666,8 +666,8 @@ def set_light():
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the colours (default: 3)")
     add_claim_arguments(parser)
     parser.add_argument('entries', nargs='+', metavar='ADDRESS:RRGGBB[WW]',
-                        help="an address and its colour, e.g. 3:FF0000; an eight-digit colour adds a white byte; "
-                             "put -- before the entries when an address is negative")
+                        help="an address and its colour, e.g. 3:FF0000, where an eight-digit colour adds a white byte, "
+                             "with -- before the entries when an address is negative")
     args, unknown = parser.parse_known_args()
     if any(':' in item for item in unknown):
         raise SystemExit("put -- before the entries when an address is negative, e.g. --by action -- -10:FF0000")
@@ -785,7 +785,7 @@ def overlay_buttons(controls: list, names: dict) -> list:
     """Pick the buttons of OVERLAY_BUTTONS that the board lights.
 
     :param controls: the page 10 records
-    :param names: enum_names(); its GpioAction names give the values when present
+    :param names: from enum_names(), with GpioAction names that give the values when present
     :return: [(label, action)] in the order of OVERLAY_BUTTONS, for the controls the board reports as lit
     """
     values = {name: value for value, name in names.get('GpioAction', {}).items()}
@@ -848,8 +848,8 @@ def _buttons(claim: LightsClaim, controls: list, lights: list, seconds: float, o
 @hlp_command
 def input_mode():
     """Set a board's input mode over Host Lighting."""
-    parser = device_parser("Set a GP2040-CE board's input mode; the board saves it and reboots into it.")
-    parser.add_argument('mode', type=int, help="InputMode value; page 2 (hlp-caps) lists the modes the board "
+    parser = device_parser("Set a GP2040-CE board's input mode. The board saves it and reboots into it.")
+    parser.add_argument('mode', type=int, help="InputMode value. Page 2 (hlp-caps) lists the modes the board "
                                                "accepts and which carry the lighting interface")
     parser.add_argument('--force', action='store_true',
                         help="switch even into a mode without the lighting interface, which these tools cannot leave")
@@ -859,20 +859,20 @@ def input_mode():
         modes, _ = device.read_table(PAGE_INPUT_MODES)
         known = {mode['mode']: mode for mode in modes}
         if args.mode not in known:
-            raise SystemExit(f"the board does not accept input mode {args.mode}; it accepts "
+            raise SystemExit(f"the board does not accept input mode {args.mode}. It accepts "
                              + ', '.join(f"{mode['mode']} ({mode['name']})" for mode in modes))
         if not known[args.mode]['lighting']:
             leave = ("only the web configurator, a boot-time button hold, the reboot hotkeys or the display menu "
                      "leave it")
             if not args.force:
                 raise SystemExit(f"{known[args.mode]['name']} has no lighting interface and these tools cannot "
-                                 f"switch the board back: {leave}; add --force to switch anyway")
-            print(f"note: {known[args.mode]['name']} has no lighting interface; {leave}")
+                                 f"switch the board back: {leave}. Add --force to switch anyway")
+            print(f"note: {known[args.mode]['name']} has no lighting interface, and {leave}")
         elif known[args.mode]['after_detection']:
             print(f"note: {known[args.mode]['name']} presents the lighting interface once the board has detected "
                   "a PC, a few seconds and a second enumeration after it starts")
         send_reboot(device, CMD_SET_INPUT_MODE, bytes([args.mode]) + MAGIC_INPUT_MODE)
-        print(f"input mode {args.mode} ({known[args.mode]['name']}) set - board is rebooting")
+        print(f"input mode {args.mode} ({known[args.mode]['name']}) set. The board is rebooting")
     finally:
         device.close()
 
@@ -898,6 +898,6 @@ def reboot_bootsel():
     device = open_device(args.board_id)
     try:
         send_reboot(device, CMD_REBOOT, bytes([REBOOT_BOOTSEL]) + MAGIC_REBOOT)
-        print("rebooting to BOOTSEL - watch for the RPI-RP2 drive")
+        print("rebooting to BOOTSEL. Watch for the RPI-RP2 drive")
     finally:
         device.close()

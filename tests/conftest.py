@@ -11,7 +11,7 @@ import pytest
 def _hlp_runner(board, monkeypatch, clock=None):
     """Run hlp-* commands against a fake board: no real waiting, or the board's own clock.
 
-    The Host Lighting modules each get this `time`; the rest of the process keeps the real one.
+    The Host Lighting modules each get this `time`. The rest of the process keeps the real one.
     """
     import sys
     import time

@@ -38,7 +38,7 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
 from gp2040ce_hostlighting.tools.commands import (LightsClaim, add_claim_arguments, device_parser, hlp_command,
                                                   holding_lights, ranged)
 
-# what a protocol 2.0 board implements, from the protocol reference; a later 2.x board lists more
+# what a protocol 2.0 board implements, from the protocol reference. A later 2.x board lists more
 REQUEST_FLAGS = {FLAG_COMMIT_AFTER.bit_length() - 1, FLAG_NO_REPLY.bit_length() - 1, FLAG_KEEPALIVE.bit_length() - 1,
                  FLAG_HOLDER.bit_length() - 1} | {bit for bit in range(8) if FLAG_GENERATION_MASK >> bit & 1}
 COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
@@ -227,7 +227,7 @@ def _next(generation: int) -> int:
 
 
 def _refused(reply: bytes) -> dict:
-    """Return the holder a status 4 reply shows; empty for any other reply."""
+    """Return the holder a status 4 reply shows, or nothing for any other reply."""
     return decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])) if reply[2] == STATUS_CLAIMED else {}
 
 
@@ -253,7 +253,7 @@ def _answered(device: HostLightingDevice, command: int, sequence: int, timeout: 
 # -- the conformance checks --------------------------------------------------------
 
 def _check_hello(device: HostLightingDevice, checks: Checks) -> dict:
-    """Check HELLO; return it.
+    """Check HELLO and return it.
 
     A later 2.x board may list more than 2.0 does: additions take free numbers, and hosts gate on the bitmaps.
     """
@@ -507,7 +507,7 @@ def _check_takeover(device: HostLightingDevice, checks: Checks, tables: dict, le
     """Check the takeover's number, keepalive and expiry.
 
     Every wait renews the claim with a plain CLAIM, so the lease never lapses and the takeover expires on its own
-    timer; a lapse would end it too, and hide a broken expiry.
+    timer. A lapse would end it too, and hide a broken expiry.
     """
     checks.section('Takeover and keepalive')
     device.request_ok(CMD_RELEASE)
@@ -647,7 +647,7 @@ def _check_claim(device: HostLightingDevice, checks: Checks, lease: _Lease) -> N
                  "a renewal without a reply takes a lapsed claim again: the holder's next request, under its old "
                  'generation, is refused and shows its own token and the new generation', f"{retaken}")
     _act_as(device, _claim(device, CLAIM_GIVE_UP, ours), ours)
-    # the first claim and the give up are changes of holder too; eight of them pass 7
+    # the first claim and the give up are changes of holder too. Eight of them pass 7
     steps, defaults = [_state(device)['claim_generation']], []
     for _ in range(4):
         for action in (CLAIM_TAKE, CLAIM_GIVE_UP):
@@ -1051,7 +1051,7 @@ def _check_timing(device: HostLightingDevice, checks: Checks, tables: dict, quic
 def _check_delivery(device: HostLightingDevice, checks: Checks, open_second) -> None:
     """Check that the operating system delivers each reply to every application with the interface open.
 
-    The protocol's sharing rules rest on it. A second handle is opened on the board; each handle must read
+    The protocol's sharing rules rest on it. A second handle is opened on the board. Each handle must read
     the reply to the other's request.
     """
     checks.section('Delivery to every application')
@@ -1141,7 +1141,7 @@ def _reports(leds: int) -> int:
 
 
 def _round_trips(device: HostLightingDevice, count: int) -> list:
-    """Time count HELLOs one at a time; each answered one in ms."""
+    """Time count HELLOs one at a time, and return each answered one in ms."""
     trips = []
     for _ in range(count):
         start = time.perf_counter()
@@ -1160,9 +1160,9 @@ def _round_trips(device: HostLightingDevice, count: int) -> list:
 
 
 def _frame(device: HostLightingDevice, leds: int, index: int, pipelined: bool) -> bool:
-    """Send one whole frame of LED runs; True when it was acknowledged.
+    """Send one whole frame of LED runs, and say whether it was acknowledged.
 
-    Pipelined, only the last report is answered; otherwise every report is.
+    Pipelined, only the last report is answered. Otherwise every report is.
     """
     colours = [((index * 7) & 0xFF, 0x20, 0x40)] * leds
     try:
@@ -1182,7 +1182,7 @@ def _frame(device: HostLightingDevice, leds: int, index: int, pipelined: bool) -
 
 
 def _paced(device: HostLightingDevice, leds: int, frames: int, keep=None) -> int:
-    """Send frames at 60 fps; how many were acknowledged."""
+    """Send frames at 60 fps, and count how many were acknowledged."""
     acknowledged, start = 0, time.perf_counter()
     for index in range(frames):
         while time.perf_counter() < start + index / 60:
@@ -1194,7 +1194,7 @@ def _paced(device: HostLightingDevice, leds: int, frames: int, keep=None) -> int
 
 
 def _unthrottled(device: HostLightingDevice, leds: int, seconds: float, pipelined: bool, keep=None) -> float:
-    """Send frames back to back for a while; acknowledged frames per second."""
+    """Send frames back to back for a while, and return the acknowledged frames per second."""
     acknowledged, start = 0, time.perf_counter()
     while time.perf_counter() - start < seconds:
         acknowledged += _frame(device, leds, acknowledged, pipelined)

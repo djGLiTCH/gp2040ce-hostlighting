@@ -75,7 +75,7 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   board's settings flash shortly after, so use it for a user's choice and not as an effect. `--brightness N
   --unsaved` shows step N unsaved for `--seconds` (default 5) and writes nothing. The command holds the claim
   meanwhile, so `--force` and `--exclusive` apply. The board shows the saved step again when the command ends,
-  Ctrl-C and a lost process included.
+  Ctrl-C and a killed command included.
 * `hlp-watch` subscribes to the board's `STATE_CHANGED` event and prints what each one changes: input mode,
   profile, player, animation, the brightness step shown and the saved one, takeover, the application holding
   the claim, whether its claim is exclusive, the claim generation, the `CONFIGURE` settings and the state

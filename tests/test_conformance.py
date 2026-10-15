@@ -451,7 +451,7 @@ def test_conformance_counts_a_lost_board_as_a_failure(hlp_run_on_model_board, hl
 
 
 def test_conformance_on_a_board_without_led_output(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that a board without LED output passes: no lights, animations or steps; --settings changes nothing."""
+    """Test that a board without LED output passes: no lights, animations or steps. --settings changes nothing."""
     board = hlp_model_board
     board.controls = [control_record(2, 1, lit=0, count=0), control_record(12, 13, lit=0, count=0)]
     board.lights, board.animations = [], []
@@ -499,7 +499,7 @@ def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsy
     assert 'round trip: median 1.00 ms, p95 1.00 ms (100 of 100 answered)' in out
     assert '60 fps: 60 of 60 frames acknowledged (4 LEDs, 1 reports per frame)' in out
     assert 'unthrottled, every report answered: ' in out and 'unthrottled, pipelined: ' in out
-    assert out.endswith('released - on-board animations restored\n')
+    assert out.endswith('released, on-board animations restored\n')
     renewals = [claim[2] & 0x0F for claim in hlp_model_board.sent(hl.CMD_CLAIM)]
     assert renewals.count(hl.FLAG_KEEPALIVE) >= 2
     assert [configure[6] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)] == [0]
@@ -507,7 +507,7 @@ def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsy
 
 
 def test_bench_frame_size_and_refused_frames(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test --leds: 40 LEDs are three reports; 120 reach past the limit, so every frame is refused."""
+    """Test --leds: 40 LEDs are three reports. 120 reach past the limit, so every frame is refused."""
     hlp_run_on_model_board(conformance.bench, '--quick', '--leds', '40')
     assert '(40 LEDs, 3 reports per frame)' in capsys.readouterr().out
     hlp_run_on_model_board(conformance.bench, '--quick', '--leds', '120')
@@ -531,7 +531,7 @@ def test_bench_hands_back_on_interrupt(hlp_run_on_model_board, hlp_model_board, 
     monkeypatch.setattr(hlp_model_board, 'sleep', interrupt)
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_model_board(conformance.bench, '--quick')
-    assert 'released - on-board animations restored' in capsys.readouterr().out
+    assert 'released, on-board animations restored' in capsys.readouterr().out
     assert hlp_model_board.holder == 0 and not hlp_model_board.live
     assert (hlp_model_board.overlay, hlp_model_board.keepalive_ms, hlp_model_board.brightness) == (0, 2000, 1)
 

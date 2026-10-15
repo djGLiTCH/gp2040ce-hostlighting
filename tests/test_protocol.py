@@ -278,7 +278,7 @@ def test_request_times_out(hlp_fake_device, hlp_fake_board):
 
 
 def test_rejection_carries_status_and_offset(hlp_fake_device):
-    """Test that a non-OK status raises with the offending byte."""
+    """Test that a status other than 0 raises with the offending byte."""
     with pytest.raises(hl.HostLightingRejected) as caught:
         hlp_fake_device.get_page(13)
     assert caught.value.status == hl.STATUS_INVALID and caught.value.offset == 3
@@ -301,7 +301,7 @@ def test_read_table_walks_every_record(hlp_fake_device, hlp_fake_board):
 
 
 def test_read_table_restarts_when_the_state_changes(hlp_fake_device, hlp_fake_board):
-    """Test that a stale token mid-walk restarts the walk rather than mixing two states."""
+    """Test that a stale token mid-walk restarts the walk, so the records never mix two states."""
     hlp_fake_board.lights = [light_record(i) for i in range(5)]
     hlp_fake_board.stale_once_at = 3
     lights, token = hlp_fake_device.read_table(hl.PAGE_LIGHTS)

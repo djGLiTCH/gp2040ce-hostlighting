@@ -38,7 +38,7 @@ def page_reply(page: int, records: list, start: int = 0, mask: int = 0, token: i
 
 def state_record(live=0, mode=0, profile=1, player=1, animation=0, step=5, number=3, token=0, name=b'',
                  overlay=0, keepalive=2000, brightness=1, unsaved=0, exclusive=0, saved=None, generation=1) -> list:
-    """One page 1 record as its three groups; the saved step is the step shown unless given."""
+    """One page 1 record as its three groups, with the saved step the step shown unless given."""
     return [bytes([live | unsaved << 1, mode, profile, player]) + struct.pack('<H', animation) +
             bytes([step, number, step if saved is None else saved]),
             struct.pack('<I', token) + name.ljust(16, b'\x00') + bytes([exclusive, generation]),
@@ -248,14 +248,14 @@ class FakeBoard:
         self.state = [bytes(state)] + self.state[1:]
 
     def set_profile(self, request: bytes) -> int:
-        """Apply SET_PROFILE; return the byte at fault, or 0."""
+        """Apply SET_PROFILE, and return the byte at fault, or 0."""
         if request[3] not in [record[0][0] for record in self.profiles if record[0][1] & 1]:
             return 3
         self.set_state(2, request[3:4])
         return 0
 
     def set_animation(self, request: bytes) -> int:
-        """Apply SET_ANIMATION; return the byte at fault, or 0."""
+        """Apply SET_ANIMATION, and return the byte at fault, or 0."""
         index = struct.unpack_from('<H', request, 3)[0]
         if index != hl.ANIMATION_OFF and (index >= len(self.animations) or not self.animations[index][0][0] & 1):
             return 3
@@ -263,7 +263,7 @@ class FakeBoard:
         return 0
 
     def set_speed(self, request: bytes) -> int:
-        """Apply SET_ANIMATION_SPEED up to the Summary's speed steps; return the byte at fault, or 0."""
+        """Apply SET_ANIMATION_SPEED up to the Summary's speed steps, and return the byte at fault, or 0."""
         index = struct.unpack_from('<H', request, 3)[0]
         if index >= len(self.animations):
             return 3
@@ -277,9 +277,9 @@ class FakeBoard:
         return 0
 
     def set_brightness(self, request: bytes) -> int:
-        """Apply SET_BRIGHTNESS; return the byte at fault, or 0.
+        """Apply SET_BRIGHTNESS, and return the byte at fault, or 0.
 
-        A step up to the Summary's steps is saved with [4] = 1 and otherwise only shown; 0xFF shows the saved step.
+        A step up to the Summary's steps is saved with [4] = 1 and otherwise only shown. 0xFF shows the saved step.
         """
         step = request[3]
         if step != hl.BRIGHTNESS_SAVED and step > self.summary[0][8]:
@@ -395,7 +395,7 @@ class SecondHandle:
         return self.board.write(data)
 
     def read(self, size: int, timeout_ms: int = 0) -> list:
-        """Give this handle's next report; with none, wait the timeout on the board's clock when it has one."""
+        """Give this handle's next report, or with none, wait the timeout on the board's clock when it has one."""
         if self.inbox:
             return list(self.inbox.pop(0))
         if timeout_ms and hasattr(self.board, 'sleep'):
@@ -408,7 +408,7 @@ class SecondHandle:
 
 
 def fake_device(board: FakeBoard) -> hl.HostLightingDevice:
-    """Wire a HostLightingDevice to a FakeBoard instead of hidapi; to a second handle while the board is open."""
+    """Wire a HostLightingDevice to a FakeBoard instead of hidapi, or to a second handle while the board is open."""
     device = DEVICE_CLASS.__new__(DEVICE_CLASS)
     device.device = SecondHandle(board) if board.opened else board
     board.opened = True
@@ -430,7 +430,7 @@ class ModelBoard(FakeBoard):
     outdated one, the CONFIGURE defaults at every change of holder, the exclusive claim's refusals, the unsaved
     brightness step and its keepalive, events sent only while no reply waits, run and entry staging with the
     capacity and limit rules, FILL, UNSTAGE, the magic-guarded commands, and a state token and change counters
-    that follow the configuration pages. Each report written takes 1 ms; a read with nothing to read
+    that follow the configuration pages. Each report written takes 1 ms. A read with nothing to read
     waits its timeout.
     """
 
@@ -537,7 +537,7 @@ class ModelBoard(FakeBoard):
         """Say whether an exclusive claim refuses a request without HOLDER and the current generation.
 
         It refuses every command but HELLO, GET_PAGE, CLAIM and SUBSCRIBE, and those with COMMIT_AFTER or
-        KEEPALIVE but CLAIM, which is never refused; an unknown command is status 1.
+        KEEPALIVE but CLAIM, which is never refused. An unknown command is status 1.
         """
         if command not in self.COMMANDS or command == hl.CMD_CLAIM:
             return False
@@ -558,7 +558,7 @@ class ModelBoard(FakeBoard):
         return not guarded or (command == hl.CMD_CLAIM and self.holder == struct.unpack_from('<I', request, 4)[0])
 
     def answer(self, command: int, sequence: int, request: bytes):
-        """Build the reply to one request; None when the request gets none."""
+        """Build the reply to one request, or None when the request gets none."""
         if command == 0 or command & hl.REPLY_FLAG:
             return None
         ok = bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_OK])
@@ -578,7 +578,7 @@ class ModelBoard(FakeBoard):
         return self.feature(ok, command, request)
 
     def claim(self, ok: bytes, request: bytes) -> bytes:
-        """Claim, take over or give up; each claim or take over by the holder renews the lease."""
+        """Claim, take over or give up. Each claim or take over by the holder renews the lease."""
         action, token = request[3], struct.unpack_from('<I', request, 4)[0]
         if action > hl.CLAIM_GIVE_UP:
             return self._invalid(ok, 3)
@@ -593,7 +593,7 @@ class ModelBoard(FakeBoard):
         return (ok + request[3:8] + self.controller()).ljust(hl.REPORT_SIZE, b'\x00')
 
     def set_brightness(self, request: bytes) -> int:
-        """SET_BRIGHTNESS; an unsaved step starts its keepalive."""
+        """Apply SET_BRIGHTNESS. An unsaved step starts its keepalive."""
         offset = super().set_brightness(request)
         if not offset and self.unsaved():
             self.unsaved_refreshed = self.now
@@ -612,7 +612,7 @@ class ModelBoard(FakeBoard):
         return (ok + settings).ljust(hl.REPORT_SIZE, b'\x00')
 
     def subscribe(self, ok: bytes, request: bytes) -> bytes:
-        """Add event 0 when asked; the first subscription does not report changes made before it."""
+        """Add event 0 when asked. The first subscription does not report changes made before it."""
         first = not self.subscribed
         reply = self.feature(ok, hl.CMD_SUBSCRIBE, request)
         if first and self.subscribed:
@@ -634,7 +634,7 @@ class ModelBoard(FakeBoard):
         return super().stage(ok, request)
 
     def unstage(self, ok: bytes, request: bytes) -> bytes:
-        """Unstage a run or entries: the same addressing, no pixels; bits 4-7 are ignored."""
+        """Unstage a run or entries: the same addressing, no pixels. Bits 4-7 are ignored."""
         addressing = request[3] & 0x0F
         if addressing in (hl.ADDRESSING_LED_RUN, hl.ADDRESSING_LIGHT_RUN):
             return self._run(ok, request, addressing, hl.stage_capacity(addressing, None))
@@ -647,7 +647,7 @@ class ModelBoard(FakeBoard):
         return self._outcome(ok, applied)
 
     def fill(self, ok: bytes, request: bytes) -> bytes:
-        """FILL: a known pixel format in bits 4-7; bits 0-3 are ignored."""
+        """Apply FILL with a known pixel format in bits 4-7. Bits 0-3 are ignored."""
         if request[3] >> 4 not in hl.PIXEL_SIZES:
             return self._invalid(ok, 3)
         return ok.ljust(hl.REPORT_SIZE, b'\x00')
@@ -742,7 +742,7 @@ class ModelBoard(FakeBoard):
         state[0], state[7] = int(self.live) | state[0] & 0x02, self.number
         self.state = [bytes(state), self.controller(),
                       struct.pack('<BHB', self.overlay, self.keepalive_ms, self.brightness)]
-        # the token follows what the configuration pages report, the change counters apart; a page that
+        # the token follows what the configuration pages report, the change counters apart. A page that
         # changed since it was last hashed steps its counter (pages 8 to 12 here)
         pages = [self.summary[0], self.profiles, self.controls, self.lights, self.animations]
         hashes = [zlib.crc32(repr(page).encode()) for page in pages]

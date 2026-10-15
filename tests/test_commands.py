@@ -94,7 +94,7 @@ def test_input_mode_checks_page_2(hlp_run_on_fake_board, hlp_fake_board, capsys)
     """Test hlp-input-mode: modes the board accepts, --force for one without lighting, and the guard magic."""
     with pytest.raises(SystemExit, match='does not accept input mode 9'):
         hlp_run_on_fake_board(tools.input_mode, '9')
-    with pytest.raises(SystemExit, match='add --force'):
+    with pytest.raises(SystemExit, match='Add --force'):
         hlp_run_on_fake_board(tools.input_mode, '4')
     assert not hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)
     hlp_run_on_fake_board(tools.input_mode, '3')
@@ -151,7 +151,7 @@ def test_hold_hands_back_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, cap
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
-    assert hlp_fake_board.holder == 0 and 'released - on-board animations restored' in capsys.readouterr().out
+    assert hlp_fake_board.holder == 0 and 'released, on-board animations restored' in capsys.readouterr().out
 
 
 def test_hand_back_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
@@ -175,7 +175,7 @@ def test_hand_back_failure_is_a_warning(hlp_run_on_fake_board, hlp_fake_board, c
     hlp_fake_board.disconnect_on = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)}
     hlp_run_on_fake_board(tools.fill, '--seconds', '0', 'FF0000')
     assert 'released' not in capsys.readouterr().out
-    assert 'could not hand the lights back; the keepalive timeout restores the animations' in caplog.text
+    assert 'could not hand the lights back. The keepalive timeout restores the animations' in caplog.text
 
 
 @pytest.mark.parametrize('action, flags', [(hl.CLAIM_TAKE, 0), (hl.CLAIM_TAKE, hl.FLAG_KEEPALIVE),
@@ -197,7 +197,7 @@ def test_another_applications_claim_reply_is_passed_over(hlp_run_on_fake_board, 
     monkeypatch.setattr(hlp_fake_board, 'answer', with_another_applications_reply)
     hlp_run_on_fake_board(tools.fill, '--seconds', '1', 'FF0000')
     out = capsys.readouterr().out
-    assert injected and 'app-b' not in out and out.endswith('released - on-board animations restored\n')
+    assert injected and 'app-b' not in out and out.endswith('released, on-board animations restored\n')
     assert not hlp_fake_board.sent(hl.CMD_GET_PAGE) and hlp_fake_board.holder == 0
 
 
@@ -410,7 +410,7 @@ def test_stream_frame_size(hlp_run_on_model_board, hlp_model_board, capsys):
 
 
 def test_buttons_runs_three_phases(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test hlp-buttons: lit actions, a light run, then the overlay; giving up restores whole-frame."""
+    """Test hlp-buttons: lit actions, a light run, then the overlay. Giving up restores whole-frame."""
     hlp_run_on_model_board(tools.buttons, '--seconds', '1')
     out = capsys.readouterr().out
     assert 'phase 1: 1 of 1 lit actions, one hue each' in out
@@ -478,7 +478,7 @@ def test_streaming_tools_hand_back_on_interrupt(hlp_run_on_model_board, hlp_mode
     monkeypatch.setattr(hlp_model_board, 'sleep', interrupt)
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_model_board(getattr(tools, command), '--seconds', '1')
-    assert 'released - on-board animations restored' in capsys.readouterr().out
+    assert 'released, on-board animations restored' in capsys.readouterr().out
     assert hlp_model_board.holder == 0 and not hlp_model_board.live
     assert [configure[3] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)] == overlays
     assert (hlp_model_board.overlay, hlp_model_board.keepalive_ms, hlp_model_board.brightness) == (0, 2000, 1)
