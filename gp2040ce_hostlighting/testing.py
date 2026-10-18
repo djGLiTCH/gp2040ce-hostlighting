@@ -1,4 +1,9 @@
-"""Build Host Lighting reports and fake a board for the tests.
+"""Fake GP2040-CE boards and build Host Lighting reports, to test host software without a board.
+
+FakeBoard answers requests as the firmware does. ModelBoard also follows the
+protocol's timing, claim and staging rules, on a clock the caller controls.
+fake_device gives a HostLightingDevice connected to either. The record
+builders make the pages' records, the replies and the events.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -7,11 +12,13 @@ import struct
 import zlib
 
 from gp2040ce_hostlighting import protocol as hl
+# bound at import, so a test that replaces protocol.HostLightingDevice still gets real devices here
+from gp2040ce_hostlighting.protocol import HostLightingDevice
+
+__all__ = ['BOARD_ID', 'FakeBoard', 'ModelBoard', 'control_record', 'fake_device', 'hello_reply', 'identity_reply',
+           'light_record', 'other_event', 'page_reply', 'state_event', 'state_record', 'summary_record']
 
 BOARD_ID = bytes.fromhex('433030343237362E')
-
-
-DEVICE_CLASS = hl.HostLightingDevice
 
 
 def page_reply(page: int, records: list, start: int = 0, mask: int = 0, token: int = 0x1234ABCD,
@@ -97,6 +104,13 @@ def hello_reply(sequence=1, major=2, board_id=BOARD_ID, subscribed=0, queue_limi
     return (bytes([hl.CMD_HELLO | hl.REPLY_FLAG, sequence, 0]) + body).ljust(hl.REPORT_SIZE, b'\x00')
 
 
+def _check_written(data: bytes) -> None:
+    """Refuse a report not framed as hidapi writes it: report ID 0, then 64 bytes."""
+    if len(data) != hl.REPORT_SIZE + 1 or data[0] != 0:
+        raise ValueError(f"a report is written as report ID 0 then {hl.REPORT_SIZE} bytes, not {len(data)} bytes "
+                         f"starting 0x{data[0] if data else 0:02X}")
+
+
 class Outbox(list):
     """A fake board's reports waiting for its first handle.
 
@@ -112,22 +126,22 @@ class Outbox(list):
     def append(self, report) -> None:
         """Queue one report."""
         super().append(report)
-        self.copy([report])
+        self.deliver([report])
 
     def extend(self, reports) -> None:
         """Queue several reports."""
         reports = list(reports)
         super().extend(reports)
-        self.copy(reports)
+        self.deliver(reports)
 
-    def copy(self, reports) -> None:
+    def deliver(self, reports) -> None:
         """Give the other open handles their copies."""
         for handle in self.board.handles:
             handle.inbox.extend(bytes(report) for report in reports)
 
 
 class FakeBoard:
-    """Answer HLP 2.0 requests the way the firmware does, for the device and tool tests."""
+    """Answer HLP 2.0 requests the way the firmware does."""
 
     def __init__(self):
         """Set up a small board: three controls (one an expander pin), a button light and a case strip."""
@@ -146,7 +160,7 @@ class FakeBoard:
                          '0.7.12', 'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
         self.token = 0x1234ABCD
         self.requests: list = []
-        self.outbox: list = Outbox(self)
+        self.outbox = Outbox(self)
         self.handles: list = []         # other applications' handles (SecondHandle), beside the first
         self.opened = False
         self.stale_once_at = None       # a GET_PAGE start at which the token changes once
@@ -165,7 +179,7 @@ class FakeBoard:
 
     def write(self, data: bytes) -> int:
         """Take one report as hidapi writes it (report ID 0 first) and queue the reply."""
-        assert len(data) == hl.REPORT_SIZE + 1 and data[0] == 0, 'report ID 0 then 64 bytes'
+        _check_written(data)
         if self.departed:
             return -1                   # as hidapi reports a write the device did not take
         request = bytes(data[1:])
@@ -408,30 +422,26 @@ class SecondHandle:
 
 
 def fake_device(board: FakeBoard) -> hl.HostLightingDevice:
-    """Wire a HostLightingDevice to a FakeBoard instead of hidapi, or to a second handle while the board is open."""
-    device = DEVICE_CLASS.__new__(DEVICE_CLASS)
-    device.device = SecondHandle(board) if board.opened else board
+    """Connect a HostLightingDevice to a FakeBoard instead of hidapi, or to a second handle while the board is open.
+
+    Its sequence numbers start at 1, so replies can be built with known sequences.
+    """
+    device = HostLightingDevice(handle=SecondHandle(board) if board.opened else board)
     board.opened = True
     device.sequence = 0
-    device.events = []
-    device.awaited = set()
-    device.pending = []
-    device.generation = 0
-    device.holding_exclusive = False
     return device
 
 
 class ModelBoard(FakeBoard):
-    """A fake board that follows the protocol's rules, on a clock the tests control.
+    """A fake board that follows the protocol's rules, on a clock the caller controls.
 
-    It models what hlp-conformance checks: unknown and unanswerable commands, the reply queue limit (a request
-    that needs a reply while the queue is full is discarded), the takeover and its number, publishing, the
-    keepalive and the claim lease (both CONFIGURE's timeout), the claim generation and the refusal of an
-    outdated one, the CONFIGURE defaults at every change of holder, the exclusive claim's refusals, the unsaved
-    brightness step and its keepalive, events sent only while no reply waits, run and entry staging with the
-    capacity and limit rules, FILL, UNSTAGE, the magic-guarded commands, and a state token and change counters
-    that follow the configuration pages. Each report written takes 1 ms. A read with nothing to read
-    waits its timeout.
+    It models what gp2040ce_hostlighting.conformance checks: unknown and unanswerable commands, the reply queue
+    limit (a request that needs a reply while the queue is full is discarded), the takeover and its number,
+    publishing, the keepalive and the claim lease (both CONFIGURE's timeout), the claim generation and the refusal
+    of an outdated one, the CONFIGURE defaults at every change of holder, the exclusive claim's refusals, the
+    unsaved brightness step and its keepalive, events sent only while no reply waits, run and entry staging with the
+    capacity and limit rules, FILL, UNSTAGE, the magic-guarded commands, and a state token and change counters that
+    follow the configuration pages. Each report written takes 1 ms. A read with nothing to read waits its timeout.
     """
 
     COMMANDS = {hl.CMD_HELLO, hl.CMD_GET_PAGE, hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_STAGE,
@@ -481,7 +491,7 @@ class ModelBoard(FakeBoard):
 
     def write(self, data: bytes) -> int:
         """Take one report, answer it and apply its flags when it succeeds."""
-        assert len(data) == hl.REPORT_SIZE + 1 and data[0] == 0, 'report ID 0 then 64 bytes'
+        _check_written(data)
         if self.departed:
             return -1                   # as hidapi reports a write the device did not take
         request = bytes(data[1:])
@@ -524,7 +534,7 @@ class ModelBoard(FakeBoard):
         if self.pending:
             self.pending = False
             event = self._event()
-            self.outbox.copy([event])
+            self.outbox.deliver([event])
             return list(event)
         if timeout_ms:
             self.now += timeout_ms / 1000

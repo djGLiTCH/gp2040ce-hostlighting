@@ -26,6 +26,9 @@ the board and lists its capabilities. GET_PAGE reads the pages:
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
 
+LightsClaim keeps a claim on the lights. It renews the claim, sends CONFIGURE
+again after a lapse and hands the lights back.
+
 See docs/host-lighting.md for the full protocol reference. The hlp-*
 commands are in gp2040ce_hostlighting.tools.commands, and hlp-conformance
 and hlp-bench in gp2040ce_hostlighting.tools.conformance. Requires the `hidapi` package
@@ -38,7 +41,7 @@ import logging
 import secrets
 import struct
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -574,16 +577,23 @@ class HostLightingDisconnected(HostLightingError):
 class HostLightingDevice:
     """One GP2040-CE board's Host Lighting interface."""
 
-    def __init__(self, path: bytes):
-        """Open the HID device at the given hidapi path.
+    def __init__(self, path: Optional[bytes] = None, handle=None):
+        """Open the HID device at the given hidapi path, or use a handle already open.
 
         :param path: platform-specific hidapi device path from enumeration
+        :param handle: instead of a path, an open hidapi device set non-blocking, or an object with its write,
+            read and close methods, such as gp2040ce_hostlighting.testing's fake boards
+        :raises ValueError: when neither a path nor a handle is given
         """
-        hid = _import_hid()
-        self.device = hid.device()
-        self.device.open_path(path)
-        # a read with no timeout returns at once, so request() can drop the reports already received
-        self.device.set_nonblocking(True)
+        if handle is None:
+            if path is None:
+                raise ValueError("give the device's path or an open handle")
+            hid = _import_hid()
+            handle = hid.device()
+            handle.open_path(path)
+            # a read with no timeout returns at once, so request() can drop the reports already received
+            handle.set_nonblocking(True)
+        self.device = handle
         # the first sequence number is random, so two applications seldom send the same one
         self.sequence = secrets.randbelow(255)
         self.events: list = []
@@ -702,7 +712,7 @@ class HostLightingDevice:
                 return report
             # otherwise another application's reply with this request's numbers: dropped
         self.awaited.discard((command, sequence))
-        raise HostLightingTimeout(f"no reply to command 0x{command:02X} within {timeout}s")
+        raise HostLightingTimeout(f"no reply to command 0x{command:02X} within {timeout} s")
 
     def _await(self, command: int, sequence: int, flags: int) -> None:
         """Note a request that will be answered. No report kept for an earlier one with its numbers answers it."""
@@ -1026,6 +1036,102 @@ class HostLightingDevice:
         """
         self.request_ok(CMD_FILL, bytes([pixel_format << 4]) + encode_pixel(colour, pixel_format),
                         FLAG_COMMIT_AFTER if commit else 0)
+
+
+class LightsClaim:
+    """Keep a claim on a board's lights, renew it and hand it back."""
+
+    def __init__(self, device: HostLightingDevice, name: str, token: int, exclusive: bool = False,
+                 report: Optional[Callable[[str], None]] = None):
+        """Record a claim the application holds.
+
+        :param device: an opened HostLightingDevice
+        :param name: the application's name, shown in page 1 while it holds the claim
+        :param token: the claim token
+        :param exclusive: whether the claim is exclusive. Each renewal claims the same way
+        :param report: called with one line of text when another application has taken the lights over,
+            which is logged at INFO when no callable is given
+        """
+        self.device = device
+        self.name = name
+        self.token = token
+        self.exclusive = exclusive
+        self.held = True
+        self.settings: dict = {}
+        self.report = report or logger.info
+
+    def configure(self, overlay: bool = False, keepalive_ms: int = 2000, brightness: bool = True) -> dict:
+        """Send CONFIGURE and remember the settings, which renew() sends again once it retakes a lapsed claim.
+
+        :param overlay: True for overlay takeover, False for whole-frame
+        :param keepalive_ms: keepalive timeout in ms
+        :param brightness: scale host pixels by the board's brightness
+        :return: the settings the board applied
+        """
+        self.settings = {'overlay': overlay, 'keepalive_ms': keepalive_ms, 'brightness': brightness}
+        return self.device.configure(**self.settings)
+
+    def renew(self) -> bool:
+        """Renew the claim and, with KEEPALIVE, the takeover.
+
+        A new generation means the claim had lapsed and this renewal took it again: that change of holder put
+        the CONFIGURE settings back to their defaults, so the claim's settings are sent again.
+
+        :return: False, having reported it, once another application has taken the lights over
+        """
+        generation = self.device.generation
+        holder, holder_name = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE,
+                                                self.exclusive)
+        if holder != self.token:
+            self.report(f"'{holder_name}' took the lights over")
+            self.held = False
+        elif self.device.generation != generation and self.settings:
+            self.device.configure(**self.settings)
+        return self.held
+
+    def keep(self, seconds: float) -> bool:
+        """Keep the lights for a while, renewing them each second.
+
+        :param seconds: how long to keep them
+        :return: False as soon as another application takes them over
+        """
+        remaining = seconds
+        while remaining > 0:
+            step = min(1.0, remaining)
+            time.sleep(step)
+            remaining -= step
+            if not self.renew():
+                return False
+        return True
+
+    def let_lapse(self) -> None:
+        """Stop holding without handing back: the takeover and the claim end at the keepalive timeout.
+
+        The application's requests then carry neither the claim generation nor FLAG_HOLDER, as those of an
+        application that holds no claim: once the claim has lapsed, its generation would be refused.
+        """
+        self.held = False
+        self.device.generation = 0
+        self.device.holding_exclusive = False
+
+    def hand_back(self) -> bool:
+        """Give up the claim, which restores the on-board animations and the CONFIGURE defaults.
+
+        Giving up ends the takeover and an unsaved brightness step and puts the settings back. When another
+        application holds the claim (the lease lapsed unnoticed and it claimed), nothing changes.
+
+        :return: True when the lights were handed back
+        """
+        self.held = False
+        try:
+            holder, holder_name = self.device.claim(CLAIM_GIVE_UP, self.token)
+            if holder:
+                self.report(f"'{holder_name}' took the lights over")
+                return False
+            return True
+        except (HostLightingError, OSError):
+            logger.warning("could not hand the lights back. The keepalive timeout restores the animations")
+            return False
 
 
 def _import_hid():

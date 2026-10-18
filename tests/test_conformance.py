@@ -3,12 +3,14 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import logging
 import struct
 
 import pytest
-from fakes import control_record, hello_reply, light_record, summary_record
 
+from gp2040ce_hostlighting import conformance as hl_conformance
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting.testing import control_record, hello_reply, light_record, summary_record
 from gp2040ce_hostlighting.tools import conformance
 
 
@@ -639,13 +641,13 @@ def test_conformance_catches_a_saved_step_that_follows_the_step_shown(hlp_run_on
 
 def test_conformance_checks_delivery_to_a_second_handle(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch):
     """Test that the two-handle check passes, fails on one-handle delivery and notes a missing second handle."""
-    import fakes
+    from gp2040ce_hostlighting import testing
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert "PASS  a second handle reads the reply to the first's request" in out
     assert "PASS  and the first the reply to the second's" in out and not hlp_model_board.handles
-    copy = fakes.Outbox.copy
-    monkeypatch.setattr(fakes.Outbox, 'copy', lambda self, reports: None)
+    deliver = testing.Outbox.deliver
+    monkeypatch.setattr(testing.Outbox, 'deliver', lambda self, reports: None)
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
@@ -655,8 +657,8 @@ def test_conformance_checks_delivery_to_a_second_handle(hlp_run_on_model_board, 
     def no_second_handle(prefix=''):
         if hlp_model_board.opened:
             raise OSError('open failed')
-        return fakes.fake_device(hlp_model_board)
-    monkeypatch.setattr(fakes.Outbox, 'copy', copy)
+        return testing.fake_device(hlp_model_board)
+    monkeypatch.setattr(testing.Outbox, 'deliver', deliver)
     monkeypatch.setattr(conformance, 'open_device', no_second_handle)
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
@@ -685,5 +687,24 @@ def test_round_trips_stop_once_another_application_holds_the_claim():
         def request_ok(self, command):
             raise hl.HostLightingRejected(command, hl.STATUS_CLAIMED, 0, (0xB2, 'MESH', 3))
 
-    with pytest.raises(conformance._TakenOver):
-        conformance._round_trips(Device(), 3)
+    with pytest.raises(hl_conformance._TakenOver):
+        hl_conformance._round_trips(Device(), 3)
+
+
+def test_checks_report_through_the_callable_and_keep_each_result():
+    """Test that Checks gives each line to its report callable and keeps every result."""
+    lines: list = []
+    checks = hl_conformance.Checks(report=lines.append)
+    checks.section('Pages')
+    assert checks.check(True, 'page 8 read') and not checks.check(0, 'page 9 read', 'status 5')
+    checks.note('3 profiles')
+    assert lines == ['Pages:', '  PASS  page 8 read', '  FAIL  page 9 read  (status 5)', '        3 profiles']
+    assert (checks.passed, checks.failed) == (1, 1)
+    assert checks.results == [(True, 'page 8 read', ''), (False, 'page 9 read', 'status 5')]
+
+
+def test_checks_log_without_a_report(caplog, capsys):
+    """Test that Checks logs each line at INFO when given no report callable, and prints nothing."""
+    with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.conformance'):
+        hl_conformance.Checks().check(False, 'page 9 read')
+    assert '  FAIL  page 9 read' in caplog.text and not capsys.readouterr().out

@@ -6,9 +6,10 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import struct
 
 import pytest
-from fakes import control_record, light_record, other_event, state_event, state_record, summary_record
 
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting.testing import (control_record, light_record, other_event, state_event, state_record,
+                                           summary_record)
 from gp2040ce_hostlighting.tools import commands as tools
 
 
@@ -331,7 +332,7 @@ def test_settings_holds_an_unsaved_brightness_step(hlp_run_on_fake_board, hlp_fa
     claims = hlp_fake_board.sent(hl.CMD_CLAIM)
     assert [claim[2] & hl.FLAG_KEEPALIVE for claim in claims] == [0, hl.FLAG_KEEPALIVE, hl.FLAG_KEEPALIVE, 0]
     assert claims[0][24] == hl.CLAIM_EXCLUSIVE and claims[-1][3] == hl.CLAIM_GIVE_UP and hlp_fake_board.holder == 0
-    assert 'brightness step 2 shown, unsaved, for 2.0s' in out and 'brightness step 5 of 0-10 (maximum 255)\n' in out
+    assert 'brightness step 2 shown, unsaved, for 2.0 s' in out and 'brightness step 5 of 0-10 (maximum 255)\n' in out
     for arguments, message in ((('--unsaved',), '--unsaved takes --brightness alone'),
                                (('--brightness', '2', '--unsaved', '--profile', '1'), '--unsaved takes --brightness'),
                                (('--brightness', '2', '--exclusive'), '--force and --exclusive go with --unsaved')):
@@ -499,7 +500,7 @@ def test_a_retaken_claim_gets_its_settings_again():
             self.configured.append(settings)
 
     device = Device()
-    claim = tools.LightsClaim(device, 'hlp-test', 0x51)
+    claim = hl.LightsClaim(device, 'hlp-test', 0x51)
     claim.configure(overlay=False, keepalive_ms=2000, brightness=False)
     overlay = {'overlay': True, 'keepalive_ms': 2000, 'brightness': True}
     claim.configure(**overlay)

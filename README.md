@@ -15,10 +15,12 @@ From a clone, `pip install -e .[dev]` installs the commands and the development 
 
 | Path | Holds |
 |---|---|
-| `gp2040ce_hostlighting/protocol.py` | The protocol: constants, framing, decoders, the device and discovery |
+| `gp2040ce_hostlighting/protocol.py` | The protocol: constants, framing, decoders, the device, the claim and discovery |
+| `gp2040ce_hostlighting/conformance.py` | The conformance checks and the round trip and frame-rate measurements |
+| `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
 | `gp2040ce_hostlighting/tools/` | The `hlp-*` commands: `commands.py`, and `conformance.py` for `hlp-conformance` and `hlp-bench` |
 | `docs/host-lighting.md` | The Host Lighting specification |
-| `tests/` | The tests, with fake boards in `fakes.py` |
+| `tests/` | The tests |
 
 ## Specification
 
@@ -146,7 +148,7 @@ animation 0 (an enabled ordinal, or off); speeds 0-10:
 brightness step 6 of 0-10 (maximum 199)
 
 % hlp-settings --brightness 2 --unsaved --exclusive
-brightness step 2 shown, unsaved, for 5.0s
+brightness step 2 shown, unsaved, for 5.0 s
 released - on-board animations restored
 ...
 brightness step 6 of 0-10 (maximum 199)
@@ -174,11 +176,11 @@ unthrottled, pipelined: 249 frames/s
 released - on-board animations restored
 
 % hlp-fill --scope case 0000FF
-filled case with #0000FF for 3.0s
+filled case with #0000FF for 3.0 s
 released - on-board animations restored
 
 % hlp-set-light --by action 1:FFFFFF00 17:00000080 99:FF0000
-2 applied, 1 skipped for 3.0s
+2 applied, 1 skipped for 3.0 s
 skipped addresses (no light, or none below the LED limit): [99]
 released - on-board animations restored
 ```

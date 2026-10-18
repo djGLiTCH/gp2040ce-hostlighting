@@ -5,7 +5,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 import pytest
 
-# Fake boards (tests/fakes.py) and runners for the hlp-* commands
+# Fake boards (gp2040ce_hostlighting.testing) and runners for the hlp-* commands
 
 
 def _hlp_runner(board, monkeypatch, clock=None):
@@ -17,9 +17,9 @@ def _hlp_runner(board, monkeypatch, clock=None):
     import time
     from types import SimpleNamespace
 
-    from fakes import fake_device
-
+    from gp2040ce_hostlighting import conformance as checks_module
     from gp2040ce_hostlighting import protocol
+    from gp2040ce_hostlighting.testing import fake_device
     from gp2040ce_hostlighting.tools import commands, conformance
     if clock is None:
         timing = SimpleNamespace(sleep=lambda seconds: None, monotonic=time.monotonic, perf_counter=time.perf_counter)
@@ -27,7 +27,7 @@ def _hlp_runner(board, monkeypatch, clock=None):
         # lambdas, so that a test can replace the board's sleep
         timing = SimpleNamespace(sleep=lambda seconds: clock.sleep(seconds), monotonic=lambda: clock.time(),
                                  perf_counter=lambda: clock.time())
-    for module in (protocol, commands, conformance):
+    for module in (protocol, checks_module, commands, conformance):
         monkeypatch.setattr(module, 'time', timing)
     for module in (commands, conformance):
         monkeypatch.setattr(module, 'open_device', lambda prefix='': fake_device(board))
@@ -41,14 +41,14 @@ def _hlp_runner(board, monkeypatch, clock=None):
 @pytest.fixture
 def hlp_fake_board():
     """Make a fake Host Lighting board that answers as the firmware does."""
-    from fakes import FakeBoard
+    from gp2040ce_hostlighting.testing import FakeBoard
     return FakeBoard()
 
 
 @pytest.fixture
 def hlp_fake_device(hlp_fake_board):
     """Make a HostLightingDevice talking to the fake board."""
-    from fakes import fake_device
+    from gp2040ce_hostlighting.testing import fake_device
     return fake_device(hlp_fake_board)
 
 
@@ -61,7 +61,7 @@ def hlp_run_on_fake_board(hlp_fake_board, monkeypatch):
 @pytest.fixture
 def hlp_model_board():
     """Make a fake board that follows the protocol's rules on its own clock."""
-    from fakes import ModelBoard
+    from gp2040ce_hostlighting.testing import ModelBoard
     return ModelBoard()
 
 

@@ -25,16 +25,16 @@ from typing import Iterator, Optional
 
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CLAIM_GIVE_UP, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLEAR,
-                                            CMD_HELLO, CMD_REBOOT, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
-                                            CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_SET_PROFILE,
-                                            EVENT_STATE_CHANGED, FLAG_KEEPALIVE, IDENTITY_FIELDS, KIND_BUTTON,
-                                            KIND_CASE, KIND_PLAYERS, MAGIC_INPUT_MODE, MAGIC_REBOOT, PAGE_ANIMATIONS,
-                                            PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE,
-                                            PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_WEBCONFIG,
-                                            SPEED_UNCHANGED, HostLightingDevice, HostLightingDisconnected,
-                                            HostLightingError, HostLightingRejected, decode_state_changed, key_name,
-                                            open_device, send_reboot, stage_capacity)
+                                            BRIGHTNESS_SAVED, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLEAR, CMD_HELLO,
+                                            CMD_REBOOT, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS,
+                                            CMD_SET_INPUT_MODE, CMD_SET_PROFILE, EVENT_STATE_CHANGED, IDENTITY_FIELDS,
+                                            KIND_BUTTON, KIND_CASE, KIND_PLAYERS, MAGIC_INPUT_MODE, MAGIC_REBOOT,
+                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
+                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
+                                            REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, HostLightingDevice,
+                                            HostLightingDisconnected, HostLightingError, HostLightingRejected,
+                                            LightsClaim, decode_state_changed, key_name, open_device, send_reboot,
+                                            stage_capacity)
 
 logger = logging.getLogger(__name__)
 
@@ -185,98 +185,6 @@ def _parse_colour(text: str) -> tuple:
     return tuple(bytes.fromhex(text))
 
 
-class LightsClaim:
-    """The claim a command holds on a board's lights, from holding_lights."""
-
-    def __init__(self, device: HostLightingDevice, name: str, token: int, exclusive: bool = False):
-        """Record a claim the command holds.
-
-        :param device: an opened HostLightingDevice
-        :param name: the command's name, shown in page 1 while it holds the claim
-        :param token: the claim token
-        :param exclusive: whether the claim is exclusive. Each renewal claims the same way
-        """
-        self.device = device
-        self.name = name
-        self.token = token
-        self.exclusive = exclusive
-        self.held = True
-        self.settings: dict = {}
-
-    def configure(self, overlay: bool = False, keepalive_ms: int = 2000, brightness: bool = True) -> dict:
-        """Send CONFIGURE and remember the settings, which renew() sends again once it retakes a lapsed claim.
-
-        :param overlay: True for overlay takeover, False for whole-frame
-        :param keepalive_ms: keepalive timeout in ms
-        :param brightness: scale host pixels by the board's brightness
-        :return: the settings the board applied
-        """
-        self.settings = {'overlay': overlay, 'keepalive_ms': keepalive_ms, 'brightness': brightness}
-        return self.device.configure(**self.settings)
-
-    def renew(self) -> bool:
-        """Renew the claim and, with KEEPALIVE, the takeover.
-
-        A new generation means the claim had lapsed and this renewal took it again: that change of holder put
-        the CONFIGURE settings back to their defaults, so the command's settings are sent again.
-
-        :return: False, having said so, once another application has taken the lights over
-        """
-        generation = self.device.generation
-        holder, holder_name = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE,
-                                                self.exclusive)
-        if holder != self.token:
-            print(f"'{holder_name}' took the lights over")
-            self.held = False
-        elif self.device.generation != generation and self.settings:
-            self.device.configure(**self.settings)
-        return self.held
-
-    def keep(self, seconds: float) -> bool:
-        """Keep the lights for a while, renewing them each second.
-
-        :param seconds: how long to keep them
-        :return: False as soon as another application takes them over
-        """
-        remaining = seconds
-        while remaining > 0:
-            step = min(1.0, remaining)
-            time.sleep(step)
-            remaining -= step
-            if not self.renew():
-                return False
-        return True
-
-    def let_lapse(self) -> None:
-        """Stop holding without handing back: the takeover and the claim end at the keepalive timeout.
-
-        The command's requests then carry neither the claim generation nor FLAG_HOLDER, as those of an
-        application that holds no claim: once the claim has lapsed, its generation would be refused.
-        """
-        self.held = False
-        self.device.generation = 0
-        self.device.holding_exclusive = False
-
-    def hand_back(self) -> bool:
-        """Give up the claim, which restores the on-board animations and the CONFIGURE defaults.
-
-        Giving up ends the takeover and an unsaved brightness step and puts the settings back. When another
-        application holds the claim (the lease lapsed unnoticed and it claimed), nothing changes.
-
-        :return: True when the lights were handed back
-        """
-        self.held = False
-        try:
-            holder, holder_name = self.device.claim(CLAIM_GIVE_UP, self.token)
-            if holder:
-                print(f"'{holder_name}' took the lights over")
-                return False
-            return True
-        except (HostLightingError, OSError):
-            logger.warning("could not hand the lights back. The keepalive timeout restores the animations")
-            return False
-
-
 @contextlib.contextmanager
 def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive: bool = False,
                    brightness: bool = True) -> Iterator[LightsClaim]:
@@ -299,7 +207,7 @@ def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive
                                        exclusive=exclusive)
     if holder != token:
         raise SystemExit(f"'{holder_name}' holds the lights (claim 0x{holder:08X}). Add --force to take them over")
-    claim = LightsClaim(device, name, token, exclusive)
+    claim = LightsClaim(device, name, token, exclusive, report=print)
     try:
         claim.configure(overlay=False, keepalive_ms=2000, brightness=brightness)
         yield claim
@@ -548,7 +456,7 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     """
     with holding_lights(device, 'hlp-settings', force, exclusive) as claim:
         _apply(device, f"--brightness {step}", CMD_SET_BRIGHTNESS, bytes([step, 0]))
-        print(f"brightness step {step} shown, unsaved, for {seconds}s")
+        print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds)
 
 
@@ -650,7 +558,7 @@ def fill():
             else:
                 device.stage_entries(ADDRESSING_KIND, [(kind, colour) for kind in kinds[args.scope]], pixel_format,
                                      commit=True)
-            print(f"filled {args.scope} with #{args.colour.upper()} for {args.seconds}s")
+            print(f"filled {args.scope} with #{args.colour.upper()} for {args.seconds} s")
             claim.keep(args.seconds)
     finally:
         device.close()
@@ -691,7 +599,7 @@ def set_light():
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome[0] for outcome in outcomes)
             skipped = sum(outcome[1] for outcome in outcomes)
-            print(f"{applied} applied, {skipped} skipped for {args.seconds}s")
+            print(f"{applied} applied, {skipped} skipped for {args.seconds} s")
             if skipped:
                 capacity = stage_capacity(addressing, pixel_format)
                 missing = [entries[report * capacity + bit][0]
