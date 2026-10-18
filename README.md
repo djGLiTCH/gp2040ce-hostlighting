@@ -1,7 +1,7 @@
 # gp2040ce-hostlighting
 
-Tools for the GP2040-CE Host Lighting add-on, which lets host software drive a board's RGB LEDs live over a
-vendor HID interface.
+A Python library and tools for the GP2040-CE Host Lighting add-on, which lets host software drive a board's RGB
+LEDs live over a vendor HID interface.
 
 ## Installation
 
@@ -26,6 +26,62 @@ From a clone, `pip install -e .[dev]` installs the commands and the development 
 
 `docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the document the Host Lighting add-on
 adds to GP2040-CE as `docs/host-lighting.md`.
+
+## The library
+
+`gp2040ce_hostlighting.protocol` speaks Host Lighting Protocol 2.0 to a board. It needs only the `hidapi`
+package. It never prints, exits or sets up logging. It logs to its own module logger, and each failure raises a
+subclass of `HostLightingError`.
+
+A host drives the lights in these steps:
+
+1. Open a board with `open_device()`. With several boards connected, pass a hex prefix of the board ID.
+   `find_board()` opens one board by its whole ID and returns `None` when it is not connected.
+2. Read what the board reports with `hello()`, `read_record()` and `read_table()`.
+3. Take the claim with `claim(CLAIM_TAKE, token, name)`. The claim is held when the holder it returns is the
+   token.
+4. Keep the claim in a `LightsClaim` and send the settings with its `configure()`.
+5. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
+6. Renew the claim within each keepalive timeout with `renew()`, or wait and renew with `keep()`.
+7. Hand the lights back with `hand_back()`, then close the device.
+
+The example lights every LED red for 3 s:
+
+```python
+import secrets
+
+from gp2040ce_hostlighting.protocol import ADDRESSING_LED_RUN, CLAIM_TAKE, PAGE_SUMMARY, LightsClaim, open_device
+
+device = open_device()
+try:
+    leds = device.read_record(PAGE_SUMMARY)[0]['led_extent']
+    token = secrets.randbits(32) or 1
+    holder, holder_name = device.claim(CLAIM_TAKE, token, b'my-host')
+    if holder != token:
+        raise SystemExit(f"'{holder_name}' holds the lights")
+    claim = LightsClaim(device, 'my-host', token)
+    claim.configure(keepalive_ms=2000)
+    device.stage_run(ADDRESSING_LED_RUN, 0, [(255, 0, 0)] * leds, commit=True)
+    if claim.keep(3):
+        claim.hand_back()
+finally:
+    device.close()
+```
+
+`LightsClaim` passes a takeover by another application to its `report` callable, or logs it at INFO without
+one. `renew()` and `keep()` then return `False`, and the lights belong to the new holder.
+
+### Testing a host
+
+`gp2040ce_hostlighting.testing` fakes a board, so a host's tests run without one. `fake_device(FakeBoard())`
+returns a `HostLightingDevice` connected to a board that answers as the firmware does. `ModelBoard` also follows
+the protocol's timing, claim and staging rules, on a clock the test controls with `sleep()` and `time()`. The
+record builders set what a fake board reports, for example `board.lights = [light_record(0, pin=2)]`.
+
+### Conformance checks
+
+`gp2040ce_hostlighting.conformance` holds the checks `hlp-conformance` runs. `Checks` counts them, keeps each
+result in `results` and passes each line of the report to its `report` callable.
 
 ## The hlp-* commands
 
@@ -149,7 +205,7 @@ brightness step 6 of 0-10 (maximum 199)
 
 % hlp-settings --brightness 2 --unsaved --exclusive
 brightness step 2 shown, unsaved, for 5.0 s
-released - on-board animations restored
+released, on-board animations restored
 ...
 brightness step 6 of 0-10 (maximum 199)
 
@@ -173,16 +229,16 @@ round trip: median 2.00 ms, p95 2.01 ms (300 of 300 answered)
 60 fps: 300 of 300 frames acknowledged (46 LEDs, 3 reports per frame)
 unthrottled, every report answered: 166 frames/s
 unthrottled, pipelined: 249 frames/s
-released - on-board animations restored
+released, on-board animations restored
 
 % hlp-fill --scope case 0000FF
 filled case with #0000FF for 3.0 s
-released - on-board animations restored
+released, on-board animations restored
 
 % hlp-set-light --by action 1:FFFFFF00 17:00000080 99:FF0000
 2 applied, 1 skipped for 3.0 s
 skipped addresses (no light, or none below the LED limit): [99]
-released - on-board animations restored
+released, on-board animations restored
 ```
 
 The controls page shows that this board wires two buttons to action 1 (Up) and two to action 17 (L3).

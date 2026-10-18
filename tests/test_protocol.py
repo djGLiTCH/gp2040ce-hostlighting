@@ -645,3 +645,15 @@ def test_a_fake_board_refuses_a_report_framed_wrongly(hlp_fake_board, hlp_model_
             board.write(bytes(10))
         with pytest.raises(ValueError, match="not 65 bytes starting 0x01"):
             board.write(b'\x01' + bytes(64))
+
+
+def test_the_readme_example_runs(hlp_run_on_model_board, hlp_model_board, monkeypatch):
+    """Test that the README's library example lights every LED on the model board, then hands the lights back."""
+    import pathlib
+    import re
+    readme = (pathlib.Path(__file__).parent.parent / 'README.md').read_text(encoding='utf-8')
+    example = re.search(r'```python\n(.*?)```', readme, re.S).group(1)
+    monkeypatch.setattr(hl, 'open_device', lambda prefix='': fake_device(hlp_model_board))
+    exec(compile(example, 'README.md', 'exec'), {})     # the repository's own README
+    stages = [request for request in hlp_model_board.requests if request[0] == hl.CMD_STAGE]
+    assert stages and stages[-1][2] & hl.FLAG_COMMIT_AFTER and hlp_model_board.holder == 0
