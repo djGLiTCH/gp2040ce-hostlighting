@@ -14,6 +14,7 @@ import colorsys
 import contextlib
 import functools
 import logging
+import os
 import pathlib
 import re
 import secrets
@@ -130,6 +131,11 @@ def hlp_command(function):
         """Run the command."""
         try:
             function()
+        except BrokenPipeError:
+            # The reader of the output has exited. Python flushes stdout again at exit, so it is pointed at
+            # devnull first: the method of the note on SIGPIPE in Python's signal module documentation.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            raise SystemExit(1) from None
         except (HostLightingError, OSError) as error:
             raise SystemExit(f"error: {error}") from error
     return run
@@ -203,10 +209,10 @@ def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive
     :return: the LightsClaim, which renews the claim
     """
     token = secrets.randbits(32) or 1
-    holder, holder_name = device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, token, name.encode(),
-                                       exclusive=exclusive)
-    if holder != token:
-        raise SystemExit(f"'{holder_name}' holds the lights (claim 0x{holder:08X}). Add --force to take them over")
+    holder = device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, token, name.encode(), exclusive=exclusive)
+    if holder['holder_token'] != token:
+        raise SystemExit(f"'{holder['holder_name']}' holds the lights (claim 0x{holder['holder_token']:08X}). "
+                         "Add --force to take them over")
     claim = LightsClaim(device, name, token, exclusive, report=print)
     try:
         claim.configure(overlay=False, keepalive_ms=2000, brightness=brightness)
@@ -517,7 +523,8 @@ def watch():
         last['token'] = token
         device.events.clear()       # sent before the page 1 reply, so older than it
         start = time.monotonic()
-        print("   0.000 " + ', '.join(f"{key} {_state_text(key, value)}" for key, value in last.items()))
+        shown = [f"{key} {_state_text(key, value)}" for key, value in last.items() if key != 'ordinal']
+        print("   0.000 " + ', '.join(shown))
         while True:
             left = args.seconds - (time.monotonic() - start) if args.seconds else 0.5
             if left <= 0:

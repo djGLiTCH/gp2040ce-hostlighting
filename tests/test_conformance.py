@@ -447,7 +447,9 @@ def test_conformance_counts_a_lost_board_as_a_failure(hlp_run_on_model_board, hl
     with pytest.raises(SystemExit) as exited:
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert exited.value.code == 1 and 'FAIL  the checks ran to the end  (the board is no longer connected)' in out
+    lost = ('FAIL  the checks ran to the end  (the board is no longer connected (sending command 0x21 failed with '
+            'device disconnected))')
+    assert exited.value.code == 1 and lost in out
     assert 'could not hand the lights back' not in caplog.text and hlp_model_board.holder == 0
     assert hlp_model_board.requests[-1][0] == hl.CMD_CLAIM and hlp_model_board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
@@ -685,7 +687,9 @@ def test_round_trips_stop_once_another_application_holds_the_claim():
     """Test that hlp-bench takes a HELLO refused under its generation as the claim lost, not as a lost reply."""
     class Device:
         def request_ok(self, command):
-            raise hl.HostLightingRejected(command, hl.STATUS_CLAIMED, 0, (0xB2, 'MESH', 3))
+            raise hl.HostLightingRejected(command, hl.STATUS_CLAIMED, 0, {'holder_token': 0xB2, 'holder_name': 'MESH',
+                                                                          'claim_exclusive': False,
+                                                                          'claim_generation': 3})
 
     with pytest.raises(hl_conformance._TakenOver):
         hl_conformance._round_trips(Device(), 3)

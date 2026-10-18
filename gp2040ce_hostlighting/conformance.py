@@ -117,12 +117,11 @@ class _Lease:
         """
         device = self.claim.device
         generation = device.generation
-        holder, holder_name = device.claim(CLAIM_TAKE, self.claim.token, self.claim.name.encode(),
-                                           exclusive=self.claim.exclusive)
+        holder = device.claim(CLAIM_TAKE, self.claim.token, self.claim.name.encode(), exclusive=self.claim.exclusive)
         self.renewed = time.monotonic()
-        if holder != self.claim.token:
+        if holder['holder_token'] != self.claim.token:
             self.claim.held = False
-            raise _TakenOver(f"'{holder_name}' took the lights over")
+            raise _TakenOver(f"'{holder['holder_name']}' took the lights over")
         if device.generation != generation:
             self.timeout = 2.0
             if self.settings:
@@ -174,8 +173,7 @@ def _state(device: HostLightingDevice) -> dict:
 
 def _events(device: HostLightingDevice, settle: float) -> list:
     """Collect the STATE_CHANGED records received so far and within settle seconds, oldest first."""
-    reports = device.events + [report for report in device.collect(settle) if is_event(report)]
-    device.events = []
+    reports = device.take_events() + [report for report in device.collect(settle) if is_event(report)]
     return [decode_state_changed(report)[0] for report in reports if report[1] == EVENT_STATE_CHANGED]
 
 
@@ -371,7 +369,7 @@ def _check_tables(device: HostLightingDevice, checks: Checks, token: int) -> dic
     checks.check(state['input_mode'] in names, 'current input mode listed on page 2')
     checks.check(INPUT_MODE_CONFIG not in names, 'config mode not listed')
     summary, _ = device.read_record(PAGE_SUMMARY)
-    checks.note(', '.join(f"{key} {value}" for key, value in summary.items()))
+    checks.note(', '.join(f"{key} {value}" for key, value in summary.items() if key != 'ordinal'))
     tables = {page: device.read_table(page)[0] for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS,
                                                             PAGE_ANIMATIONS)}
     for page, key in ((PAGE_PROFILES, 'profiles'), (PAGE_CONTROLS, 'controls'), (PAGE_LIGHTS, 'lights'),
@@ -1123,8 +1121,8 @@ def _round_trips(device: HostLightingDevice, count: int) -> list:
         try:
             device.request_ok(CMD_HELLO)
         except HostLightingRejected as refused:
-            if refused.status == STATUS_CLAIMED and refused.holder and refused.holder[0]:
-                raise _TakenOver(f"'{refused.holder[1]}' took the lights over") from None
+            if refused.status == STATUS_CLAIMED and refused.holder and refused.holder['holder_token']:
+                raise _TakenOver(f"'{refused.holder['holder_name']}' took the lights over") from None
             continue
         except HostLightingDisconnected:
             raise

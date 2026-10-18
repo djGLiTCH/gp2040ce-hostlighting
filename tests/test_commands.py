@@ -355,6 +355,7 @@ def test_watch_prints_what_each_event_changes(hlp_run_on_fake_board, hlp_fake_bo
                              'saved_brightness_step 5, holder_token 0x00000000, holder_name , '
                              'claim_exclusive False, claim_generation 1, overlay False, '
                              'keepalive_ms 2000, brightness_applied True, token 0x1234ABCD')
+    assert 'ordinal' not in lines[0]
     assert lines[1].endswith(' profile 1 -> 2, token 0x1234ABCD -> 0x00000002')
     assert lines[2].endswith(' no change')
     assert lines[3].endswith(' animation 0 -> off, holder_token 0x00000000 -> 0x00000005, holder_name  -> MESH')
@@ -494,7 +495,7 @@ def test_a_retaken_claim_gets_its_settings_again():
 
         def claim(self, action, token, name, flags, exclusive):
             self.generation = self.retaken or self.generation
-            return token, ''
+            return {'holder_token': token, 'holder_name': ''}
 
         def configure(self, **settings):
             self.configured.append(settings)
@@ -507,3 +508,22 @@ def test_a_retaken_claim_gets_its_settings_again():
     assert claim.renew() and len(device.configured) == 2      # the same generation: nothing sent again
     device.retaken = 4                                        # the claim lapsed: this renewal takes it again
     assert claim.renew() and device.configured[2:] == [overlay]
+
+
+def test_a_closed_output_pipe_ends_quietly(monkeypatch, capsys):
+    """Test that a command with its output reader exited ends with status 1, no message and stdout at devnull."""
+    class Output:
+        def fileno(self):
+            return 1
+
+    redirected: list = []
+    monkeypatch.setattr(tools.os, 'open', lambda path, flags: 7)
+    monkeypatch.setattr(tools.os, 'dup2', lambda source, target: redirected.append((source, target)))
+    monkeypatch.setattr(tools.sys, 'stdout', Output())
+
+    @tools.hlp_command
+    def closed():
+        raise BrokenPipeError(32, 'Broken pipe')
+    with pytest.raises(SystemExit) as stopped:
+        closed()
+    assert stopped.value.code == 1 and redirected == [(7, 1)]

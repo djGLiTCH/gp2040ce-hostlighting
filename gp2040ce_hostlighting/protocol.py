@@ -326,12 +326,23 @@ def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format:
     return payloads
 
 
+def _require_length(data: bytes, length: int, what: str) -> None:
+    """Refuse data too short for the fields about to be read from it.
+
+    :raises HostLightingError: naming what was short, before a decoder reads past its end
+    """
+    if len(data) < length:
+        raise HostLightingError(f"{what} is {len(data)} bytes, shorter than the {length} it needs")
+
+
 def decode_hello(reply: bytes) -> dict:
     """Decode a HELLO reply.
 
     :param reply: the reply report
     :return: magic, version, board ID, reply queue limit and the capability bitmaps as sets
+    :raises HostLightingError: if the reply is too short
     """
+    _require_length(reply, 47, 'the HELLO reply')
     return {
         'magic': bytes(reply[3:7]),
         'major': reply[7],
@@ -354,7 +365,9 @@ def decode_page_header(reply: bytes) -> dict:
     :param reply: the reply report
     :return: the echoed page, start and field groups, the page's total, the records in this reply, their
         stride and the state token
+    :raises HostLightingError: if the reply is too short
     """
+    _require_length(reply, TOKEN_OFFSET + 4, 'the GET_PAGE reply')
     return {
         'status': reply[2],
         'page': reply[3],
@@ -384,7 +397,9 @@ def decode_controller(data: bytes) -> dict:
 
     :param data: the group's 22 bytes
     :return: the holder's token (0 unclaimed) and name, whether its claim is exclusive, and the claim generation
+    :raises HostLightingError: if the group is too short
     """
+    _require_length(data, CONTROLLER_SIZE, 'the Controller group')
     return {'holder_token': _u32(data, 0), 'holder_name': _string(data[4:20]),
             'claim_exclusive': bool(data[20] & CLAIM_EXCLUSIVE), 'claim_generation': data[21]}
 
@@ -480,18 +495,31 @@ GROUP_DECODERS = {
 def decode_records(reply: bytes) -> list:
     """Decode the records of a GET_PAGE reply, field group by field group.
 
-    Only the groups the reply echoes are present. Each record is one dict of their fields.
+    Only the groups the reply echoes are present. Each record is one dict of their fields, with `ordinal`, the
+    record's position in the page (the reply's start plus its index in the reply).
 
     :param reply: the reply report of a table page (1, 2, 8-12)
     :return: the records, one dict each
+    :raises HostLightingError: for a page that is not a table, a stride narrower than the groups it echoes, or
+        more records than the reply holds
     """
     header = decode_page_header(reply)
-    widths = PAGE_GROUPS[header['page']]
-    decode = GROUP_DECODERS[header['page']]
+    page = header['page']
+    if page not in PAGE_GROUPS:
+        raise HostLightingError(f"page {page} is not a table page")
+    widths = PAGE_GROUPS[page]
+    decode = GROUP_DECODERS[page]
+    echoed = sum(width for group, width in enumerate(widths) if header['groups'] & (1 << group))
+    if header['count'] and header['stride'] < echoed:
+        raise HostLightingError(f"page {page} records are {header['stride']} bytes apart, narrower than the "
+                                f"{echoed} bytes of the groups echoed")
+    if header['count'] * header['stride'] > RECORDS_AREA:
+        raise HostLightingError(f"the page {page} reply holds {header['count']} records of {header['stride']} "
+                                f"bytes, more than its {RECORDS_AREA}-byte records area")
     records = []
     for index in range(header['count']):
         offset = RECORDS_OFFSET + index * header['stride']
-        record: dict = {}
+        record: dict = {'ordinal': header['start'] + index}
         for group, width in enumerate(widths):
             if header['groups'] & (1 << group):
                 record.update(decode(group, bytes(reply[offset:offset + width])))
@@ -520,7 +548,9 @@ def decode_identity(reply: bytes) -> dict:
 
     :param reply: the reply report
     :return: {group bit: string} for the groups the reply echoes
+    :raises HostLightingError: if the reply is too short
     """
+    _require_length(reply, RECORDS_OFFSET, 'the page 0 reply')
     groups = _u16(reply, 10)
     area = bytes(reply[RECORDS_OFFSET:RECORDS_OFFSET + RECORDS_AREA])
     strings = {}
@@ -533,6 +563,15 @@ def decode_identity(reply: bytes) -> dict:
     return strings
 
 
+def _check_claim_name(name: bytes) -> None:
+    """Refuse a claim name longer than the 16 bytes the board keeps.
+
+    :raises ValueError: for a longer name
+    """
+    if len(name) > CLAIM_NAME_SIZE:
+        raise ValueError(f"the claim name is {len(name)} bytes, over the {CLAIM_NAME_SIZE} the board keeps")
+
+
 class HostLightingError(RuntimeError):
     """Errors talking to a Host Lighting interface."""
 
@@ -540,10 +579,10 @@ class HostLightingError(RuntimeError):
 class HostLightingRejected(HostLightingError):
     """The board answered a command with a status other than 0."""
 
-    def __init__(self, command: int, status: int, offset: int, holder: Optional[tuple] = None):
+    def __init__(self, command: int, status: int, offset: int, holder: Optional[dict] = None):
         """Record the rejected command, its status, and the byte at fault or the claim's holder.
 
-        :param holder: for CLAIMED, (token, name, generation) as the reply shows them, with token 0 when unclaimed
+        :param holder: for CLAIMED, the holder as decode_controller gives it, with holder_token 0 when unclaimed
         """
         self.command = command
         self.status = status
@@ -551,8 +590,9 @@ class HostLightingRejected(HostLightingError):
         self.holder = holder
         detail = f" at request byte {offset}" if status == STATUS_INVALID else ''
         if status == STATUS_CLAIMED and holder:
-            detail = (f" by '{holder[1]}' (claim 0x{holder[0]:08X}, generation {holder[2]})" if holder[0]
-                      else f": the claim has ended (generation {holder[2]})")
+            detail = (f" by '{holder['holder_name']}' (claim 0x{holder['holder_token']:08X}, generation "
+                      f"{holder['claim_generation']})" if holder['holder_token']
+                      else f": the claim has ended (generation {holder['claim_generation']})")
         super().__init__(f"command 0x{command:02X} rejected: {STATUS_NAMES.get(status, hex(status))}{detail}")
 
 
@@ -604,10 +644,13 @@ class HostLightingDevice:
         # and FLAG_HOLDER while the claim is exclusive, which that claim requires
         self.generation = 0
         self.holding_exclusive = False
+        self.closed = False
 
     def close(self) -> None:
-        """Close the HID device."""
-        self.device.close()
+        """Close the HID device. A second close does nothing."""
+        if not self.closed:
+            self.closed = True
+            self.device.close()
 
     def _write(self, report: bytes) -> None:
         """Write one report.
@@ -616,12 +659,14 @@ class HostLightingDevice:
 
         :raises HostLightingDisconnected: if the device does not take the report
         """
+        sending = f"sending command 0x{report[1]:02X}" if len(report) > 1 else "writing"
         try:
             written = self.device.write(report)
         except OSError as error:
-            raise HostLightingDisconnected("the board is no longer connected") from error
+            raise HostLightingDisconnected(f"the board is no longer connected ({sending} failed with "
+                                           f"{error})") from error
         if isinstance(written, int) and written < 0:
-            raise HostLightingDisconnected("the board is no longer connected")
+            raise HostLightingDisconnected(f"the board is no longer connected ({sending} failed)")
 
     def _read(self, timeout_ms: int) -> bytes:
         """Read one report, or nothing within the timeout.
@@ -632,7 +677,8 @@ class HostLightingDevice:
         try:
             return bytes(self.device.read(REPORT_SIZE, timeout_ms))
         except OSError as error:
-            raise HostLightingDisconnected("the board is no longer connected") from error
+            raise HostLightingDisconnected(f"the board is no longer connected (reading failed with "
+                                           f"{error})") from error
 
     def send(self, command: int, payload: bytes = b'', flags: int = 0, sequence: Optional[int] = None) -> int:
         """Send one request without waiting for its reply.
@@ -727,16 +773,26 @@ class HostLightingDevice:
         elif len(report) >= 3 and (report[0] & ~REPLY_FLAG, report[1]) in self.awaited:
             self.pending.append(report)
 
-    def _drop_earlier_reports(self) -> None:
+    def drain(self) -> None:
         """Read the reports already received, keeping the events and the replies still awaited.
 
-        None of them is the reply to a request not yet sent.
+        None of them is the reply to a request not yet sent. request() drains first. A host that sends with
+        send() and waits with wait_reply() drains before each send.
         """
         while True:
             report = self._read(0)
             if not report:
                 return
             self._keep(report)
+
+    def take_events(self) -> list:
+        """Hand over the events received so far, oldest first, draining first.
+
+        :return: the event reports, which are then forgotten here
+        """
+        self.drain()
+        events, self.events = self.events, []
+        return events
 
     def request(self, command: int, payload: bytes = b'', flags: int = 0, timeout: float = 0.5,
                 accept=None) -> bytes:
@@ -755,7 +811,7 @@ class HostLightingDevice:
         """
         if flags & FLAG_NO_REPLY:
             raise ValueError("a request sent with FLAG_NO_REPLY gets no reply. Use send()")
-        self._drop_earlier_reports()
+        self.drain()
         return self.wait_reply(command, self.send(command, payload, flags), timeout, accept)
 
     def request_ok(self, command: int, payload: bytes = b'', flags: int = 0, timeout: float = 0.5,
@@ -772,17 +828,23 @@ class HostLightingDevice:
         """
         reply = self.request(command, payload, flags, timeout, accept)
         if reply[2] != STATUS_OK:
-            raise self._rejected(command, reply)
+            raise self.rejected(command, reply)
         return reply
 
     @staticmethod
-    def _rejected(command: int, reply: bytes) -> HostLightingRejected:
-        """Build the error for a refused request, naming the claim's holder for CLAIMED."""
+    def rejected(command: int, reply: bytes) -> HostLightingRejected:
+        """Build the error for a refused request.
+
+        A status 2 reply carries the offset of the invalid request byte at [3], and a status 4 reply the claim's
+        holder at [3..24].
+
+        :param command: the command the board refused
+        :param reply: its reply report
+        :return: the error to raise
+        """
         if reply[2] != STATUS_CLAIMED:
             return HostLightingRejected(command, reply[2], reply[3])
-        holder = decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE]))
-        return HostLightingRejected(command, reply[2], 0, (holder['holder_token'], holder['holder_name'],
-                                                           holder['claim_generation']))
+        return HostLightingRejected(command, reply[2], 0, decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])))
 
     def hello(self) -> dict:
         """Send HELLO and decode the reply.
@@ -824,7 +886,7 @@ class HostLightingDevice:
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
         if reply[2] not in (STATUS_OK, STATUS_STALE):
-            raise self._rejected(CMD_GET_PAGE, reply)
+            raise self.rejected(CMD_GET_PAGE, reply)
         return reply
 
     def read_table(self, page: int, mask: int = 0, attempts: int = 5) -> tuple[list, int]:
@@ -896,13 +958,14 @@ class HostLightingDevice:
         reply = self.get_page(page, 0, mask)
         return decode_records(reply)[0], decode_page_header(reply)['token']
 
-    def read_identity(self) -> dict:
-        """Read every page 0 string, asking separately for the groups that did not fit.
+    def read_identity(self, mask: int = 0) -> dict:
+        """Read page 0's strings, asking separately for the groups that did not fit.
 
+        :param mask: the groups wanted, bit n for IDENTITY_FIELDS[n], or 0 for all eight
         :return: {group bit: string}
         """
         strings: dict = {}
-        missing = (1 << len(IDENTITY_FIELDS)) - 1
+        missing = mask or (1 << len(IDENTITY_FIELDS)) - 1
         while missing:
             found = decode_identity(self.get_page(PAGE_IDENTITY, 0, missing))
             if not found:
@@ -913,7 +976,7 @@ class HostLightingDevice:
         return strings
 
     def claim(self, action: int, token: int, name: bytes = b'', flags: int = 0,
-              exclusive: bool = False) -> tuple[int, str]:
+              exclusive: bool = False) -> dict:
         """Claim the board, take it over or give it up.
 
         The reply echoes the action and token, which tells it apart from another application's CLAIM reply.
@@ -925,15 +988,17 @@ class HostLightingDevice:
 
         :param action: CLAIM_TAKE, CLAIM_TAKE_OVER or CLAIM_GIVE_UP
         :param token: this application's non-zero token
-        :param name: this application's name, up to 16 bytes
+        :param name: this application's name, up to 16 bytes, shown in page 1 while it holds the claim
         :param flags: request flags (FLAG_*). FLAG_KEEPALIVE also refreshes a live takeover and an unsaved
             brightness step
         :param exclusive: claim exclusively: until the claim ends, the board refuses other applications'
             requests without FLAG_HOLDER and the generation but CLAIM, and HELLO, GET_PAGE and SUBSCRIBE
             without COMMIT_AFTER or KEEPALIVE
-        :return: the holder now, as (token, name), with token 0 when unclaimed
+        :return: the holder now, as decode_controller gives it, with holder_token 0 when unclaimed
+        :raises ValueError: for a name over 16 bytes
         """
-        payload = bytes([action]) + struct.pack('<I', token) + name[:CLAIM_NAME_SIZE].ljust(CLAIM_NAME_SIZE, b'\x00')
+        _check_claim_name(name)
+        payload = bytes([action]) + struct.pack('<I', token) + name.ljust(CLAIM_NAME_SIZE, b'\x00')
         payload += bytes([CLAIM_EXCLUSIVE if exclusive else 0])
 
         def echoes(reply: bytes) -> bool:
@@ -941,10 +1006,11 @@ class HostLightingDevice:
             return reply[2] != STATUS_OK or reply[3:8] == payload[:5]
 
         reply = self.request_ok(CMD_CLAIM, payload, flags, accept=echoes)
-        holder = _u32(reply, 8)
-        self.generation = reply[29] if holder == token else 0
-        self.holding_exclusive = holder == token and exclusive
-        return holder, _string(reply[12:12 + CLAIM_NAME_SIZE])
+        holder = decode_controller(bytes(reply[8:8 + CONTROLLER_SIZE]))
+        held = holder['holder_token'] == token
+        self.generation = holder['claim_generation'] if held else 0
+        self.holding_exclusive = held and exclusive
+        return holder
 
     def configure(self, overlay: bool = False, keepalive_ms: int = 0, brightness: bool = True) -> dict:
         """Set the takeover mode, keepalive timeout and brightness scaling.
@@ -1046,12 +1112,14 @@ class LightsClaim:
         """Record a claim the application holds.
 
         :param device: an opened HostLightingDevice
-        :param name: the application's name, shown in page 1 while it holds the claim
+        :param name: the application's name, up to 16 bytes, shown in page 1 while it holds the claim
         :param token: the claim token
         :param exclusive: whether the claim is exclusive. Each renewal claims the same way
         :param report: called with one line of text when another application has taken the lights over,
             which is logged at INFO when no callable is given
+        :raises ValueError: for a name over 16 bytes
         """
+        _check_claim_name(name.encode())
         self.device = device
         self.name = name
         self.token = token
@@ -1080,10 +1148,9 @@ class LightsClaim:
         :return: False, having reported it, once another application has taken the lights over
         """
         generation = self.device.generation
-        holder, holder_name = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE,
-                                                self.exclusive)
-        if holder != self.token:
-            self.report(f"'{holder_name}' took the lights over")
+        holder = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE, self.exclusive)
+        if holder['holder_token'] != self.token:
+            self.report(f"'{holder['holder_name']}' took the lights over")
             self.held = False
         elif self.device.generation != generation and self.settings:
             self.device.configure(**self.settings)
@@ -1124,9 +1191,9 @@ class LightsClaim:
         """
         self.held = False
         try:
-            holder, holder_name = self.device.claim(CLAIM_GIVE_UP, self.token)
-            if holder:
-                self.report(f"'{holder_name}' took the lights over")
+            holder = self.device.claim(CLAIM_GIVE_UP, self.token)
+            if holder['holder_token']:
+                self.report(f"'{holder['holder_name']}' took the lights over")
                 return False
             return True
         except (HostLightingError, OSError):

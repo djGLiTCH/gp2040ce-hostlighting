@@ -44,9 +44,10 @@ A host drives the lights in these steps:
 
 1. Open a board with `open_device()`. With several boards connected, pass a hex prefix of the board ID.
    `find_board()` opens one board by its whole ID and returns `None` when it is not connected.
-2. Read what the board reports with `hello()`, `read_record()` and `read_table()`.
-3. Take the claim with `claim(CLAIM_TAKE, token, name)`. The claim is held when the holder it returns is the
-   token.
+2. Read what the board reports with `hello()`, `read_identity()`, `read_record()` and `read_table()`. Each
+   record carries its `ordinal`, its position in the page.
+3. Take the claim with `claim(CLAIM_TAKE, token, name)`, where the name is up to 16 bytes. The claim is held
+   when the `holder_token` of the holder it returns is the token.
 4. Keep the claim in a `LightsClaim` and send the settings with its `configure()`.
 5. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
 6. Renew the claim within each keepalive timeout with `renew()`, or wait and renew with `keep()`.
@@ -63,9 +64,9 @@ device = open_device()
 try:
     leds = device.read_record(PAGE_SUMMARY)[0]['led_extent']
     token = secrets.randbits(32) or 1
-    holder, holder_name = device.claim(CLAIM_TAKE, token, b'my-host')
-    if holder != token:
-        raise SystemExit(f"'{holder_name}' holds the lights")
+    holder = device.claim(CLAIM_TAKE, token, b'my-host')
+    if holder['holder_token'] != token:
+        raise SystemExit(f"'{holder['holder_name']}' holds the lights")
     claim = LightsClaim(device, 'my-host', token)
     claim.configure(keepalive_ms=2000)
     device.stage_run(ADDRESSING_LED_RUN, 0, [(255, 0, 0)] * leds, commit=True)
@@ -77,6 +78,10 @@ finally:
 
 `LightsClaim` passes a takeover by another application to its `report` callable, or logs it at INFO without
 one. `renew()` and `keep()` then return `False`, and the lights belong to the new holder.
+
+A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
+`drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
+reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.
 
 ### Testing a host
 
