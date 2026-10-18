@@ -11,6 +11,13 @@ pip install gp2040ce-hostlighting
 
 From a clone, `pip install -e .[dev]` installs the commands and the development tools.
 
+## Standalone executables
+
+`packaging/hlp-tools.spec` builds the `hlp-*` commands as Windows executables that run without Python. From a
+clone with the development tools installed, run `pip install pyinstaller`, then `pyinstaller
+packaging/hlp-tools.spec` in the repository's root. `dist/hlp-tools` then holds one executable per command and
+the `_internal` folder they share, which also holds the licences of this package, Python and hidapi.
+
 ## Layout
 
 | Path | Holds |
