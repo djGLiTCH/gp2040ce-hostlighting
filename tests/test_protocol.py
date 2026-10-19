@@ -87,10 +87,12 @@ def test_decode_hello():
 
 def test_decode_state_all_groups():
     """Test page 1's three groups."""
-    reply = page_reply(hl.PAGE_STATE, [state_record(live=1, mode=14, profile=2, player=0, animation=0xFFFF, step=7,
-                                                    number=9, token=0xA1, name=b'MESH', overlay=1, keepalive=300,
-                                                    brightness=0, unsaved=1, exclusive=1, saved=5,
-                                                    generation=3)])
+    reply = page_reply(hl.PAGE_STATE, [state_record(takeover_live=1, input_mode=14, profile=2, player=0,
+                                                    animation=0xFFFF, brightness_step_shown=7,
+                                                    takeover_number=9, holder_token=0xA1, application_name=b'MESH',
+                                                    takeover=1, keepalive_ms=300,
+                                                    brightness_applied=0, brightness_unsaved=1, exclusive=1,
+                                                    saved_brightness_step=5, claim_generation=3)])
     header = hl.decode_page_header(reply)
     assert (header.page, header.total, header.count, header.stride, header.groups) == (1, 1, 1, 35, 7)
     (record,) = hl.decode_records(reply)
@@ -101,7 +103,7 @@ def test_decode_state_all_groups():
                             saved_brightness_step=5),
         controller=hl.Controller(holder_token=0xA1, application_name='MESH', exclusive=True, claim_generation=3),
         settings=hl.Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False))
-    idle = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(idle=1)]))[0].state
+    idle = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(animations_idle=1)]))[0].state
     assert idle.animations_idle and not idle.takeover_live and not idle.brightness_unsaved
 
 
@@ -126,7 +128,8 @@ def test_decode_records_honours_the_echoed_groups():
 
 def test_decode_controls_and_lights_none_values():
     """Test the none values: unlit controls, lights without an owner or palette slot."""
-    reply = page_reply(hl.PAGE_CONTROLS, [control_record(12, 13, lit=0), control_record(2, 1, dup=1, instances=2)])
+    reply = page_reply(hl.PAGE_CONTROLS,
+                       [control_record(12, 13, lit=0), control_record(2, 1, duplicated=1, instances=2)])
     unlit, lit = hl.decode_records(reply)
     assert unlit.position == records.Position(first_led=None, grid_rectangle=None)
     assert unlit.lights.first_light is None and not unlit.input.lit and unlit.input.action == 13
@@ -163,8 +166,8 @@ def test_decode_other_pages():
         brightness_steps=10, animation_speed_steps=10, button_layout=0, button_layout_right=0,
         button_layout_orientation=0, grid_width=9, grid_height=6, profiles=3, controls=12, lit_controls=10,
         unlit_controls=2, lights=16, animations=3)
-    record = summary_record(colour=3, white=1, layout=18, layout_right=9, orientation=1,
-                            changes=bytes([1, 0, 2, 3, 255, 0, 0, 0]))
+    record = summary_record(colour_format=3, white_channel=1, button_layout=18, button_layout_right=9,
+                            button_layout_orientation=1, counters=bytes([1, 0, 2, 3, 255, 0, 0, 0]))
     (summary,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [record]))
     assert (summary.summary.colour_format, summary.summary.white_channel) == (3, True)
     assert (summary.summary.button_layout, summary.summary.button_layout_right,
@@ -243,7 +246,7 @@ def test_drain_keeps_events_and_take_events_hands_them_over(hlp_fake_device, hlp
     sequence = hlp_fake_device.send(hl.CMD_HELLO)
     hlp_fake_board.outbox += [state_event(profile=2), hello_reply(200)]       # the second, another application's
     hlp_fake_device.drain()
-    assert not hlp_fake_board.outbox and len(hlp_fake_device.events) == 1 and len(hlp_fake_device.pending) == 1
+    assert not hlp_fake_board.outbox and len(hlp_fake_device.events) == 1 and len(hlp_fake_device._pending) == 1
     hlp_fake_board.outbox.append(state_event(profile=3))                     # received, not yet read
     events = hlp_fake_device.take_events()
     assert [hl.decode_state_changed(event).record.state.profile for event in events] == [2, 3]
@@ -261,7 +264,7 @@ def test_replies_read_early_are_kept_for_their_requests(hlp_fake_device, hlp_fak
     assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a').holder_token == 0xAAAA
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, first)[1] == first
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, third)[1] == third
-    assert not hlp_fake_device.pending and not hlp_fake_device.awaited
+    assert not hlp_fake_device._pending and not hlp_fake_device._awaited
 
 
 def test_claim_takes_an_invalid_argument_reply_without_an_echo(hlp_fake_device):
@@ -295,7 +298,7 @@ def test_exclusive_claim_sends_the_flag_and_holder(hlp_fake_device, hlp_fake_boa
 
 def test_a_refused_exclusive_claim_sends_no_holder_flag(hlp_fake_device, hlp_fake_board):
     """Test that requests under another application's exclusive claim carry no FLAG_HOLDER and no generation."""
-    hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'MESH'.ljust(16, b'\x00')
+    hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xB2, b'MESH'.ljust(16, b'\x00')
     holder = hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True)
     assert (holder.holder_token, holder.application_name) == (0xB2, 'MESH')
     hlp_fake_device.hello()
@@ -356,7 +359,7 @@ def test_opening_reads_without_blocking_from_a_random_sequence(monkeypatch):
     monkeypatch.setattr(hl, '_import_hid', lambda: SimpleNamespace(device=Handle))
     monkeypatch.setattr(hl.secrets, 'randbelow', lambda limit: 41 if limit == 255 else 0)
     device = hl.HostLightingDevice(b'path')
-    assert device.device.path == b'path' and device.device.nonblocking
+    assert device.handle.path == b'path' and device.handle.nonblocking
     assert device.send(hl.CMD_HELLO, flags=hl.FLAG_NO_REPLY) == 42
 
 
@@ -365,7 +368,7 @@ def test_request_times_out(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.answer = lambda *_: None
     with pytest.raises(hl.HostLightingError):
         hlp_fake_device.request(hl.CMD_HELLO, timeout=0.01)
-    assert not hlp_fake_device.awaited              # its late reply would be dropped
+    assert not hlp_fake_device._awaited              # its late reply would be dropped
 
 
 def test_rejection_carries_status_and_offset(hlp_fake_device):
@@ -485,7 +488,7 @@ def test_a_failed_write_is_a_departed_board(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.departed = True
     with pytest.raises(hl.HostLightingDisconnectedError):
         hlp_fake_device.send(hl.CMD_HELLO)
-    assert not hlp_fake_device.awaited and not hlp_fake_board.requests
+    assert not hlp_fake_device._awaited and not hlp_fake_board.requests
     assert issubclass(hl.HostLightingDisconnectedError, hl.HostLightingError)
 
 
@@ -526,13 +529,13 @@ def test_open_device_selects_by_board_id_and_major(monkeypatch):
     boards[b'c'].answer = lambda command, sequence, request: hello_reply(sequence, major=1, board_id=bytes(8))
     monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in boards])
     monkeypatch.setattr(hl, 'HostLightingDevice', lambda path: fake_device(boards[path]))
-    assert hl.open_device('4330').device is boards[b'a']
+    assert hl.open_device('4330').handle is boards[b'a']
     with pytest.raises(hl.HostLightingBoardSelectionError, match='multiple boards') as several:
         hl.open_device('')
     assert [board.board_id for board in several.value.matched] == ['433030343237362E', '0000000000000000']
     with pytest.raises(hl.HostLightingBoardSelectionError, match='no board') as none:
         hl.open_device('FF')
-    assert none.value.prefix == 'FF' and none.value.matched == () and len(none.value.boards) == 2
+    assert none.value.board_id_prefix == 'FF' and none.value.matched == () and len(none.value.boards) == 2
     monkeypatch.setattr(hl, 'find_devices', lambda: [])
     monkeypatch.setattr(hl, 'find_other_majors', lambda: [hl.USAGE_PROTOCOL_1])
     with pytest.raises(hl.HostLightingBoardSelectionError, match='pre-release protocol 1.x') as absent:
@@ -546,7 +549,7 @@ def test_find_board_opens_only_the_whole_id(monkeypatch):
     boards[b'a'].answer = lambda command, sequence, request: hello_reply(sequence, board_id=bytes(8))
     monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in boards])
     monkeypatch.setattr(hl, 'HostLightingDevice', lambda path: fake_device(boards[path]))
-    assert hl.find_board('433030343237362e').device is boards[b'b']
+    assert hl.find_board('433030343237362e').handle is boards[b'b']
     assert not boards[b'a'].opened and boards[b'b'].opened
     assert hl.find_board('FFFFFFFFFFFFFFFF') is None
     with pytest.raises(ValueError):
@@ -579,7 +582,7 @@ def test_open_device_skips_interfaces_that_fail(monkeypatch):
         return fake_device(good if path == b'good' else silent)
     monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in (b'locked', b'silent', b'good')])
     monkeypatch.setattr(hl, 'HostLightingDevice', open_path)
-    assert hl.open_device().device is good
+    assert hl.open_device().handle is good
 
 
 def test_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fake_board):
@@ -593,21 +596,21 @@ def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.profiles = []
     assert hlp_fake_device.read_table(hl.PAGE_PROFILES) == hl.PageRead(records=(), token=hlp_fake_board.token)
     hlp_fake_board.profiles = [[bytes([1, 1]) + bytes(16)]] * 5
-    real_page = hlp_fake_board.page
-    hlp_fake_board.page = lambda sequence, request: (
+    real_page = hlp_fake_board._page
+    hlp_fake_board._page = lambda sequence, request: (
         page_reply(hl.PAGE_PROFILES, [], 0, 0, hlp_fake_board.token, sequence)[:6] + struct.pack('<H', 5) + bytes([0])
         + real_page(sequence, request)[9:])
     with pytest.raises(hl.HostLightingError, match='stalled at 0 of 5'):
         hlp_fake_device.read_table(hl.PAGE_PROFILES)
-    hlp_fake_board.page = real_page
+    hlp_fake_board._page = real_page
 
     def always_stale(sequence, request):
         hlp_fake_board.token += 1
         return page_reply(hl.PAGE_PROFILES, [], struct.unpack_from('<H', request, 4)[0], 0, hlp_fake_board.token,
                           sequence, hl.STATUS_STALE_TOKEN)
-    hlp_fake_board.page = lambda sequence, request: (always_stale(sequence, request)
-                                                     if struct.unpack_from('<I', request, 6)[0]
-                                                     else real_page(sequence, request))
+    hlp_fake_board._page = lambda sequence, request: (always_stale(sequence, request)
+                                                      if struct.unpack_from('<I', request, 6)[0]
+                                                      else real_page(sequence, request))
     hlp_fake_board.profiles = [[bytes([n, 1]) + bytes(16)] for n in range(1, 5)]
     with pytest.raises(hl.HostLightingError, match='kept changing'):
         hlp_fake_device.read_table(hl.PAGE_PROFILES)
@@ -663,7 +666,7 @@ def test_subscribe_and_next_event(hlp_fake_device, hlp_fake_board):
 
 def test_decode_state_changed_matches_page_1():
     """Test that a STATE_CHANGED event decodes as the page 1 record it carries."""
-    changed = hl.decode_state_changed(state_event(0xCAFE, animation=0xFFFF, name=b'MESH', token=7))
+    changed = hl.decode_state_changed(state_event(0xCAFE, animation=0xFFFF, application_name=b'MESH', holder_token=7))
     assert changed.token == 0xCAFE and changed.record.state.animation is None
     assert changed.record.controller.holder_token == 7 and changed.record.controller.application_name == 'MESH'
     with pytest.raises(hl.HostLightingError, match='event 1 is not STATE_CHANGED'):
@@ -743,7 +746,7 @@ def test_the_readme_example_runs(hlp_run_on_model_board, hlp_model_board, monkey
     monkeypatch.setattr(hl, 'open_device', lambda prefix='': fake_device(hlp_model_board))
     exec(compile(example, 'README.md', 'exec'), {})     # the repository's own README
     stages = [request for request in hlp_model_board.requests if request[0] == hl.CMD_STAGE]
-    assert stages and stages[-1][2] & hl.FLAG_COMMIT_AFTER and hlp_model_board.holder == 0
+    assert stages and stages[-1][2] & hl.FLAG_COMMIT_AFTER and hlp_model_board.holder_token == 0
 
 
 def test_a_short_reply_is_an_error_naming_what_was_short():

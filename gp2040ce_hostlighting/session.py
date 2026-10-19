@@ -40,7 +40,7 @@ STATE_POLL_SECONDS = 1.0
 REFRESH_RETRY_SECONDS = 1.0
 # how many of the session's requests unanswered in a row take the board as lost
 UNANSWERED_LIMIT = 3
-STATE_MASK = (1 << len(PAGE_GROUPS[PAGE_STATE])) - 1
+_STATE_MASK = (1 << len(PAGE_GROUPS[PAGE_STATE])) - 1
 _UNCHANGED = ClaimChange(kind=ClaimChangeKind.UNCHANGED)
 
 
@@ -78,7 +78,7 @@ class Session:
 
     def __init__(self, device: HostLightingDevice, name: Optional[str], settings: Settings = Settings(),
                  exclusive: bool = False, force: bool = False, wait: bool = False,
-                 wait_after_takeover: bool = True, require: Optional[Requirements] = None,
+                 wait_when_taken_over: bool = True, require: Optional[Requirements] = None,
                  pages: Optional[Iterable[int]] = None, masks: Optional[dict] = None,
                  state_poll_seconds: Optional[float] = None,
                  reopen: Callable[[str], Optional[HostLightingDevice]] = find_board,
@@ -92,7 +92,7 @@ class Session:
         :param exclusive: claim exclusively
         :param force: take the claim over from an application that holds it
         :param wait: wait for an application that holds the claim at the start to give it up
-        :param wait_after_takeover: wait for an application that takes the claim over later to give it up
+        :param wait_when_taken_over: wait for an application that takes the claim over later to give it up
         :param require: the capabilities the host itself uses, checked with the session's own
         :param pages: the configuration pages the cache keeps, by default every one the board lists
         :param masks: the field groups the cache reads per page, by default every group the library decodes
@@ -105,7 +105,7 @@ class Session:
         self.name = name
         self.settings = settings
         self.exclusive, self.force, self.wait = exclusive, force, wait
-        self.wait_after_takeover = wait_after_takeover
+        self.wait_when_taken_over = wait_when_taken_over
         self.require = require or Requirements()
         self.pages = None if pages is None else frozenset(pages)
         self.masks = masks
@@ -180,7 +180,7 @@ class Session:
         if self.name is not None:
             token = self.claim.token if self.claim else None    # the same token after a reconnect
             self.claim = LightsClaim(self.device, self.name, self.settings, token=token,
-                                     wait_after_takeover=self.wait_after_takeover, clock=self.clock)
+                                     wait_when_taken_over=self.wait_when_taken_over, clock=self.clock)
             self.claim.take(self.exclusive, self.force, self.wait)
         started = False
         try:
@@ -318,7 +318,7 @@ class Session:
                 if self.claim is not None:
                     self.claim.give_up()
             elif self.hello is not None:
-                state = self.device.read_record(PAGE_STATE, STATE_MASK).records[0]
+                state = self.device.read_record(PAGE_STATE, _STATE_MASK).records[0]
                 if not state.controller.holder_token:
                     self.device.release()
                     self.device.set_brightness(BRIGHTNESS_SAVED)
@@ -394,7 +394,7 @@ class Session:
         """Read page 1 and keep it."""
         self._state_due = self.clock() + (STATE_POLL_SECONDS if self.state_poll_seconds is None
                                           else self.state_poll_seconds)
-        read = self.device.read_record(PAGE_STATE, STATE_MASK)
+        read = self.device.read_record(PAGE_STATE, _STATE_MASK)
         self._unanswered = 0
         self._state(read.records[0], read.token)
         return read.records[0]

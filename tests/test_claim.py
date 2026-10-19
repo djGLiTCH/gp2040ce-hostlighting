@@ -82,7 +82,7 @@ def test_take_refuses_another_holder(hlp_fake_device, hlp_fake_board, clock):
                                                           r"generation 2\)") as refused:
         claim.take()
     assert refused.value.holder == holder(0xA1, 2, 'MESH') and claim.state is ClaimState.ENDED
-    assert not hlp_fake_board.sent(hl.CMD_CONFIGURE) and hlp_fake_board.holder == 0xA1
+    assert not hlp_fake_board.sent(hl.CMD_CONFIGURE) and hlp_fake_board.holder_token == 0xA1
 
 
 def test_take_with_force_takes_the_claim_over(hlp_fake_device, hlp_fake_board, clock):
@@ -93,7 +93,7 @@ def test_take_with_force_takes_the_claim_over(hlp_fake_device, hlp_fake_board, c
     claim.maintain()
     assert claims(hlp_fake_board) == [(hl.CLAIM_TAKE_OVER, 0, hl.CLAIM_EXCLUSIVE),
                                       (hl.CLAIM_TAKE, hl.FLAG_KEEPALIVE | hl.FLAG_HOLDER, hl.CLAIM_EXCLUSIVE)]
-    assert hlp_fake_board.holder == TOKEN and hlp_fake_board.holder_flags == hl.CLAIM_EXCLUSIVE
+    assert hlp_fake_board.holder_token == TOKEN and hlp_fake_board.holder_flags == hl.CLAIM_EXCLUSIVE
 
 
 def test_take_waits_for_another_holder(hlp_fake_device, hlp_fake_board, clock, caplog):
@@ -126,7 +126,7 @@ def test_a_failed_set_up_gives_the_claim_up(hlp_fake_device, hlp_fake_board, clo
     claim = lights_claim(hlp_fake_device, clock)
     with pytest.raises(hl.HostLightingRejectedError):
         claim.take()
-    assert claims(hlp_fake_board)[-1][0] == hl.CLAIM_GIVE_UP and hlp_fake_board.holder == 0
+    assert claims(hlp_fake_board)[-1][0] == hl.CLAIM_GIVE_UP and hlp_fake_board.holder_token == 0
     assert claim.state is ClaimState.ENDED
 
 
@@ -157,8 +157,8 @@ def test_a_renewal_that_takes_a_lapsed_claim_again_configures(hlp_fake_device, h
 
 
 def test_a_claim_taken_over_is_lost(hlp_fake_device, hlp_fake_board, clock, caplog):
-    """Test LOST without wait_after_takeover: renewals stop, keep() returns False, and the give up sends nothing."""
-    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
+    """Test LOST without wait_when_taken_over: renewals stop, keep() returns False, and the give up sends nothing."""
+    claim = lights_claim(hlp_fake_device, clock, wait_when_taken_over=False).take()
     hlp_fake_board.take_over(0xB2, b'Other')
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         change = claim.renew()
@@ -179,20 +179,20 @@ def test_a_claim_taken_over_is_waited_for_by_default(hlp_fake_device, hlp_fake_b
         assert claim.renew().kind is ClaimChangeKind.LOST and claim.state is ClaimState.WAITING
     assert "'Other' took the lights over. Waiting for it to give them up" in caplog.text
     hlp_fake_board.let_go()
-    assert claim.renew().kind is ClaimChangeKind.TAKEN and hlp_fake_board.holder == TOKEN
+    assert claim.renew().kind is ClaimChangeKind.TAKEN and hlp_fake_board.holder_token == TOKEN
 
 
 def test_observe_renews_at_once_after_another_holder(hlp_fake_device, hlp_fake_board, clock):
     """Test that an event showing another holder, even one followed by this claim's, sends the settings again."""
-    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
-    ours = state_event(token=TOKEN, name=b'app', generation=2)
+    claim = lights_claim(hlp_fake_device, clock, wait_when_taken_over=False).take()
+    ours = state_event(holder_token=TOKEN, application_name=b'app', claim_generation=2)
     assert claim.observe([ours]).kind is ClaimChangeKind.UNCHANGED and len(claims(hlp_fake_board)) == 1
     # another application held the claim between: the settings and the frame are gone, the generation the same
-    change = claim.observe([state_event(token=0xB2, generation=3), ours, other_event()])
+    change = claim.observe([state_event(holder_token=0xB2, claim_generation=3), ours, other_event()])
     assert change.kind is ClaimChangeKind.RETAKEN and change.restage
     assert len(claims(hlp_fake_board)) == 2 and len(hlp_fake_board.sent(hl.CMD_CONFIGURE)) == 2
     hlp_fake_board.take_over(0xB2, b'Other')
-    record = hl.decode_state_changed(state_event(token=0xB2, generation=3))
+    record = hl.decode_state_changed(state_event(holder_token=0xB2, claim_generation=3))
     assert claim.observe([record]).kind is ClaimChangeKind.LOST and claim.state is ClaimState.LOST
     assert claim.observe([ours]).kind is ClaimChangeKind.UNCHANGED
 
@@ -201,25 +201,25 @@ def test_observe_takes_the_claim_when_the_board_is_unclaimed(hlp_fake_device, hl
     """Test that a waiting claim asks at once for a board an event or a page 1 record shows unclaimed."""
     hlp_fake_board.take_over(0xA1, b'MESH')
     claim = lights_claim(hlp_fake_device, clock).take(wait=True)
-    assert claim.observe([state_event(token=0xA1)]).kind is ClaimChangeKind.UNCHANGED
+    assert claim.observe([state_event(holder_token=0xA1)]).kind is ClaimChangeKind.UNCHANGED
     hlp_fake_board.let_go()
-    page_1 = hl.decode_state_changed(state_event(token=0, generation=3)).record
+    page_1 = hl.decode_state_changed(state_event(holder_token=0, claim_generation=3)).record
     assert claim.observe([page_1]).kind is ClaimChangeKind.TAKEN and claim.state is ClaimState.HELD
 
 
 def test_observe_passes_over_what_shows_no_holder(hlp_fake_device, hlp_fake_board, clock):
     """Test that a cut-short event, a page 1 record without the Controller group and other events change nothing."""
     claim = lights_claim(hlp_fake_device, clock).take()
-    cut_short = bytearray(state_event(token=0xB2))
+    cut_short = bytearray(state_event(holder_token=0xB2))
     cut_short[9] = 1                                        # a stride narrower than the groups
-    state_alone = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(token=0xB2)], mask=0b001))[0]
+    state_alone = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(holder_token=0xB2)], mask=0b001))[0]
     assert claim.observe([bytes(cut_short), state_alone, other_event()]).kind is ClaimChangeKind.UNCHANGED
     assert len(claims(hlp_fake_board)) == 1
 
 
 def test_refused_applies_the_status_4_table(hlp_fake_device, hlp_fake_board, clock):
     """Test each row: this claim's token under a new generation, token 0, another holder, and the rest."""
-    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
+    claim = lights_claim(hlp_fake_device, clock, wait_when_taken_over=False).take()
 
     def refusal(shown, status=hl.STATUS_CLAIMED):
         return hl.HostLightingRejectedError(hl.CMD_STAGE, status, 0, shown)
@@ -232,14 +232,14 @@ def test_refused_applies_the_status_4_table(hlp_fake_device, hlp_fake_board, clo
     assert hlp_fake_board.requests[-1][0] == hl.CMD_CONFIGURE and len(claims(hlp_fake_board)) == 1
     hlp_fake_board.let_go()
     change = claim.refused(refusal(holder(0, 5)))
-    assert change.kind is ClaimChangeKind.RETAKEN and hlp_fake_board.holder == TOKEN
+    assert change.kind is ClaimChangeKind.RETAKEN and hlp_fake_board.holder_token == TOKEN
     assert claim.refused(refusal(holder(0xB2, 7, 'Other'))).kind is ClaimChangeKind.LOST
     assert claim.state is ClaimState.LOST
 
 
 def test_configure_renews_first_and_paces_the_renewals(hlp_fake_device, hlp_fake_board, clock):
     """Test configure() while held, while not held, and a change its renewal finds returned by the next call."""
-    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False)
+    claim = lights_claim(hlp_fake_device, clock, wait_when_taken_over=False)
     assert claim.configure(Settings(keepalive_ms=600)) is None and not hlp_fake_board.requests
     claim.take()
     assert claim.seconds_to_renewal == pytest.approx(0.2)
@@ -259,14 +259,14 @@ def test_give_up(hlp_fake_device, hlp_fake_board, clock, caplog):
     """Test the give up, the with block's, and one that finds another holder or a board that has gone."""
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         with lights_claim(hlp_fake_device, clock).take() as claim:
-            assert hlp_fake_board.holder == TOKEN
-    assert claim.state is ClaimState.ENDED and hlp_fake_board.holder == 0
+            assert hlp_fake_board.holder_token == TOKEN
+    assert claim.state is ClaimState.ENDED and hlp_fake_board.holder_token == 0
     assert 'claim given up, on-board animations restored' in caplog.text
     claim.take()
     hlp_fake_board.take_over(0xC3, b'MESH')
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         assert not claim.give_up()
-    assert "'MESH' took the lights over" in caplog.text and hlp_fake_board.holder == 0xC3
+    assert "'MESH' took the lights over" in caplog.text and hlp_fake_board.holder_token == 0xC3
     hlp_fake_board.let_go()
     claim.take()
     hlp_fake_board.disconnect_on = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)}
@@ -282,7 +282,7 @@ def test_let_lapse_stops_holding_without_giving_up(hlp_fake_device, hlp_fake_boa
     claim.let_lapse()
     assert claim.state is ClaimState.ENDED and len(hlp_fake_board.requests) == sent
     assert (hlp_fake_device.generation, hlp_fake_device.holding_exclusive) == (0, False)
-    assert hlp_fake_board.holder == TOKEN
+    assert hlp_fake_board.holder_token == TOKEN
     hlp_fake_device.generation = 5                          # another claim's, which a claim not held leaves alone
     claim.let_lapse()
     assert hlp_fake_device.generation == 5
@@ -296,7 +296,7 @@ def test_keep_sleeps_between_renewals(hlp_fake_device, hlp_fake_board, clock, mo
         slept.append(round(seconds, 3))
         clock.now += seconds
     monkeypatch.setattr(claim_module, 'time', SimpleNamespace(sleep=sleep, monotonic=clock))
-    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=900), wait_after_takeover=False).take()
+    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=900), wait_when_taken_over=False).take()
     assert claim.keep(1.0) and slept == [0.3, 0.3, 0.3, 0.1]
     assert len(claims(hlp_fake_board)) == 4
     hlp_fake_board.take_over(0xB2, b'Other')

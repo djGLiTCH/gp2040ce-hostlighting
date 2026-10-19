@@ -49,7 +49,7 @@ def conformance():
     checks = Checks()
     start, section = time.monotonic(), ''
     try:
-        claim = LightsClaim(device, 'hlp-conformance', wait_after_takeover=False)
+        claim = LightsClaim(device, 'hlp-conformance', wait_when_taken_over=False)
         with claim.take(args.exclusive, args.force):
             for result in run_checks(device, claim, args.settings, args.quick, lambda: open_device(args.board_id)):
                 if result.section != section:
@@ -94,7 +94,7 @@ def bench():
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        claim = LightsClaim(device, 'hlp-bench', Settings(brightness_applied=False), wait_after_takeover=False)
+        claim = LightsClaim(device, 'hlp-bench', Settings(brightness_applied=False), wait_when_taken_over=False)
         with claim.take(args.exclusive, args.force):
             try:
                 _bench(device, claim, leds, args.quick)

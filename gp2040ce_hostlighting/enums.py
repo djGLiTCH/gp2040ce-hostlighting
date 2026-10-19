@@ -12,25 +12,25 @@ import pathlib
 import re
 from typing import Iterable, Union
 
-__all__ = ['proto_enums', 'read_enum_names']
+__all__ = ['parse_enum_names', 'read_enum_names']
 
 logger = logging.getLogger(__name__)
 
-PROTO_COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
-PROTO_ENUM = re.compile(r'\benum\s+(\w+)\s*\{(.*?)\}', re.S)
-PROTO_VALUE = re.compile(r'^\s*(\w+)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*(?:\[[^\]]*\])?\s*;', re.M)
+_PROTO_COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
+_PROTO_ENUM = re.compile(r'\benum\s+(\w+)\s*\{(.*?)\}', re.S)
+_PROTO_VALUE = re.compile(r'^\s*(\w+)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*(?:\[[^\]]*\])?\s*;', re.M)
 
 
-def proto_enums(text: str) -> dict:
+def parse_enum_names(text: str) -> dict:
     """Read the enum blocks of a .proto file.
 
     :param text: the file's contents
     :return: {enum name: {value: value name}}, with the first name where values share a number
     """
     names: dict = {}
-    for enum in PROTO_ENUM.finditer(PROTO_COMMENT.sub('', text)):
+    for enum in _PROTO_ENUM.finditer(_PROTO_COMMENT.sub('', text)):
         values = names.setdefault(enum.group(1), {})
-        for value in PROTO_VALUE.finditer(enum.group(2)):
+        for value in _PROTO_VALUE.finditer(enum.group(2)):
             values.setdefault(int(value.group(2), 0), value.group(1))
     return names
 
@@ -53,7 +53,7 @@ def read_enum_names(paths: Iterable[Union[str, pathlib.Path]]) -> dict:
                 logger.debug("no enums.proto in %s", path)
                 continue
         try:
-            names.update(proto_enums(file.read_text(encoding='utf-8')))
+            names.update(parse_enum_names(file.read_text(encoding='utf-8')))
         except (OSError, UnicodeDecodeError):
             logger.warning("could not read %s for enum names", file)
             logger.debug("reading the .proto file failed", exc_info=True)

@@ -85,7 +85,7 @@ with open_device() as device:
 
 `LightsClaim` logs each change at INFO. Once another application takes the lights over, `maintain()` returns
 a change of kind `LOST` and `keep()` returns `False`. The claim then waits, and each renewal asks for it until
-the board is unclaimed. With `wait_after_takeover=False` the claim ends there, and the lights belong to the new
+the board is unclaimed. With `wait_when_taken_over=False` the claim ends there, and the lights belong to the new
 holder. `observe()` applies the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4
 refusal to the claim.
 
@@ -183,7 +183,7 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   holding the claim and the claim generation. The summary includes the display's button layouts and each
   configuration page's change counter. Controls are listed lit or not. Each light is listed with its LEDs,
   kind, owner and grid cell, and each animation with its speeds.
-* `hlp-fill` fills the LEDs with a colour (`--scope all|buttons|case|pleds`) as a quick visual test, then
+* `hlp-fill` fills the LEDs with a colour (`--scope all|buttons|turbo|case|players`) as a quick visual test, then
   restores the board's own animations.
 * `hlp-set-light` colours lights by their light ordinal, or with `--by pin|action|kind` by what they belong
   to, then restores the board's own animations. It names the addresses skipped, which have no light or none

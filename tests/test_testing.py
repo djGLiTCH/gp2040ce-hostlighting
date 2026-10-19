@@ -98,7 +98,7 @@ def test_unplug_and_replug(board_type):
         device.hello()
     board.replug()
     again = fake_device(board)
-    assert again.device is board and not again.hello().events_enabled
+    assert again.handle is board and not again.hello().events_enabled
     read = again.read_record(hl.PAGE_STATE)
     assert read.records[0].controller.holder_token == 0 and read.token == token
     assert again.read_record(hl.PAGE_SUMMARY).records[0].changes.counters == (0,) * 8
@@ -110,8 +110,8 @@ def test_attach_puts_boards_on_a_fake_bus(monkeypatch):
     second.board_id = bytes.fromhex('4330313435393032')
     attach(monkeypatch, first, second, other_majors=(0x4C,))
     assert len(hl.find_devices()) == 2
-    assert hl.open_device('43303134').device.handle is second
-    assert hl.find_board('433030343237362E').device.handle is first
+    assert hl.open_device('43303134').handle.handle is second
+    assert hl.find_board('433030343237362E').handle.handle is first
     second.unplug()
     assert hl.find_board('4330313435393032') is None and len(hl.find_devices()) == 1
     with pytest.raises(hl.HostLightingError, match='multiple boards'):

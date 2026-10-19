@@ -49,18 +49,18 @@ __all__ = ['CheckResult', 'Checks', 'run_checks', 'measure_round_trips', 'measur
            'measure_unthrottled_frames']
 
 # what a protocol 2.0 board implements, from the protocol reference. A later 2.x board lists more
-REQUEST_FLAGS = {FLAG_COMMIT_AFTER.bit_length() - 1, FLAG_NO_REPLY.bit_length() - 1, FLAG_KEEPALIVE.bit_length() - 1,
-                 FLAG_HOLDER.bit_length() - 1} | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1}
-COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
-            CMD_CLEAR, CMD_COMMIT, CMD_RELEASE, CMD_SET_PROFILE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
-            CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_REBOOT}
-PAGES = {PAGE_IDENTITY} | set(PAGE_GROUPS)
-ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION,
-              ADDRESSING_KIND}
-PIXEL_FORMATS = set(PIXEL_SIZES)
-EVENTS = {EVENT_STATE_CHANGED}
-INPUT_MODE_CONFIG = 255
-KEEPALIVE_MS = 300              # the timeout the timing checks run with
+_REQUEST_FLAGS = ({flag.bit_length() - 1 for flag in (FLAG_COMMIT_AFTER, FLAG_NO_REPLY, FLAG_KEEPALIVE, FLAG_HOLDER)}
+                  | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1})
+_COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
+             CMD_CLEAR, CMD_COMMIT, CMD_RELEASE, CMD_SET_PROFILE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
+             CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_REBOOT}
+_PAGES = {PAGE_IDENTITY} | set(PAGE_GROUPS)
+_ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION,
+               ADDRESSING_KIND}
+_PIXEL_FORMATS = set(PIXEL_SIZES)
+_EVENTS = {EVENT_STATE_CHANGED}
+_INPUT_MODE_CONFIG = 255
+_KEEPALIVE_MS = 300              # the timeout the timing checks run with
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -269,9 +269,9 @@ def _check_hello(device: HostLightingDevice, checks: _Checker) -> Generator[Chec
     yield checks.check(hello.major == PROTOCOL_MAJOR, f"protocol major {hello.major}")
     yield checks.note(f"protocol {hello.major}.{hello.minor}, board ID {hello.board_id}, "
                       f"reply queue limit {hello.reply_queue_limit}")
-    for key, name, wanted in (('request_flags', 'request flags', REQUEST_FLAGS), ('commands', 'commands', COMMANDS),
-                              ('pages', 'pages', PAGES), ('addressing_modes', 'addressing modes', ADDRESSING),
-                              ('pixel_formats', 'pixel formats', PIXEL_FORMATS), ('events', 'events', EVENTS)):
+    for key, name, wanted in (('request_flags', 'request flags', _REQUEST_FLAGS), ('commands', 'commands', _COMMANDS),
+                              ('pages', 'pages', _PAGES), ('addressing_modes', 'addressing modes', _ADDRESSING),
+                              ('pixel_formats', 'pixel formats', _PIXEL_FORMATS), ('events', 'events', _EVENTS)):
         listed = getattr(hello, key)
         yield checks.check(listed >= wanted, f"{name} bitmap lists all of 2.0's", f"missing {sorted(wanted - listed)}")
         if listed - wanted:
@@ -383,7 +383,7 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
                       f"{shown.brightness_step_shown}, takeover number {shown.takeover_number}")
     yield checks.note(f"input modes: {_listed_modes(modes)}")
     yield checks.check(state.state.input_mode in names, 'current input mode listed on page 2')
-    yield checks.check(INPUT_MODE_CONFIG not in names, 'config mode not listed')
+    yield checks.check(_INPUT_MODE_CONFIG not in names, 'config mode not listed')
     summary = device.read_record(PAGE_SUMMARY).records[0].summary
     yield checks.note(', '.join(f"{item.name} {getattr(summary, item.name)}" for item in fields(summary)))
     tables = {page: device.read_table(page).records for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS,
@@ -534,7 +534,7 @@ def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: dict,
     checks.section('Takeover and keepalive')
     device.request_ok(CMD_RELEASE)
     yield from _check_configure(device, checks, claim)
-    _configured(claim, Settings(keepalive_ms=KEEPALIVE_MS))
+    _configured(claim, Settings(keepalive_ms=_KEEPALIVE_MS))
     yield from _check_subscribe(device, checks, tables['hello'].events)
     _events(device, 0.05)
     _renew(claim)
@@ -546,23 +546,23 @@ def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: dict,
     device.request_ok(CMD_HELLO, flags=FLAG_COMMIT_AFTER)
     yield checks.check(_state(device).state.takeover_number == after, 'a publish into a live takeover keeps the number')
     for _ in range(6):
-        time.sleep(KEEPALIVE_MS / 2000)
+        time.sleep(_KEEPALIVE_MS / 2000)
         _renew(claim)
         device.send(CMD_HELLO, flags=FLAG_KEEPALIVE | FLAG_NO_REPLY)
     yield checks.check(_state(device).state.takeover_live, 'HELLO with KEEPALIVE keeps it live past the timeout')
     for _ in range(3):
-        time.sleep(KEEPALIVE_MS / 2000)
+        time.sleep(_KEEPALIVE_MS / 2000)
         _renew(claim)
         device.request_ok(CMD_HELLO)
-    time.sleep(KEEPALIVE_MS / 3000)
+    time.sleep(_KEEPALIVE_MS / 3000)
     yield checks.check(not _state(device).state.takeover_live, 'HELLO alone does not: it expires')
     yield checks.check(any(not event.state.takeover_live for event in _events(device, 0.05)), 'STATE_CHANGED on expiry')
     _renew(claim)
     device.request_ok(CMD_COMMIT)
     for _ in range(3):
-        time.sleep(KEEPALIVE_MS / 2000)
+        time.sleep(_KEEPALIVE_MS / 2000)
         _renew(claim)
-    time.sleep(KEEPALIVE_MS / 3000)
+    time.sleep(_KEEPALIVE_MS / 3000)
     state = _state(device)
     yield checks.check(not state.state.takeover_live and state.controller.holder_token == claim.token,
                        "the holder's CLAIM alone does not keep it: it expires, the claim stays")
@@ -589,9 +589,9 @@ def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: dict,
         _keep(claim)
     took = (time.perf_counter() - start) * 1000
     _renew(claim)               # a take over, not the timeout, may have ended it
-    yield checks.check(KEEPALIVE_MS <= took + 20 and took < KEEPALIVE_MS + 200, 'the takeover ends at the timeout',
+    yield checks.check(_KEEPALIVE_MS <= took + 20 and took < _KEEPALIVE_MS + 200, 'the takeover ends at the timeout',
                        f"{took:.0f} ms")
-    yield checks.note(f"expiry seen after {took:.0f} ms (timeout {KEEPALIVE_MS})")
+    yield checks.note(f"expiry seen after {took:.0f} ms (timeout {_KEEPALIVE_MS})")
 
 
 def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClaim) -> Iterator[CheckResult]:
@@ -646,9 +646,9 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
                        'and changes nothing, answered or not')
     yield checks.check(device.request(CMD_CLEAR)[2] == STATUS_OK and _as_other(device, CMD_CLEAR)[2] == STATUS_OK,
                        'the current generation acts, and so does a request that carries none')
-    _configure(device, 0, KEEPALIVE_MS, 1)    # as the holder now, with a lease nothing renews
+    _configure(device, 0, _KEEPALIVE_MS, 1)    # as the holder now, with a lease nothing renews
     _events(device, 0.05)
-    time.sleep(KEEPALIVE_MS * 1.5 / 1000)
+    time.sleep(_KEEPALIVE_MS * 1.5 / 1000)
     state = _state(device)
     yield checks.check(state.controller.holder_token == 0, 'the lease lapses after the timeout')
     yield checks.check(state.controller.claim_generation == _next(took[29]) and state.settings.keepalive_ms == 2000,
@@ -723,7 +723,7 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: dict,
     number = _state(device).state.takeover_number
     # harmless were they executed: the current settings, an empty run, the saved step, a profile and a REBOOT target
     # that do not exist
-    changes = [(CMD_CONFIGURE, struct.pack('<BHB', 0, KEEPALIVE_MS, 1)),
+    changes = [(CMD_CONFIGURE, struct.pack('<BHB', 0, _KEEPALIVE_MS, 1)),
                (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes(3)), (CMD_CLEAR, b''),
                (CMD_COMMIT, b''), (CMD_RELEASE, b''), (CMD_SET_BRIGHTNESS, bytes([BRIGHTNESS_SAVED])),
                (CMD_SET_PROFILE, bytes([tables['summary'].profiles + 1])),
@@ -759,10 +759,10 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: dict,
     other_claim = bytes([CLAIM_TAKE]) + struct.pack('<I', other) + b'other'.ljust(16, b'\x00')
     replies = []
     for _ in range(4):          # the holder renews its lease only
-        time.sleep(KEEPALIVE_MS / 2000)
+        time.sleep(_KEEPALIVE_MS / 2000)
         _renew(claim)
         replies.append(_as_other(device, CMD_CLAIM, other_claim, FLAG_KEEPALIVE))
-    time.sleep(KEEPALIVE_MS / 3000)
+    time.sleep(_KEEPALIVE_MS / 3000)
     yield checks.check(all(reply[2] == STATUS_OK and _holder(reply)[0] == claim.token for reply in replies),
                        "another application's CLAIM is never refused")
     yield checks.check(not _state(device).state.takeover_live,
@@ -819,13 +819,13 @@ def _check_unsaved(device: HostLightingDevice, checks: _Checker, tables: dict,
     yield checks.check(longest < 0.15, 'it writes nothing to flash: no reply pause', f"longest {longest * 1000:.0f} ms")
     yield checks.check(_state(device).state.brightness_unsaved, 'KEEPALIVE keeps it past the keepalive timeout')
     for _ in range(4):          # 400 ms past the 300 ms timeout, refreshed only by CLEAR, a staging command
-        time.sleep(KEEPALIVE_MS / 3000)
+        time.sleep(_KEEPALIVE_MS / 3000)
         _keep(claim)
         device.request_ok(CMD_CLEAR)
     yield checks.check(_state(device).state.brightness_unsaved, 'a staging command (CLEAR) keeps it too')
     device.request_ok(CMD_RELEASE)
     yield checks.check(_state(device).state.brightness_unsaved, 'RELEASE does not end it')
-    _wait(claim, KEEPALIVE_MS * 1.5 / 1000)       # the plain CLAIM renewals refresh nothing
+    _wait(claim, _KEEPALIVE_MS * 1.5 / 1000)       # the plain CLAIM renewals refresh nothing
     state = _state(device)
     yield checks.check(state.state.brightness_step_shown == saved and not state.state.brightness_unsaved,
                        'it ends a keepalive timeout after the last refresh: the saved step again')
@@ -985,7 +985,7 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: dict) 
         # with no animations the index is refused first
         yield checks.check(_status(reply) == ((STATUS_INVALID, 5) if summary.animations else rejected),
                            'SET_ANIMATION_SPEED out of range: status 2')
-    reply = device.request(CMD_SET_INPUT_MODE, bytes([INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
+    reply = device.request(CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
     yield checks.check(_status(reply) == rejected, 'SET_INPUT_MODE config mode: status 2 at [3]')
     # the current mode: were the guard broken, the board would save and reboot into the mode it is in
     reply = device.request(CMD_SET_INPUT_MODE, bytes([state.state.input_mode]) + MAGIC_INPUT_MODE[:2] + b'X' +
@@ -1005,7 +1005,7 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: d
               # addressing and n
               (CMD_STAGE, bytes([_unlisted(tables['hello'].addressing_modes, ((0, 15),))[0], 0]), 3),
               (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', summary.led_limit, 0), 4),
-              (CMD_SET_INPUT_MODE, bytes([INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
+              (CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
               # the current mode: were the guard broken, the board would reboot into the mode it is in
               (CMD_SET_INPUT_MODE, bytes([mode]) + MAGIC_INPUT_MODE[:1] + b'XX' + MAGIC_INPUT_MODE[3:], 5),
               (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3)]                           # target and magic
@@ -1135,8 +1135,8 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
     :param quick: shorter timing runs
     :param open_second: opens a second handle on the board, for the delivery checks
     """
-    checks, keepalive, waits = _Checker(), claim.keepalive, claim.wait_after_takeover
-    claim.keepalive, claim.wait_after_takeover = False, False
+    checks, keepalive, waits = _Checker(), claim.keepalive, claim.wait_when_taken_over
+    claim.keepalive, claim.wait_when_taken_over = False, False
     try:
         yield from _run_checks(device, checks, claim, settings, quick, open_second)
     except HostLightingClaimedError as error:
@@ -1145,7 +1145,7 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
     except HostLightingError as error:
         yield checks.check(False, 'the checks ran to the end', str(error))
     finally:
-        claim.keepalive, claim.wait_after_takeover = keepalive, waits
+        claim.keepalive, claim.wait_when_taken_over = keepalive, waits
 
 
 def _run_checks(device: HostLightingDevice, checks: _Checker, claim: LightsClaim, settings: bool, quick: bool,
@@ -1229,31 +1229,31 @@ def _frame(device: HostLightingDevice, claim: LightsClaim, leds: int, index: int
         return False
 
 
-def measure_paced_frames(device: HostLightingDevice, claim: LightsClaim, leds: int, frames: int,
+def measure_paced_frames(device: HostLightingDevice, claim: LightsClaim, led_count: int, frame_count: int,
                          rate: float = 60) -> int:
     """Send whole frames at a rate, maintaining the claim between them, and count those acknowledged.
 
     :param claim: the LightsClaim that holds the claim
-    :param leds: LEDs per frame, from LED 0
-    :param frames: how many to send
+    :param led_count: LEDs per frame, from LED 0
+    :param frame_count: how many to send
     :param rate: frames per second
     :raises HostLightingClaimedError: once the claim is lost
     """
     acknowledged, start = 0, time.perf_counter()
-    for index in range(frames):
+    for index in range(frame_count):
         while time.perf_counter() < start + index / rate:
             time.sleep(0.0005)
-        acknowledged += _frame(device, claim, leds, index, True)
+        acknowledged += _frame(device, claim, led_count, index, True)
         _keep(claim)
     return acknowledged
 
 
-def measure_unthrottled_frames(device: HostLightingDevice, claim: LightsClaim, leds: int, seconds: float,
+def measure_unthrottled_frames(device: HostLightingDevice, claim: LightsClaim, led_count: int, seconds: float,
                                pipelined: bool) -> float:
     """Send whole frames back to back for a while, maintaining the claim between them.
 
     :param claim: the LightsClaim that holds the claim
-    :param leds: LEDs per frame, from LED 0
+    :param led_count: LEDs per frame, from LED 0
     :param seconds: how long to send
     :param pipelined: answer only each frame's last report
     :return: the acknowledged frames per second
@@ -1261,6 +1261,6 @@ def measure_unthrottled_frames(device: HostLightingDevice, claim: LightsClaim, l
     """
     acknowledged, start = 0, time.perf_counter()
     while time.perf_counter() - start < seconds:
-        acknowledged += _frame(device, claim, leds, acknowledged, pipelined)
+        acknowledged += _frame(device, claim, led_count, acknowledged, pipelined)
         _keep(claim)
     return acknowledged / (time.perf_counter() - start)

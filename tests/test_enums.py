@@ -3,7 +3,7 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
-from gp2040ce_hostlighting.enums import proto_enums, read_enum_names
+from gp2040ce_hostlighting.enums import parse_enum_names, read_enum_names
 
 
 def test_read_enum_names_takes_files_and_directories(tmp_path):
@@ -16,4 +16,4 @@ def test_read_enum_names_takes_files_and_directories(tmp_path):
     (later / 'enums.proto').write_text('enum LightType { LIGHT_TYPE_ACTION = 0; }\n', encoding='utf-8')
     names = read_enum_names([str(first), later, tmp_path / 'absent'])
     assert names == {'LightType': {0: 'LIGHT_TYPE_ACTION'}, 'InputMode': {0: 'INPUT_MODE_XINPUT'}}
-    assert read_enum_names([]) == {} and proto_enums('message Gamepad { int32 a = 1; }') == {}
+    assert read_enum_names([]) == {} and parse_enum_names('message Gamepad { int32 a = 1; }') == {}

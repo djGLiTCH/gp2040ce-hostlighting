@@ -27,8 +27,8 @@ from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
-                                            KIND_PLAYERS, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
-                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
+                                            KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES,
+                                            PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
                                             REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
                                             TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingClaimedError,
                                             HostLightingDevice, HostLightingError, HostLightingRejectedError,
@@ -374,7 +374,7 @@ def settings():
                            "or change them. The board applies a change live and saves it to its settings flash "
                            "shortly after. A value equal to the current one writes nothing. Use it for a user's "
                            "choice, not as an effect. A profile change switches the live button mapping. "
-                           "--brightness with --unsaved writes nothing: the board shows the step while this "
+                           "--brightness with --unsaved writes nothing. The board shows the step while this "
                            "command holds the claim, and the saved step again when it ends.")
     parser.add_argument('--profile', type=ranged(0, 0xFF), help="select this input profile (a page 9 number)")
     parser.add_argument('--animation', type=_animation, help="select this animation (a page 12 ordinal) or 'off'")
@@ -429,7 +429,7 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without giving up,
     the step would end at the keepalive timeout.
     """
-    with LightsClaim(device, 'hlp-settings', wait_after_takeover=False).take(exclusive, force) as claim:
+    with LightsClaim(device, 'hlp-settings', wait_when_taken_over=False).take(exclusive, force) as claim:
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds)
@@ -525,7 +525,7 @@ def watch():
 def fill():
     """Fill a board's LEDs with one colour as a quick visual test."""
     parser = device_parser("Fill a GP2040-CE board's LEDs with a colour, hold, then restore animations.")
-    parser.add_argument('--scope', choices=['all', 'buttons', 'case', 'pleds'], default='all',
+    parser.add_argument('--scope', choices=['all', 'buttons', 'turbo', 'case', 'players'], default='all',
                         help="which lights to fill (default: all)")
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the fill (default: 3)")
     add_claim_arguments(parser)
@@ -533,10 +533,10 @@ def fill():
     args, _ = parser.parse_known_args()
     colour = _parse_colour(args.colour)
     pixel_format = PIXEL_RGBW if len(colour) == 4 else PIXEL_RGB
-    kinds = {'buttons': (KIND_BUTTON,), 'case': (KIND_CASE,), 'pleds': KIND_PLAYERS}
+    kinds = {'buttons': (KIND_BUTTON,), 'turbo': (KIND_TURBO,), 'case': (KIND_CASE,), 'players': KIND_PLAYERS}
     device = open_device(args.board_id)
     try:
-        with LightsClaim(device, 'hlp-fill', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-fill', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             if args.scope == 'all':
                 device.fill(colour, pixel_format, commit=True)
             else:
@@ -579,7 +579,7 @@ def set_light():
     pixel_format = PIXEL_RGBW if any(len(colour) == 4 for _, colour in entries) else PIXEL_RGB
     device = open_device(args.board_id)
     try:
-        with LightsClaim(device, 'hlp-set-light', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-set-light', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome.applied for outcome in outcomes)
             skipped = sum(outcome.skipped for outcome in outcomes)
@@ -612,7 +612,7 @@ def stream():
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        with LightsClaim(device, 'hlp-stream', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-stream', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:
         device.close()
@@ -720,7 +720,7 @@ def buttons():
     try:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
-        with LightsClaim(device, 'hlp-buttons', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-buttons', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names()))
     finally:
         device.close()

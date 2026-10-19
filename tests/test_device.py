@@ -229,9 +229,10 @@ def test_a_board_with_a_failing_page_0_is_listed_by_its_id(monkeypatch):
     """Test that list_boards() lists a board without page 0, or with a page 0 read that fails, by its ID alone."""
     board, broken = FakeBoard(), FakeBoard()
     broken.board_id = bytes.fromhex('4330313435393032')
-    real = broken.page
-    broken.page = lambda sequence, request: (bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3])
-                                             + bytes(60) if request[3] == hl.PAGE_IDENTITY else real(sequence, request))
+    real = broken._page
+    broken._page = lambda sequence, request: (
+        bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3]) + bytes(60)
+        if request[3] == hl.PAGE_IDENTITY else real(sequence, request))
 
     def without_page_0(command, sequence, request):
         if command != hl.CMD_HELLO:

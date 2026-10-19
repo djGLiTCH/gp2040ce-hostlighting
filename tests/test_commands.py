@@ -42,14 +42,17 @@ def test_fill_scopes(hlp_run_on_fake_board, hlp_fake_board, capsys):
     renewal = (hl.FLAG_KEEPALIVE | generation, hl.CLAIM_TAKE)
     assert [(claim[2], claim[3]) for claim in claims] == [(0, hl.CLAIM_TAKE), renewal, renewal, renewal,
                                                           (generation, hl.CLAIM_GIVE_UP)]
-    assert claims[0][8:24].rstrip(b'\x00') == b'hlp-fill' and hlp_fake_board.holder == 0
+    assert claims[0][8:24].rstrip(b'\x00') == b'hlp-fill' and hlp_fake_board.holder_token == 0
     # the give up hands everything back: no RELEASE follows, nor a CONFIGURE after the claim's own
     assert hlp_fake_board.requests[-1] is claims[-1] and not hlp_fake_board.sent(hl.CMD_RELEASE)
     assert [request[3:7] for request in hlp_fake_board.sent(hl.CMD_CONFIGURE)] == [bytes([0, 0xD0, 0x07, 1])]
-    hlp_run_on_fake_board(tools.fill, '--scope', 'pleds', '00FF00')
+    hlp_run_on_fake_board(tools.fill, '--scope', 'players', '00FF00')
     stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
     assert stage[3:5] == bytes([hl.ADDRESSING_KIND, 4]) and stage[5:9] == bytes([3, 0, 0xFF, 0])
-    assert 'filled pleds with #00FF00' in capsys.readouterr().out
+    assert 'filled players with #00FF00' in capsys.readouterr().out
+    hlp_run_on_fake_board(tools.fill, '--scope', 'turbo', '0000FF')
+    stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
+    assert stage[3:5] == bytes([hl.ADDRESSING_KIND, 1]) and stage[5:9] == bytes([hl.KIND_TURBO, 0, 0, 0xFF])
 
 
 def test_fill_claims_exclusively_with_exclusive(hlp_run_on_fake_board, hlp_fake_board):
@@ -61,7 +64,7 @@ def test_fill_claims_exclusively_with_exclusive(hlp_run_on_fake_board, hlp_fake_
     assert [(claim[2], claim[3], claim[24]) for claim in claims] == [
         (0, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE), renewal, renewal, renewal, (holder, hl.CLAIM_GIVE_UP, 0)]
     (fill,) = hlp_fake_board.sent(hl.CMD_FILL)
-    assert fill[2] == hl.FLAG_COMMIT_AFTER | holder and hlp_fake_board.holder == 0
+    assert fill[2] == hl.FLAG_COMMIT_AFTER | holder and hlp_fake_board.holder_token == 0
     hlp_run_on_fake_board(tools.fill, 'FF8000')
     shared = hlp_fake_board.sent(hl.CMD_CLAIM)[5:]
     assert [(claim[2] & hl.FLAG_HOLDER, claim[24]) for claim in shared] == [(0, 0)] * len(shared)
@@ -71,9 +74,9 @@ def test_fill_claims_exclusively_with_exclusive(hlp_run_on_fake_board, hlp_fake_
 
 def test_caps_shows_an_unsaved_step_and_an_exclusive_claim(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test hlp-caps' page 1 lines for an unsaved brightness step and an exclusive claim."""
-    hlp_fake_board.state = state_record(step=3, unsaved=1, saved=5)
+    hlp_fake_board.state = state_record(brightness_step_shown=3, brightness_unsaved=1, saved_brightness_step=5)
     hlp_fake_board.saved_step = 5
-    hlp_fake_board.holder, hlp_fake_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
+    hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
     hlp_fake_board.holder_flags = hl.CLAIM_EXCLUSIVE
     hlp_run_on_fake_board(tools.caps)
     out = capsys.readouterr().out
@@ -131,23 +134,23 @@ def test_enum_names_needs_proto_files(monkeypatch):
 
 def test_tools_leave_another_applications_lights_alone(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test that the LED tools refuse while another application holds the claim, and --force takes over."""
-    hlp_fake_board.holder, hlp_fake_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
+    hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
     with pytest.raises(SystemExit, match="'MESH' holds the lights"):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert not hlp_fake_board.sent(hl.CMD_CONFIGURE) and not hlp_fake_board.sent(hl.CMD_FILL)
-    assert hlp_fake_board.holder == 0xA1
+    assert hlp_fake_board.holder_token == 0xA1
     hlp_run_on_fake_board(tools.set_light, '--force', '0:FF0000')
-    assert hlp_fake_board.sent(hl.CMD_CLAIM)[1][3] == hl.CLAIM_TAKE_OVER and hlp_fake_board.holder == 0
+    assert hlp_fake_board.sent(hl.CMD_CLAIM)[1][3] == hl.CLAIM_TAKE_OVER and hlp_fake_board.holder_token == 0
 
 
 def test_hold_stops_when_taken_over(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
     """Test that a tool with its claim taken over prints the new holder, and neither releases nor gives up."""
     def sleep(seconds):
-        hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
+        hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
     monkeypatch.setattr(tools.time, 'sleep', sleep)
     hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert "'Other' took the lights over" in capsys.readouterr().out
-    assert not hlp_fake_board.sent(hl.CMD_RELEASE) and hlp_fake_board.holder == 0xB2
+    assert not hlp_fake_board.sent(hl.CMD_RELEASE) and hlp_fake_board.holder_token == 0xB2
 
 
 def test_hold_gives_up_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
@@ -158,13 +161,14 @@ def test_hold_gives_up_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, capsy
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
-    assert hlp_fake_board.holder == 0 and 'claim given up, on-board animations restored' in capsys.readouterr().out
+    assert hlp_fake_board.holder_token == 0
+    assert 'claim given up, on-board animations restored' in capsys.readouterr().out
 
 
 def test_give_up_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
     """Test that a hold ending after another application claimed the lapsed lease sends no RELEASE or CONFIGURE."""
     def sleep(seconds):
-        hlp_fake_board.holder, hlp_fake_board.holder_name = 0xC3, b'MESH'.ljust(16, b'\x00')
+        hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xC3, b'MESH'.ljust(16, b'\x00')
         raise KeyboardInterrupt
     monkeypatch.setattr(tools.time, 'sleep', sleep)
     with pytest.raises(KeyboardInterrupt):
@@ -174,7 +178,7 @@ def test_give_up_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board
     # the give up's reply names MESH
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
     assert not hlp_fake_board.sent(hl.CMD_RELEASE) and len(hlp_fake_board.sent(hl.CMD_CONFIGURE)) == 1
-    assert hlp_fake_board.holder == 0xC3
+    assert hlp_fake_board.holder_token == 0xC3
 
 
 def test_a_failed_give_up_is_a_warning(hlp_run_on_fake_board, hlp_fake_board, capsys, caplog):
@@ -206,7 +210,7 @@ def test_another_applications_claim_reply_is_passed_over(hlp_run_on_fake_board, 
     hlp_run_on_fake_board(tools.fill, '--seconds', '1', 'FF0000')
     out = capsys.readouterr().out
     assert injected and 'app-b' not in out and out.endswith('claim given up, on-board animations restored\n')
-    assert not hlp_fake_board.sent(hl.CMD_GET_PAGE) and hlp_fake_board.holder == 0
+    assert not hlp_fake_board.sent(hl.CMD_GET_PAGE) and hlp_fake_board.holder_token == 0
 
 
 def test_set_light_addressing_and_ranges(hlp_run_on_fake_board, hlp_fake_board, capsys):
@@ -355,7 +359,8 @@ def test_settings_holds_an_unsaved_brightness_step(hlp_run_on_fake_board, hlp_fa
     assert brightness[3:5] == bytes([2, 0]) and brightness[2] == hl.FLAG_HOLDER | 2 << hl.FLAG_GENERATION_SHIFT
     claims = hlp_fake_board.sent(hl.CMD_CLAIM)
     assert [claim[2] & hl.FLAG_KEEPALIVE for claim in claims] == [0] + [hl.FLAG_KEEPALIVE] * 3 + [0]
-    assert claims[0][24] == hl.CLAIM_EXCLUSIVE and claims[-1][3] == hl.CLAIM_GIVE_UP and hlp_fake_board.holder == 0
+    assert claims[0][24] == hl.CLAIM_EXCLUSIVE and claims[-1][3] == hl.CLAIM_GIVE_UP
+    assert hlp_fake_board.holder_token == 0
     assert 'brightness step 2 shown, unsaved, for 2.0 s' in out and 'brightness step 5 of 0-10 (maximum 255)\n' in out
     for arguments, message in ((('--unsaved',), '--unsaved takes --brightness alone'),
                                (('--brightness', '2', '--unsaved', '--profile', '1'), '--unsaved takes --brightness'),
@@ -370,8 +375,8 @@ def test_watch_prints_what_each_event_changes(hlp_run_on_fake_board, hlp_fake_bo
     hlp_fake_board.after[hl.CMD_SUBSCRIBE] = [state_event(profile=5)]    # during the page 1 wait
     hlp_fake_board.after[hl.CMD_GET_PAGE] = [state_event(0x00000002, profile=2), other_event(),
                                              state_event(0x00000002, profile=2),
-                                             state_event(0x00000002, profile=2, animation=0xFFFF, token=5,
-                                                         name=b'MESH')]
+                                             state_event(0x00000002, profile=2, animation=0xFFFF, holder_token=5,
+                                                         application_name=b'MESH')]
     hlp_run_on_fake_board(tools.watch, '--seconds', '0.05')
     lines = capsys.readouterr().out.splitlines()
     assert hlp_fake_board.subscribed == 1
@@ -401,7 +406,7 @@ def test_stream_fills_streams_and_gives_up(hlp_run_on_model_board, hlp_model_boa
     assert len(frames) == 120 and frames[0][3:7] == bytes([hl.ADDRESSING_LED_RUN, 0, 0, 4])
     renewals = [claim for claim in hlp_model_board.sent(hl.CMD_CLAIM) if claim[2] == hl.FLAG_KEEPALIVE | held]
     assert len(renewals) >= 4
-    assert not hlp_model_board.live and hlp_model_board.holder == 0 and not hlp_model_board.sent(hl.CMD_RELEASE)
+    assert not hlp_model_board.live and hlp_model_board.holder_token == 0 and not hlp_model_board.sent(hl.CMD_RELEASE)
 
 
 def test_stream_timeout_test_times_the_keepalive(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -415,13 +420,13 @@ def test_stream_timeout_test_times_the_keepalive(hlp_run_on_model_board, hlp_mod
     # then page 1 reads alone, with no generation: the lapsed claim's would be refused
     assert requests[renewal + 1:] and {request[:3:2] for request in requests[renewal + 1:]} == {
         bytes([hl.CMD_GET_PAGE, 0])}
-    assert hlp_model_board.holder == 0 and 'given up' not in out
+    assert hlp_model_board.holder_token == 0 and 'given up' not in out
 
 
 def test_stream_counts_frames_the_board_refuses(hlp_run_on_model_board, hlp_model_board, capsys):
     """Test that a refused frame is counted, not fatal: here the extent reaches past the addressable limit."""
-    hlp_model_board.summary = summary_record(extent=120, width=2, height=2, profiles=1, controls=3, lit=1, unlit=2,
-                                             lights=2, animations=1)
+    hlp_model_board.summary = summary_record(led_extent=120, grid_width=2, grid_height=2, profiles=1, controls=3,
+                                             lit_controls=1, unlit_controls=2, lights=2, animations=1)
     hlp_run_on_model_board(tools.stream, '--seconds', '0.25')
     out = capsys.readouterr().out
     assert 'rainbow: 0 of 15 frames acknowledged (120 LEDs)\n' in out
@@ -449,13 +454,15 @@ def test_buttons_runs_three_phases(hlp_run_on_model_board, hlp_model_board, caps
     stages = hlp_model_board.sent(hl.CMD_STAGE)
     assert stages[1][3:7] == bytes([hl.ADDRESSING_LIGHT_RUN, 0, 0, 2])
     assert len(stages) == 2                                    # the model board lights none of those buttons
-    assert hlp_model_board.holder == 0 and not hlp_model_board.live
+    assert hlp_model_board.holder_token == 0 and not hlp_model_board.live
 
 
 def test_buttons_overlay_takes_the_buttons_the_board_lights(hlp_run_on_model_board, hlp_model_board, capsys):
     """Test that hlp-buttons' third phase stages the lit buttons among B1-B4, L1, R1, L2 and R2, and no others."""
-    hlp_model_board.controls[0] = control_record(2, 5, rect=(1, 0, 1, 0), first_led=0, first_light=0, count=1)
-    hlp_model_board.controls[1] = control_record(12, 9, rect=(0, 1, 0, 1), first_led=1, first_light=1, count=1)
+    hlp_model_board.controls[0] = control_record(2, 5, grid_rectangle=(1, 0, 1, 0), first_led=0, first_light=0,
+                                                 light_count=1)
+    hlp_model_board.controls[1] = control_record(12, 9, grid_rectangle=(0, 1, 0, 1), first_led=1, first_light=1,
+                                                 light_count=1)
     hlp_model_board.lights[0] = light_record(0, pin=2, action=5, instance=1, instances=1, x=1, y=0)
     hlp_run_on_model_board(tools.buttons, '--seconds', '1')
     assert 'phase 3: overlay, B1 L1 white over the animations (1 applied)' in capsys.readouterr().out
@@ -481,17 +488,17 @@ def test_streaming_tools_stop_when_taken_over(hlp_run_on_model_board, hlp_model_
     hlp_run_on_model_board(getattr(tools, command), '--seconds', '3')
     out = capsys.readouterr().out
     assert "'Other' took the lights over" in out and 'given up' not in out
-    assert not hlp_model_board.sent(hl.CMD_RELEASE) and hlp_model_board.holder == 0xB2
+    assert not hlp_model_board.sent(hl.CMD_RELEASE) and hlp_model_board.holder_token == 0xB2
 
 
 @pytest.mark.parametrize('command', ['stream', 'buttons'])
 def test_streaming_tools_leave_another_holder_alone(hlp_run_on_model_board, hlp_model_board, command):
     """Test that hlp-stream and hlp-buttons refuse while another application holds the claim."""
-    hlp_model_board.holder, hlp_model_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
+    hlp_model_board.holder_token, hlp_model_board.holder_name = 0xA1, b'MESH'.ljust(16, b'\x00')
     with pytest.raises(SystemExit, match="'MESH' holds the lights"):
         hlp_run_on_model_board(getattr(tools, command))
     assert not hlp_model_board.sent(hl.CMD_CONFIGURE) and not hlp_model_board.sent(hl.CMD_STAGE)
-    assert hlp_model_board.holder == 0xA1
+    assert hlp_model_board.holder_token == 0xA1
 
 
 @pytest.mark.parametrize('command, after, overlays', [('stream', 3.5, [0]), ('buttons', 2.5, [0, 1])])
@@ -508,7 +515,7 @@ def test_streaming_tools_give_up_on_interrupt(hlp_run_on_model_board, hlp_model_
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_model_board(getattr(tools, command), '--seconds', '1')
     assert 'claim given up, on-board animations restored' in capsys.readouterr().out
-    assert hlp_model_board.holder == 0 and not hlp_model_board.live
+    assert hlp_model_board.holder_token == 0 and not hlp_model_board.live
     assert [configure[3] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)] == overlays
     assert (hlp_model_board.overlay, hlp_model_board.keepalive_ms, hlp_model_board.brightness) == (0, 2000, 1)
 

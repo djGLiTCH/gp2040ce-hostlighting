@@ -35,7 +35,7 @@ class ClaimState(enum.Enum):
 
     HELD = 'held'               # this application holds the claim
     WAITING = 'waiting'         # another application holds it, and each renewal asks for it
-    LOST = 'lost'               # another application took it over, and wait_after_takeover is off
+    LOST = 'lost'               # another application took it over, and wait_when_taken_over is off
     ENDED = 'ended'             # not taken yet, given up or let lapse
 
 
@@ -78,7 +78,7 @@ class LightsClaim:
     """A claim on a board's lights, and the CONFIGURE settings that go with it."""
 
     def __init__(self, device: HostLightingDevice, name: str, settings: Settings = Settings(),
-                 token: Optional[int] = None, keepalive: bool = True, wait_after_takeover: bool = True,
+                 token: Optional[int] = None, keepalive: bool = True, wait_when_taken_over: bool = True,
                  clock: Optional[Callable[[], float]] = None):
         """Describe the claim. Nothing is sent until take().
 
@@ -88,7 +88,7 @@ class LightsClaim:
         :param token: the claim token, 1 to 0xFFFFFFFF, by default a random one
         :param keepalive: renewals carry KEEPALIVE, which keeps a takeover and an unsaved brightness step live.
             The specification puts it on renewals while a frame or an unsaved step is shown
-        :param wait_after_takeover: when another application takes the claim over after this one held it, leave
+        :param wait_when_taken_over: when another application takes the claim over after this one held it, leave
             the state WAITING, so that each renewal asks for the claim and takes it once the board is unclaimed.
             Without it the state is LOST and nothing more is asked
         :param clock: seconds from a monotonic clock, by default time.monotonic
@@ -104,7 +104,7 @@ class LightsClaim:
         self.keepalive = keepalive
         self.clock = clock or _monotonic
         self.exclusive = False          # each renewal claims exclusively when set
-        self.wait_after_takeover = wait_after_takeover  # a claim taken over after it was held is waited for
+        self.wait_when_taken_over = wait_when_taken_over  # a claim taken over after it was held is waited for
         self.state = ClaimState.ENDED
         self.holder: Optional[Controller] = None       # the holder the board last showed
         self.applied: Optional[Settings] = None        # the settings the board last applied for this claim
@@ -132,7 +132,7 @@ class LightsClaim:
         :param force: take the claim over from an application that holds it
         :param wait: where another application holds the claim now, leave the state WAITING, so that each renewal
             asks for the claim and takes it once the board is unclaimed. A claim taken over later follows
-            wait_after_takeover
+            wait_when_taken_over
         :return: the claim, for a with block
         :raises HostLightingClaimedError: when another application holds the claim, and it was neither to be
             taken over nor waited for
@@ -349,9 +349,9 @@ class LightsClaim:
             return ClaimChange(kind=ClaimChangeKind.TAKEN, holder=holder, restage=True)
         if self.state is not ClaimState.HELD:
             return ClaimChange(kind=ClaimChangeKind.UNCHANGED, holder=holder)
-        self.state = ClaimState.WAITING if self.wait_after_takeover else ClaimState.LOST
+        self.state = ClaimState.WAITING if self.wait_when_taken_over else ClaimState.LOST
         logger.info("'%s' took the lights over%s", holder.application_name,
-                    ". Waiting for it to give them up" if self.wait_after_takeover else '')
+                    ". Waiting for it to give them up" if self.wait_when_taken_over else '')
         return ClaimChange(kind=ClaimChangeKind.LOST, holder=holder)
 
     def _result(self, change: ClaimChange) -> ClaimChange:

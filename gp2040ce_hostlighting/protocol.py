@@ -773,16 +773,16 @@ class HostLightingBoardSelectionError(HostLightingError):
     to choose between.
     """
 
-    def __init__(self, message: str, prefix: str, boards: tuple, matched: tuple, other_majors: tuple):
+    def __init__(self, message: str, board_id_prefix: str, boards: tuple, matched: tuple, other_majors: tuple):
         """Record what was found.
 
         :param message: the library's message
-        :param prefix: the board ID prefix asked for
+        :param board_id_prefix: the board ID prefix asked for
         :param boards: a BoardListing for each protocol 2 board found
         :param matched: the boards among them the prefix matches
         :param other_majors: the usage of each interface that speaks another protocol major
         """
-        self.prefix = prefix
+        self.board_id_prefix = board_id_prefix
         self.boards = boards
         self.matched = matched
         self.other_majors = other_majors
@@ -821,16 +821,16 @@ class HostLightingDevice:
             handle.open_path(path)
             # a read with no timeout returns at once, so request() can drop the reports already received
             handle.set_nonblocking(True)
-        self.device = handle
+        self.handle = handle
         # the first sequence number is random, so two applications seldom send the same one
         self.sequence = secrets.randbelow(255)
         self.events: list = []
         # the requests sent with replies awaited, with the flags each was sent with, and those replies when
         # read while waiting for another
-        self.awaited: dict = {}
-        self.pending: list = []
-        # this application's claim token, from its last claim(), and the generation it holds the claim under
-        # (0: it holds none): its requests carry the generation, and FLAG_HOLDER while the claim is exclusive,
+        self._awaited: dict = {}
+        self._pending: list = []
+        # this application's claim token, from its last claim(), and the generation it holds the claim under,
+        # 0 when it holds none. Its requests carry the generation, and FLAG_HOLDER while the claim is exclusive,
         # which that claim requires
         self.claim_token = 0
         self.generation = 0
@@ -849,7 +849,7 @@ class HostLightingDevice:
         """Close the HID device. A second close does nothing."""
         if not self.closed:
             self.closed = True
-            self.device.close()
+            self.handle.close()
 
     def _write(self, report: bytes) -> None:
         """Write one report.
@@ -860,7 +860,7 @@ class HostLightingDevice:
         """
         sending = f"sending command 0x{report[1]:02X}" if len(report) > 1 else "writing"
         try:
-            written = self.device.write(report)
+            written = self.handle.write(report)
         except OSError as error:
             raise HostLightingDisconnectedError(f"the board is no longer connected ({sending} failed with "
                                                 f"{error})") from error
@@ -874,7 +874,7 @@ class HostLightingDevice:
         :raises HostLightingDisconnectedError: if the device cannot be read
         """
         try:
-            return bytes(self.device.read(REPORT_SIZE, timeout_ms))
+            return bytes(self.handle.read(REPORT_SIZE, timeout_ms))
         except OSError as error:
             raise HostLightingDisconnectedError(f"the board is no longer connected (reading failed with "
                                                 f"{error})") from error
@@ -901,7 +901,7 @@ class HostLightingDevice:
         try:
             self._write(b'\x00' + build_request(command, sequence, payload, flags))
         except HostLightingDisconnectedError:
-            self.awaited.pop((command, sequence), None)
+            self._awaited.pop((command, sequence), None)
             raise
         return sequence
 
@@ -940,8 +940,8 @@ class HostLightingDevice:
         :param accept: optional test a matching report must also pass (to tell two applications' replies apart)
         :return: the reply report
         """
-        for report in [report for report in self.pending if match_reply(report, command, sequence)]:
-            self.pending.remove(report)
+        for report in [report for report in self._pending if match_reply(report, command, sequence)]:
+            self._pending.remove(report)
             if self._ours(report, command, sequence, accept):
                 return self._answered(report, command, sequence)
         deadline = time.monotonic() + timeout
@@ -959,7 +959,7 @@ class HostLightingDevice:
             elif self._ours(report, command, sequence, accept):
                 return self._answered(report, command, sequence)
             # otherwise another application's reply with this request's numbers: dropped
-        self.awaited.pop((command, sequence), None)
+        self._awaited.pop((command, sequence), None)
         raise HostLightingTimeoutError(f"no reply to command 0x{command:02X} within {timeout} s")
 
     def _ours(self, report: bytes, command: int, sequence: int, accept) -> bool:
@@ -969,7 +969,7 @@ class HostLightingDevice:
         if report[2] != STATUS_CLAIMED or len(report) < 3 + CONTROLLER_SIZE or not self.claim_token:
             return True
         holder = decode_controller(bytes(report[3:3 + CONTROLLER_SIZE]))
-        flags = self.awaited.get((command, sequence), 0)
+        flags = self._awaited.get((command, sequence), 0)
         sent_generation = (flags & FLAG_GENERATION) >> FLAG_GENERATION_SHIFT
         if not holder.held_by(self.claim_token) or holder.claim_generation != sent_generation:
             return True
@@ -979,7 +979,7 @@ class HostLightingDevice:
 
     def _answered(self, report: bytes, command: int, sequence: int) -> bytes:
         """Take a reply as this request's, acting on the holder a status 4 reply shows."""
-        self.awaited.pop((command, sequence), None)
+        self._awaited.pop((command, sequence), None)
         if report[2] == STATUS_CLAIMED and len(report) >= 3 + CONTROLLER_SIZE:
             holder = decode_controller(bytes(report[3:3 + CONTROLLER_SIZE]))
             if holder.held_by(self.claim_token):
@@ -991,15 +991,15 @@ class HostLightingDevice:
     def _await(self, command: int, sequence: int, flags: int) -> None:
         """Note a request that will be answered. No report kept for an earlier one with its numbers answers it."""
         if not flags & FLAG_NO_REPLY and 0 < command < REPLY_FLAG:
-            self.pending = [report for report in self.pending if not match_reply(report, command, sequence)]
-            self.awaited[(command, sequence)] = flags
+            self._pending = [report for report in self._pending if not match_reply(report, command, sequence)]
+            self._awaited[(command, sequence)] = flags
 
     def _keep(self, report: bytes) -> None:
         """Keep an event, or the reply to a request still awaited, and drop another application's reply."""
         if is_event(report):
             self.events.append(report)
-        elif len(report) >= 3 and (report[0] & ~REPLY_FLAG, report[1]) in self.awaited:
-            self.pending.append(report)
+        elif len(report) >= 3 and (report[0] & ~REPLY_FLAG, report[1]) in self._awaited:
+            self._pending.append(report)
 
     def drain(self) -> None:
         """Read the reports already received, keeping the events and the replies still awaited.

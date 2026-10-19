@@ -50,11 +50,11 @@ def test_start_runs_the_host_flow_and_close_gives_up(board):
     with session_on(board, settings=Settings(keepalive_ms=900)) as session:
         assert commands(board) == [hl.CMD_HELLO] + [hl.CMD_GET_PAGE] * 6 + [
             hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_GET_PAGE]
-        assert board.holder == session.claim.token and board.keepalive_ms == 900
+        assert board.holder_token == session.claim.token and board.keepalive_ms == 900
         assert session.board_id == testing.BOARD_ID.hex().upper() and len(session.cache.lights) == 2
         assert session.board_state.controller.holder_token == session.claim.token
         assert session.claim.state is ClaimState.HELD
-    assert board.holder == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
+    assert board.holder_token == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
 
 def test_start_checks_what_the_session_and_the_host_need(board):
@@ -80,7 +80,7 @@ def test_a_failure_after_the_claim_gives_it_up(board):
     board.answer = refusing
     with pytest.raises(hl.HostLightingRejectedError):
         session_on(board).start()
-    assert board.holder == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
+    assert board.holder_token == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
 
 def test_poll_renews_the_claim_and_show_clears_when_addresses_go(board):
@@ -120,12 +120,12 @@ def test_a_claim_taken_over_and_given_back_is_taken_again(board):
     board.let_go()
     update = session.poll()
     assert update.claim.kind is ClaimChangeKind.RETAKEN and update.restage
-    assert board.holder == session.claim.token and board.keepalive_ms == 600
+    assert board.holder_token == session.claim.token and board.keepalive_ms == 600
 
 
 def test_a_lost_claim_stops_the_frames(board, caplog):
-    """Test LOST without wait_after_takeover, no frame sent while the claim is lost, and a give up sending nothing."""
-    session = session_on(board, wait_after_takeover=False).start()
+    """Test LOST without wait_when_taken_over, no frame sent while the claim is lost, and a give up sending nothing."""
+    session = session_on(board, wait_when_taken_over=False).start()
     board.take_over()
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         update = session.poll()
@@ -134,7 +134,7 @@ def test_a_lost_claim_stops_the_frames(board, caplog):
     sent = len(board.requests)
     assert session.show(frame_of(0)) is None
     session.close()
-    assert board.holder == 0xB2 and hl.CMD_CLAIM not in commands(board, sent)
+    assert board.holder_token == 0xB2 and hl.CMD_CLAIM not in commands(board, sent)
 
 
 def test_a_refused_frame_goes_to_the_claim(board, monkeypatch):
@@ -155,7 +155,7 @@ def test_a_refused_frame_goes_to_the_claim(board, monkeypatch):
 def test_a_changed_configuration_is_read_again(board):
     """Test that a token change reads the changed pages again and asks for a restage when Lights changed."""
     session = session_on(board).start()
-    board.reconfigure(lights=[light_record(0, pin=2, action=9, dup=1, instance=1, instances=2, x=1, y=0),
+    board.reconfigure(lights=[light_record(0, pin=2, action=9, duplicated=1, instance=1, instances=2, x=1, y=0),
                               board.lights[1]])
     update = session.poll()
     assert hl.PAGE_LIGHTS in update.pages_read and update.restage
@@ -240,7 +240,7 @@ def test_reconnect_finds_the_board_again_and_waits_for_the_claim(board, monkeypa
     assert session.claim.state is ClaimState.WAITING and session.cache.token == board.token
     board.let_go()
     board.sleep(0.7)
-    assert session.poll().claim.kind is ClaimChangeKind.TAKEN and board.holder == token
+    assert session.poll().claim.kind is ClaimChangeKind.TAKEN and board.holder_token == token
     session.board_id = None
     assert not session.reconnect()
 
@@ -298,7 +298,7 @@ def test_a_host_that_does_not_claim_leaves_a_holder_alone(board, caplog):
 def test_a_refresh_that_fails_is_tried_again(board, monkeypatch):
     """Test a refresh unanswered, changing under the reads and left a while, refused with status 4, then landing."""
     session = session_on(board).start()
-    board.reconfigure(lights=[light_record(0, pin=2, action=9, dup=1, instance=1, instances=2, x=1, y=0),
+    board.reconfigure(lights=[light_record(0, pin=2, action=9, duplicated=1, instance=1, instances=2, x=1, y=0),
                               board.lights[1]])
     refresh = session.cache.refresh
     holder = hl.Controller(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
@@ -451,5 +451,5 @@ def test_the_readme_session_example_runs(board, monkeypatch):
     monkeypatch.setattr(hl, 'open_device', lambda prefix='': fake_device(board))
     monkeypatch.setattr(time, 'sleep', board.sleep)
     exec(compile(example, 'README.md', 'exec'), {})     # the repository's own README
-    assert board.frames[-1] == {1: (0, 0, 255), 2: (0, 0, 255), 3: (0, 0, 255)} and board.holder == 0
+    assert board.frames[-1] == {1: (0, 0, 255), 2: (0, 0, 255), 3: (0, 0, 255)} and board.holder_token == 0
     assert board.now >= 3.0

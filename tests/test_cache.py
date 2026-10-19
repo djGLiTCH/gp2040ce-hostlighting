@@ -65,7 +65,7 @@ def test_lights_of_another_count_are_read_whole(hlp_fake_device, hlp_fake_board)
 def test_a_stale_read_starts_again_from_the_summary(hlp_fake_device, hlp_fake_board):
     """Test the restart after a change under the reads, nothing kept from the stale walk, and the limit."""
     cache = ConfigurationCache(hlp_fake_device.hello())
-    page = hlp_fake_board.page
+    page = hlp_fake_board._page
     changes = [1]
 
     def changing(sequence, request):
@@ -73,7 +73,7 @@ def test_a_stale_read_starts_again_from_the_summary(hlp_fake_device, hlp_fake_bo
             changes[0] -= 1
             hlp_fake_board.token += 1
         return page(sequence, request)
-    hlp_fake_board.page = changing
+    hlp_fake_board._page = changing
     assert cache.refresh(hlp_fake_device) == {8, 9, 10, 11, 12}
     assert [read[0] for read in reads(hlp_fake_board)] == [8, 9, 8, 9, 10, 11, 12]
     assert cache.token == hlp_fake_board.token

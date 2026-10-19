@@ -20,10 +20,10 @@ from gp2040ce_hostlighting.records import Hello, Summary
 __all__ = ['ConfigurationCache']
 
 # the configuration pages 2.0 defines, the Summary first
-CONFIGURATION_PAGES = (PAGE_SUMMARY, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS)
+_CONFIGURATION_PAGES = (PAGE_SUMMARY, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS)
 # the Lights groups a profile switch changes: kind and flags, owner, owner instances
-LIGHTS_CHANGING = 0b1110
-SUMMARY_CHANGES = 0b10
+_LIGHTS_CHANGING = 0b1110
+_SUMMARY_CHANGES = 0b10
 
 
 class ConfigurationCache:
@@ -41,10 +41,10 @@ class ConfigurationCache:
             raise HostLightingIncompatibleError("the board does not list page 8 (Summary), which the cache reads "
                                                 "first")
         self.hello = hello
-        self.masks = {page: (1 << len(PAGE_GROUPS[page])) - 1 for page in CONFIGURATION_PAGES}
+        self.masks = {page: (1 << len(PAGE_GROUPS[page])) - 1 for page in _CONFIGURATION_PAGES}
         self.masks.update(masks or {})
         # the configuration pages to keep. The Summary is read whatever this holds
-        self.pages = frozenset(page for page in CONFIGURATION_PAGES if page in hello.pages)
+        self.pages = frozenset(page for page in _CONFIGURATION_PAGES if page in hello.pages)
         self.summary: Optional[Summary] = None
         self.token: Optional[int] = None
         self.counters: Optional[tuple] = None          # the Summary's change counters, pages 8 to 15
@@ -87,7 +87,7 @@ class ConfigurationCache:
         :raises HostLightingError: when the configuration keeps changing under the reads
         """
         for _ in range(attempts):
-            read = device.read_record(PAGE_SUMMARY, self.masks[PAGE_SUMMARY] | SUMMARY_CHANGES)
+            read = device.read_record(PAGE_SUMMARY, self.masks[PAGE_SUMMARY] | _SUMMARY_CHANGES)
             record = read.records[0]
             counters = record.changes.counters
             due = [page for page in sorted(self.pages - {PAGE_SUMMARY})
@@ -107,8 +107,8 @@ class ConfigurationCache:
     def _read(self, device: HostLightingDevice, page: int, token: int) -> tuple:
         """Read one page under a token. Lights already held are read again by the groups that can change."""
         mask, held = self.masks[page], self._tables.get(page)
-        if page == PAGE_LIGHTS and held is not None and mask & LIGHTS_CHANGING:
-            records = device.read_table(page, mask & LIGHTS_CHANGING, token).records
+        if page == PAGE_LIGHTS and held is not None and mask & _LIGHTS_CHANGING:
+            records = device.read_table(page, mask & _LIGHTS_CHANGING, token).records
             if len(records) == len(held):
                 return tuple(old.merged(new) for old, new in zip(held, records))
         return device.read_table(page, mask, token).records
