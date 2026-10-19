@@ -364,17 +364,19 @@ Sample usage:
 
 ```
 % hlp-ping
-Haute42 COSMOX M Ultra (v0.7.12-88-gcfe8df1), board ID 433030343237362E
+Haute42 COSMOX M Ultra (v0.7.12-154-g7b61b97), board ID 433030343237362E
 magic GPHL, protocol 2.0, reply queue limit 16
 100 round trips in 200 ms (2.0 ms average)
 
 % hlp-caps
 ...
-page 8 (summary): LED extent 46, limit 100, render rate 40 Hz, colour format 0
+page 8 (summary): LED extent 46, limit 100, render rate 40 Hz, colour format 0, no white channel
   brightness maximum 199, 10 steps; animation speed steps 10; grid 19x13
   1 profiles, 21 controls (16 lit, 5 unlit), 46 lights, 4 animations
+  button layouts 27 and 31, orientation 0
+  changes counted on pages 8: 0, 9: 0, 10: 0, 11: 0, 12: 8, 13: 0, 14: 0, 15: 0
 ...
-page 10 (controls): 21 (16 lit), token 0x0C37AC27
+page 10 (controls): 21 (16 lit), token 0x55CDC8CD
   GP2 action 1 instance 1 of 2 LED 3 at (9,9), 1 light(s) from ordinal 3
   GP3 action 2 LED 1 at (6,4), 1 light(s) from ordinal 1
   ...
@@ -383,51 +385,53 @@ page 10 (controls): 21 (16 lit), token 0x0C37AC27
   GP27 action 1 instance 2 of 2 LED 12 at (7,2), 1 light(s) from ordinal 12
 ...
 
-% hlp-settings --brightness 6
+% hlp-settings
 profile 1:
   * 1 enabled
 animation 0 (an enabled ordinal, or off); speeds 0-10:
-  * 0 enabled, idle 1, pressed 0, case 1, speeds 4/4/4
+  * 0 enabled, idle 1, pressed 0, case 1, speeds 7/3/4
     1 enabled, idle 0, pressed 0, case 0, speeds 4/4/4
   ...
-brightness step 6 of 0-10 (maximum 199)
+brightness step 4 of 0-10 (maximum 199)
 
 % hlp-settings --brightness 2 --unsaved --exclusive
 brightness step 2 shown, unsaved, for 5.0 s
-released, on-board animations restored
+claim given up, on-board animations restored
 ...
-brightness step 6 of 0-10 (maximum 199)
+brightness step 4 of 0-10 (maximum 199)
 
-% hlp-watch
-   0.000 takeover_live False, brightness_unsaved False, input_mode 0, profile 1, player 1, animation 0, ...
-   2.013 animation 0 -> off, brightness_step 5 -> 6
+% hlp-watch --seconds 4
+   0.000 takeover_live False, brightness_unsaved False, animations_idle False, input_mode 0, profile 1, ...
+   1.083 holder_token 0x00000000 -> 0x759D59D1, application_name  -> hlp-settings, claim_generation 3 -> 4
+   1.090 brightness_unsaved False -> True, brightness_step_shown 4 -> 6
+   2.093 brightness_unsaved True -> False, brightness_step_shown 6 -> 4, holder_token 0x759D59D1 -> 0x00000000, ...
 
-% hlp-conformance
+% hlp-conformance --settings
 HELLO:
   PASS  protocol major 2
   ...
 Takeover and keepalive:
   ...
   PASS  the takeover ends at the timeout
-        expiry seen after 302 ms (timeout 300)
+        expiry seen after 306 ms (timeout 300)
 ...
-RESULT: ALL PASS (134 passed, 0 failed)
+RESULT: ALL PASS (181 passed, 0 failed)
 
 % hlp-bench
-round trip: median 2.00 ms, p95 2.01 ms (300 of 300 answered)
+round trip: median 2.00 ms, p95 2.05 ms (300 of 300 answered)
 60 fps: 300 of 300 frames acknowledged (46 LEDs, 3 reports per frame)
 unthrottled, every report answered: 166 frames/s
 unthrottled, pipelined: 249 frames/s
-released, on-board animations restored
+claim given up, on-board animations restored
 
 % hlp-fill --scope case 0000FF
 filled case with #0000FF for 3.0 s
-released, on-board animations restored
+claim given up, on-board animations restored
 
 % hlp-set-light --by action 1:FFFFFF00 17:00000080 99:FF0000
 2 applied, 1 skipped for 3.0 s
 skipped addresses (no light, or none below the LED limit): [99]
-released, on-board animations restored
+claim given up, on-board animations restored
 ```
 
 The controls page shows that this board wires two buttons to action 1 (Up) and

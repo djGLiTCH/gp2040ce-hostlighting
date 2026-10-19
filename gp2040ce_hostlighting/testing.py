@@ -406,11 +406,14 @@ class FakeBoard:
         return 0
 
     def _set_animation(self, request: bytes) -> int:
-        """Apply SET_ANIMATION, and return the byte at fault, or 0."""
+        """Apply SET_ANIMATION, and return the byte at fault, or 0. A change to an animation wakes the animations."""
         index = struct.unpack_from('<H', request, 3)[0]
         if index != hl.ANIMATION_OFF and (index >= len(self.animations) or not self.animations[index][0][0] & 1):
             return 3
+        changed = index != struct.unpack_from('<H', self.state[0], 4)[0]
         self.set_state(4, request[3:5])
+        if changed and index != hl.ANIMATION_OFF:
+            self.set_state(0, bytes([self.state[0][0] & ~hl.STATE_IDLE]))
         return 0
 
     def _set_speed(self, request: bytes) -> int:

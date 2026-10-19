@@ -191,3 +191,18 @@ def test_a_model_board_serves_a_second_handle_while_the_first_is_idle():
     board.take_over()
     assert [hl.decode_state_changed(event).record.controller.holder_token for event in second.take_events()] == [0xB2]
     assert len(first.take_events()) == 1
+
+
+@pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
+def test_set_animation_changing_to_an_animation_wakes_the_animations(board_type):
+    """Test that SET_ANIMATION changing to an animation clears the idle flag, and that off or no change leaves it."""
+    board = board_type()
+    device = fake_device(board)
+    board.idle()
+    device.set_animation(None)
+    assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+    device.set_animation(0)
+    assert not device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+    board.idle()
+    device.set_animation(0)                 # the animation already shown
+    assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle

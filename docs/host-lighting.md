@@ -102,7 +102,7 @@ the host uses. Bind a board persistently by the factory-unique board ID in the
 `HELLO` reply, never by device path. A device path changes with the USB port.
 
 On Linux a board's hidraw node is open only to root until a udev rule grants
-access. The [gp2040ce-binary-tools][tools] README gives a rule for the lighting
+access. The [gp2040ce-hostlighting][tools] README gives a rule for the lighting
 modes' USB IDs.
 
 Boards connected at once are independent lighting devices. Each has its own
@@ -512,7 +512,7 @@ A status 4 reply shows the holder. A host must act on it as follows.
 
 A host that does not claim sends generation 0, so it receives status 4 only
 under another application's exclusive claim. The reply then shows that
-application's token. The host does as the first row says: it sends generation
+application's token. The host does as the first row says. It sends generation
 0, shows the holder's name and waits.
 
 `CONFIGURE` sets the takeover mode, the keepalive timeout and whether host
@@ -589,7 +589,7 @@ animation. These are the speeds the web configurator's LED page shows and
 GP2040-CE's animation speed hotkeys step. They are applied live and saved. The
 index is a page 12 ordinal. A speed of 0xFF leaves that speed as it is. An
 index at or above the page's total, or a speed other than 0xFF above the
-Summary's speed steps (`+9`), is an invalid argument. The speeds are on page
+Summary's speed steps (`+10`), is an invalid argument. The speeds are on page
 12, so a change also changes the state token.
 
 `SET_BRIGHTNESS` sets the brightness step the board shows, live.
@@ -602,7 +602,7 @@ Summary's speed steps (`+9`), is an invalid argument. The speeds are on page
 Step 0xFF shows the saved step at once, whatever `[4]`. A brightness hotkey
 steps from the saved step and ends an unsaved one. Session state lists what
 else ends an unsaved step, and the board then shows the saved step again. A
-step other than 0xFF above the Summary's step count (`+8`), or a save above 1,
+step other than 0xFF above the Summary's step count (`+9`), or a save above 1,
 is an invalid argument.
 
 Page 1 shows the step shown (State `+6`), the saved step (State `+8`) and
@@ -610,7 +610,7 @@ whether the two differ (State flag bit 1). Host pixels follow the step shown
 when `CONFIGURE` `[6]` is 1.
 
 A board without LED output reports no brightness steps, no speed steps and no
-animations (Summary `+8`, `+9`, page 12 empty). On it `SET_BRIGHTNESS` accepts
+animations (Summary `+9`, `+10`, page 12 empty). On it `SET_BRIGHTNESS` accepts
 only 0 and 0xFF, `SET_ANIMATION` only 0xFFFF and `SET_ANIMATION_SPEED` no
 index.
 
@@ -657,7 +657,7 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | 2 | Input modes | The input modes `SET_INPUT_MODE` accepts: value, name, and whether each presents the lighting interface | Before `SET_INPUT_MODE`. It changes only with the firmware and its settings |
 | 3-7 | - | Free for board pages | - |
 | | **Configuration (8-15)** | | |
-| 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format, brightness, grid size, each configuration page's record count, the animation speed steps and the display's button layouts. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
+| 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, each configuration page's record count, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
 | 10 | Controls | Every control in the active profile, lit or not. A control is a GPIO pin or add-on input with an action. Each record gives which instance of its action it is, where it sits, and its lights | To configure host inputs, or to show where each control sits |
 | 11 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
@@ -743,7 +743,7 @@ State:
 
 | Off | Field |
 |---|---|
-| +0 | Flags: bit 0 a host frame is shown; bit 1 the brightness step shown is unsaved; rest zero |
+| +0 | Flags: bit 0 a host frame is shown; bit 1 the brightness step shown is unsaved; bit 2 the animations are idle; rest zero |
 | +1 | Current InputMode |
 | +2 | Active input profile (page 9). 1 is the base mapping |
 | +3 | Player number the host assigned, 0 none (below) |
@@ -780,6 +780,12 @@ Settings, as `CONFIGURE` last set them, or the defaults:
 State flag bit 0 is set while a takeover is live, from the `COMMIT` that starts
 it until it ends (Session state). Bit 1 is set while the step shown differs
 from the saved step, from an unsaved `SET_BRIGHTNESS` until the step ends.
+Bit 2 is set while the animations' idle timeout
+(`AnimationOptions.autoDisableTime`) has the on-board animations off. A button
+press, or `SET_ANIMATION` changing the animation to one other than off, wakes
+them and restarts the timeout. Frames, takeovers and other commands do not.
+While the animations are off, an overlay's unstaged pixels are off too. Going
+idle and waking each raise `STATE_CHANGED`.
 
 **Page 2 - Input modes**, one record per mode `SET_INPUT_MODE` accepts, in
 `InputMode` order. These are every `InputMode` the firmware has a driver for,
@@ -812,7 +818,7 @@ without flag bit 0.
 
 | Bit | Group | Bytes |
 |---|---|---|
-| 0 | Summary | 28 |
+| 0 | Summary | 30 |
 | 1 | Changes | 8 |
 
 Summary:
@@ -823,19 +829,21 @@ Summary:
 | +2..3 | Addressable LED limit: `STAGE`, `UNSTAGE` and `FILL` write below it |
 | +4..5 | Render rate in Hz; 0 not stated |
 | +6 | Colour format (the firmware's `LEDFormat`): 0 GRB, 1 RGB, 2 GRBW, 3 RGBW |
-| +7 | Brightness maximum, 0-255; at least the step count |
-| +8 | Brightness steps: the highest State brightness step |
-| +9 | Animation speed steps: the highest speed on page 12 |
-| +10..11 | Grid width: the highest light grid X, plus one; 0 when there are no lights |
-| +12..13 | Grid height, likewise |
-| +14..15 | Profiles: page 9's total |
-| +16..17 | Controls: page 10's total |
-| +18..19 | Lit controls |
-| +20..21 | Unlit controls |
-| +22..23 | Lights: page 11's total |
-| +24..25 | Animations: page 12's total |
-| +26 | Button layout, left: `DisplayOptions.buttonLayout` (`ButtonLayout`), verbatim |
-| +27 | Button layout, right: `DisplayOptions.buttonLayoutRight` (`ButtonLayoutRight`), verbatim |
+| +7 | Flags: bit 0 white channel, set when the chain has a white emitter, as GRBW and RGBW chains do; rest zero |
+| +8 | Brightness maximum, 0-255; at least the step count |
+| +9 | Brightness steps: the highest State brightness step |
+| +10 | Animation speed steps: the highest speed. Speeds run from 0 to it. GP2040-CE's speed hotkeys step from 0 to one below it, and its web configurator sets 1 to it |
+| +11 | Button layout, left: `DisplayOptions.buttonLayout` (`ButtonLayout`), verbatim |
+| +12 | Button layout, right: `DisplayOptions.buttonLayoutRight` (`ButtonLayoutRight`), verbatim |
+| +13 | Button layout orientation: `DisplayOptions.buttonLayoutOrientation` (`ButtonLayoutOrientation`), verbatim |
+| +14..15 | Grid width: the highest light grid X, plus one; 0 when there are no lights |
+| +16..17 | Grid height, likewise |
+| +18..19 | Profiles: page 9's total |
+| +20..21 | Controls: page 10's total |
+| +22..23 | Lit controls |
+| +24..25 | Unlit controls |
+| +26..27 | Lights: page 11's total |
+| +28..29 | Animations: page 12's total |
 
 Changes:
 
@@ -849,10 +857,15 @@ to the limit can be staged but are never shown. The lit and unlit counts come
 from the same walk as the Controls records and carry the same token.
 
 The button layouts are the ones the board's display draws, set by the board's
-configuration or its user. `proto/enums.proto` lists them. They hint at the
-board's shape, such as a stick, an all-button layout, a dance pad or a drum. A
-host can use them to draw or describe the board and should not depend on them.
-A board without a display still carries its configuration's values.
+configuration or its user. `proto/enums.proto` lists them. The orientation says
+where the display draws them, each in one half of the display: 0 each in its
+own half, 1 southpaw, each in the other half and flipped left to right within
+it, and 2 switched, each in the other half. A host that draws the display's
+layouts needs it. It changes only the display: the light positions (Grid) do
+not follow it. The layouts hint at the board's shape,
+such as a stick, an all-button layout, a dance pad or a drum. A host can use
+them to draw or describe the board and should not depend on them. A board
+without a display still carries its configuration's values.
 
 A change counter steps, 255 back to 0, when the board finds that anything its
 page reports has changed. Page 8's counter covers its Summary group.
@@ -884,7 +897,7 @@ and each other profile remaps the pins.
 | Off | Field |
 |---|---|
 | +0 | Profile number, as GP2040-CE numbers them |
-| +1 | Flags: bit 0 enabled |
+| +1 | Flags: bit 0 enabled; rest zero |
 | +2..17 | Label, up to 16 bytes, NUL-padded |
 
 Every defined profile is listed, enabled or not. Profile 1 is always enabled.
@@ -960,7 +973,7 @@ light is tied to a pin. A case or player light takes a palette slot instead. A
 light's identity is its record ordinal, which is also its `STAGE` address.
 
 The page is complete whenever the lighting interface exists. A board with no
-LED output has no lights (Summary `+22..23` is 0). LEDs at or past the
+LED output has no lights (Summary `+26..27` is 0). LEDs at or past the
 addressable LED limit (Summary `+2..3`) are never written and not counted in
 the extent, so a host must clip a light's LEDs to the limit. An address whose
 lights all lie at or past it is skipped (Staging).
@@ -985,7 +998,7 @@ All groups make a 16-byte record, three per reply. Positions alone (bit 4) give
 | Kind | See Actions and kinds |
 | Flags | Bit 0 duplicated: the owner pin is a control whose action another control also has; rest zero |
 | Owner pin | The page 10 key of the input a button or turbo light is tied to, a GPIO pin or a Hall-effect trigger; 0xFF none |
-| Owner action | That pin's action in the active profile, verbatim; 0x8000 none |
+| Owner action | The owner's action as page 10 gives it, verbatim: from the active profile for a GPIO pin, from its add-on for a Hall-effect trigger; 0x8000 none |
 | Owner instance, instances | The owning control's instance and instances (Controls group 1); 0 when there is no owner pin or it is not a control |
 | Grid X, Y | The light's cell (Grid, under page 8) |
 | Palette slot | The light's slot in the animation profile's non-button colour palette (case and player lights); opaque, not unique; 0xFF none |
@@ -1015,7 +1028,7 @@ reply, and bit 1 alone sixteen.
 |---|---|
 | Flags | Bit 0 enabled; rest zero |
 | Idle, pressed and case effect | `AnimationNonPressedEffects`, `AnimationPressedEffects` and `AnimationNonPressedEffects`, verbatim, 8-bit each |
-| Idle, pressed and case speed | The speeds the web configurator's LED page shows, as GP2040-CE stores them, 8-bit each; 0 to the Summary's speed steps (`+9`) |
+| Idle, pressed and case speed | The speeds the web configurator's LED page shows, as GP2040-CE stores them, 8-bit each; 0 to the Summary's speed steps (`+10`) |
 
 The total is what the board offers, which varies by board and configuration.
 Actions and kinds lists the effects.
@@ -1127,12 +1140,12 @@ animations' values do. `FILL` takes the same pixel formats.
 
 When `CONFIGURE` `[6]` is 1, pixels are scaled by the board's brightness as its
 animations are. The scale is step x (maximum / steps, rounded down) / 255, from
-State `+6` and Summary `+7` and `+8`. When it is 0 they are sent at full value.
+State `+6` and Summary `+8` and `+9`. When it is 0 they are sent at full value.
 
-RGBW pixels may be sent to any chain. The W byte renders only on GRBW and RGBW
-chains.
+RGBW pixels may be sent to any chain. The W byte renders only on a chain with a
+white emitter, as the Summary's flag bit 0 shows.
 
-- On those chains an RGBW pixel renders as sent, whatever its W, with R, G and
+- On such a chain an RGBW pixel renders as sent, whatever its W, with R, G and
   B on the colour emitters and W on the white one. With the subtractive
   conversion (W = min(R,G,B), RGB reduced by W), each colour lands on the
   emitters that produce it.
@@ -1222,8 +1235,8 @@ An action and a kind are attributes and not keys. `STAGE` by either reaches
 every light carrying it, and `UNSTAGE` takes the same addresses. Player, turbo
 and case lights are lights, keyed by ordinal. Player and case lights have no
 pin. A turbo light is tied to a pin as a button light is, and joins its control
-by that pin. An I/O-expander control has no lights. No join uses a sentinel. 0xFF,
-0xFFFF and 0x8000 mean none and never equal a key.
+by that pin. An I/O-expander control has no lights. No join uses a sentinel.
+0xFF, 0xFFFF and 0x8000 mean none and never equal a key.
 
 ### Number spaces
 
@@ -1274,17 +1287,19 @@ Each report is 64 bytes, and every byte not shown is zero.
              00 00 00 00 00 00        [6..11]  no token check; mask 0, all
     reply    82 42 00                 its reply: sequence 0x42, status 0
              08 00 00 01 00           [3..7]   page 8, start 0, total 1
-             01 24 03 00              [8..11]  1 record, stride 36, groups 0-1
+             01 26 03 00              [8..11]  1 record, stride 38, groups 0-1
              10 00 64 00 28 00        [12..17] LED extent 16, limit 100, 40 Hz
-             00 63 0a 0a              [18..21] GRB; brightness maximum 99,
+             00 00                    [18..19] GRB, no white channel
+             63 0a 0a                 [20..22] brightness maximum 99,
                                                10 steps; 10 speed steps
-             11 00 09 00              [22..25] grid 17 x 9
-             01 00 15 00 10 00 05 00  [26..33] 1 profile; 21 controls, 16 lit
+             1b 1f 00                 [23..25] button layouts 27 and 31, the
+                                               board's own, orientation 0
+             11 00 09 00              [26..29] grid 17 x 9
+             01 00 15 00 10 00 05 00  [30..37] 1 profile; 21 controls, 16 lit
                                                and 5 unlit
-             10 00 04 00              [34..37] 16 lights, 4 animations
-             1b 1f                    [38..39] button layouts 27 and 31, the
-                                               board's own
-             00 00 00 00 00 00 00 00  [40..47] change counters, pages 8-15
+             10 00 04 00              [38..41] 16 lights, 4 animations
+             00 00 00 00 02 00 00 00  [42..49] change counters, pages 8-15,
+                                               page 12's at 2
              xx xx xx xx              [60..63] state token
 
 `STAGE` of LEDs 0-3 as red, green, blue and white, published by
@@ -1398,8 +1413,8 @@ yet seen the change, and its next frame is refused:
   never exceed the 48-byte record area, since `STATE_CHANGED` carries all of
   them.
 - Values carried from GP2040-CE are those of the running firmware: actions,
-  kinds, `InputMode`, colour format, effect IDs, button layouts and reboot
-  targets.
+  kinds, `InputMode`, colour format, effect IDs, button layouts and their
+  orientation, and reboot targets.
 - A host must send unused and reserved bytes and bits as zero. The board
   ignores unknown flag bits, mask bits, bits and bytes a layout marks zero, and
   trailing payload bytes. It zeroes every unused reply byte and bit.
@@ -1462,9 +1477,9 @@ and its acknowledgement take 4 ms and a one-report frame 2 ms.
 Any application that can read and write HID reports can implement the protocol.
 Examples:
 
-- [gp2040ce-binary-tools][tools] has small Python reference clients for
-  discovery, capability decoding, LED control, settings, events, board
-  management, conformance checks and performance measurements.
+- [gp2040ce-hostlighting][tools] is a Python library for hosts, with
+  reference tools for discovery, capability decoding, LED control, settings,
+  events, board management, conformance checks and performance measurements.
 - hlp-spice2x shows the cabinet lighting of games running under spice2x on a
   GP2040-CE controller's buttons.
 - MESH (Modern Emulator State Hub) is a cross-platform desktop app that drives
@@ -1472,7 +1487,7 @@ Examples:
   automatically, seeds per-button LED maps from the capability pages, and
   leaves the board's own animations running when idle.
 
-[tools]: https://github.com/OpenStickCommunity/gp2040ce-binary-tools
+[tools]: https://github.com/djGLiTCH/gp2040ce-hostlighting
 
 ## Changelog
 
