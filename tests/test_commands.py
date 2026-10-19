@@ -182,7 +182,8 @@ def test_a_failed_give_up_is_a_warning(hlp_run_on_fake_board, hlp_fake_board, ca
     hlp_fake_board.disconnect_on = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)}
     hlp_run_on_fake_board(tools.fill, '--seconds', '0', 'FF0000')
     assert 'released' not in capsys.readouterr().out
-    assert 'could not give the claim up. The keepalive timeout restores the animations' in caplog.text
+    assert 'could not give the claim up, the board is no longer connected' in caplog.text
+    assert 'The keepalive timeout restores the animations' in caplog.text
 
 
 @pytest.mark.parametrize('action, flags', [(hl.CLAIM_TAKE, 0), (hl.CLAIM_TAKE, hl.FLAG_KEEPALIVE),

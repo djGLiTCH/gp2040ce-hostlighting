@@ -347,7 +347,7 @@ def _print_lights(device: HostLightingDevice, names: dict) -> None:
             owner = key_name(light.owner.pin)
             if light.owner.action is not None:
                 owner += ' action ' + _named(light.owner.action, names, 'GpioAction')
-            if light.owner_instances.instances > 1:
+            if (light.owner_instances.instances or 0) > 1:
                 owner += f" (instance {light.owner_instances.instance} of {light.owner_instances.instances})"
             pieces.append(owner)
         pieces.append(f"at ({light.grid.x},{light.grid.y})")
@@ -429,7 +429,7 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without giving up,
     the step would end at the keepalive timeout.
     """
-    with LightsClaim(device, 'hlp-settings').take(exclusive, force) as claim:
+    with LightsClaim(device, 'hlp-settings', wait_after_takeover=False).take(exclusive, force) as claim:
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds)
@@ -536,7 +536,7 @@ def fill():
     kinds = {'buttons': (KIND_BUTTON,), 'case': (KIND_CASE,), 'pleds': KIND_PLAYERS}
     device = open_device(args.board_id)
     try:
-        with LightsClaim(device, 'hlp-fill').take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-fill', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
             if args.scope == 'all':
                 device.fill(colour, pixel_format, commit=True)
             else:
@@ -579,7 +579,7 @@ def set_light():
     pixel_format = PIXEL_RGBW if any(len(colour) == 4 for _, colour in entries) else PIXEL_RGB
     device = open_device(args.board_id)
     try:
-        with LightsClaim(device, 'hlp-set-light').take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-set-light', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome.applied for outcome in outcomes)
             skipped = sum(outcome.skipped for outcome in outcomes)
@@ -612,7 +612,7 @@ def stream():
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        with LightsClaim(device, 'hlp-stream').take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-stream', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:
         device.close()
@@ -720,7 +720,7 @@ def buttons():
     try:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
-        with LightsClaim(device, 'hlp-buttons').take(args.exclusive, args.force) as claim:
+        with LightsClaim(device, 'hlp-buttons', wait_after_takeover=False).take(args.exclusive, args.force) as claim:
             _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names()))
     finally:
         device.close()

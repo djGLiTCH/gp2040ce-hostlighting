@@ -95,7 +95,8 @@ def test_publish_frame_sends_the_last_report_once_more(hlp_model_board):
     limit = [1]
     assert publish_frame(device, frame) == FrameResult(acknowledged=True, resent=True)
     limit = [3]
-    assert publish_frame(device, frame) == FrameResult(acknowledged=False, resent=True)
+    result = publish_frame(device, frame)
+    assert result == FrameResult(acknowledged=False, resent=True) and not result and result.refused is None
     assert len(hlp_model_board.sent(hl.CMD_STAGE)) == 4
 
 

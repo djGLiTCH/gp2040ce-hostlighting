@@ -14,8 +14,8 @@ from typing import Iterable, Optional
 
 from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, CMD_CLEAR,
                                             CMD_STAGE, FLAG_COMMIT_AFTER, FLAG_NO_REPLY, PIXEL_RGB, PIXEL_RGBW,
-                                            PIXEL_SIZES, STATUS_OK, HostLightingDevice, HostLightingTimeoutError,
-                                            stage_entry_payloads, stage_run_payloads)
+                                            PIXEL_SIZES, STATUS_OK, Controller, HostLightingDevice,
+                                            HostLightingTimeoutError, stage_entry_payloads, stage_run_payloads)
 
 __all__ = ['ACKNOWLEDGEMENT_TIMEOUT', 'Frame', 'FrameResult', 'publish_frame']
 
@@ -27,12 +27,18 @@ ACKNOWLEDGEMENT_TIMEOUT = 0.25
 class FrameResult:
     """What became of a published frame.
 
-    `acknowledged` is true when the frame's last report was answered with status 0. `resent` is true when that
-    report was sent a second time.
+    `acknowledged` is true when the frame's last report was answered with status 0, and the result is true
+    then. `resent` is true when that report was sent a second time. `refused` is the holder a status 4 refusal
+    showed, where Session.show() turned the refusal into a result. publish_frame() raises a refusal instead.
     """
 
     acknowledged: bool
     resent: bool
+    refused: Optional[Controller] = None
+
+    def __bool__(self) -> bool:
+        """Say whether the frame was acknowledged."""
+        return self.acknowledged
 
 
 class _Part:

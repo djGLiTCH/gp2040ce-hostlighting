@@ -472,7 +472,7 @@ def _check_lights(checks: _Checker, controls: tuple, lights: tuple) -> Iterator[
     wrong = 0
     for light in lights:
         control = by_key.get(light.owner.pin)
-        none = Instances(instance=0, instances=0)
+        none = Instances(instance=None, instances=None)
         if light.owner.pin is None:
             expected = (None, False, none)
         elif control is not None:
@@ -1123,8 +1123,8 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
     :param quick: shorter timing runs
     :param open_second: opens a second handle on the board, for the delivery checks
     """
-    checks, keepalive = _Checker(), claim.keepalive
-    claim.keepalive = False
+    checks, keepalive, waits = _Checker(), claim.keepalive, claim.wait_after_takeover
+    claim.keepalive, claim.wait_after_takeover = False, False
     try:
         yield from _run_checks(device, checks, claim, settings, quick, open_second)
     except HostLightingClaimedError as error:
@@ -1133,7 +1133,7 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
     except HostLightingError as error:
         yield checks.check(False, 'the checks ran to the end', str(error))
     finally:
-        claim.keepalive = keepalive
+        claim.keepalive, claim.wait_after_takeover = keepalive, waits
 
 
 def _run_checks(device: HostLightingDevice, checks: _Checker, claim: LightsClaim, settings: bool, quick: bool,

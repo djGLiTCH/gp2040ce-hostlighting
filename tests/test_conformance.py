@@ -300,8 +300,8 @@ def test_conformance_reports_an_ownerless_light_with_an_action(hlp_run_on_model_
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert 'FAIL  Lights owner action, flag and instances agree with Controls' in out
-    assert ('light 1: (5, False, Instances(instance=0, instances=0)) vs '
-            '(None, False, Instances(instance=0, instances=0))') in out
+    assert ('light 1: (5, False, Instances(instance=None, instances=None)) vs '
+            '(None, False, Instances(instance=None, instances=None))') in out
 
 
 def test_conformance_reports_an_unlit_control_with_a_position(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -720,7 +720,7 @@ def claimed_on_the_board_clock(board, monkeypatch):
     for module in (hl, hl_conformance, claim_module):
         monkeypatch.setattr(module, 'time', timing)
     device = fake_device(board)
-    return device, LightsClaim(device, 'host').take()
+    return device, LightsClaim(device, 'host', wait_after_takeover=False).take()
 
 
 def test_run_checks_yields_each_result_as_it_is_made(hlp_model_board, monkeypatch):

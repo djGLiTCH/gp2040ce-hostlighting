@@ -84,7 +84,7 @@ __all__ = [
     # errors
     'HostLightingError', 'HostLightingRejectedError', 'HostLightingTimeoutError', 'HostLightingStaleTokenError',
     'HostLightingDisconnectedError', 'HostLightingUnansweredError', 'HostLightingIncompatibleError',
-    'HostLightingGroupNotReadError', 'HostLightingClaimedError',
+    'HostLightingGroupNotReadError', 'HostLightingBoardSelectionError', 'HostLightingClaimedError',
     # the device, discovery and capabilities
     'HostLightingDevice', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
     'list_boards', 'missing_capabilities', 'require_capabilities',
@@ -546,7 +546,7 @@ def _control_input(data: bytes) -> ControlInput:
 
 
 def _instances(data: bytes) -> Instances:
-    return Instances(instance=_u16(data, 0), instances=_u16(data, 2))
+    return Instances(instance=_u16(data, 0) or None, instances=_u16(data, 2) or None)
 
 
 def _position(data: bytes) -> Position:
@@ -719,7 +719,7 @@ class HostLightingRejectedError(HostLightingError):
         if status == STATUS_CLAIMED and holder:
             detail = (f" by '{holder.application_name}' (claim 0x{holder.holder_token:08X}, generation "
                       f"{holder.claim_generation})" if holder.holder_token
-                      else f": the claim has ended (generation {holder.claim_generation})")
+                      else f", the claim having ended under generation {holder.claim_generation}")
         name = COMMAND_NAMES.get(command)
         super().__init__(f"command 0x{command:02X}{f' ({name})' if name else ''} rejected: "
                          f"{STATUS_NAMES.get(status, hex(status))}{detail}")
@@ -764,6 +764,29 @@ class HostLightingGroupNotReadError(HostLightingError, AttributeError):
         self.group = group
         self.ordinal = ordinal
         super().__init__(f"page {page} record {ordinal}: the {group} group was not read")
+
+
+class HostLightingBoardSelectionError(HostLightingError):
+    """open_device() found no board to open: none at all, none matching the board ID prefix, or several.
+
+    A host can word its own message from what was found. `matched` is empty, or holds the boards the prefix left
+    to choose between.
+    """
+
+    def __init__(self, message: str, prefix: str, boards: tuple, matched: tuple, other_majors: tuple):
+        """Record what was found.
+
+        :param message: the library's message
+        :param prefix: the board ID prefix asked for
+        :param boards: a BoardListing for each protocol 2 board found
+        :param matched: the boards among them the prefix matches
+        :param other_majors: the usage of each interface that speaks another protocol major
+        """
+        self.prefix = prefix
+        self.boards = boards
+        self.matched = matched
+        self.other_majors = other_majors
+        super().__init__(message)
 
 
 class HostLightingClaimedError(HostLightingError):
@@ -1437,7 +1460,7 @@ def _import_hid():
     try:
         import hid
     except ImportError as error:
-        raise HostLightingError("the hidapi package is needed: pip install hidapi") from error
+        raise HostLightingError("the hidapi package is needed. Install it with pip install hidapi") from error
     return hid
 
 
@@ -1464,9 +1487,8 @@ def find_other_majors() -> list:
             if info.get('usage_page') == USAGE_PAGE and info.get('usage') != USAGE]
 
 
-def _no_interface() -> str:
+def _no_interface(usages: tuple) -> str:
     """Say that no protocol 2 interface was found, naming the boards of another major there are."""
-    usages = find_other_majors()
     note = ''
     if usages:
         note = (f" {len(usages)} interface(s) speak another protocol major" +
@@ -1484,7 +1506,7 @@ def _probe(info: dict) -> Optional[tuple[Hello, HostLightingDevice]]:
     try:
         device = HostLightingDevice(info['path'])
     except OSError:
-        logger.warning("skipping an interface that will not open (on Linux, check its udev rule)")
+        logger.warning("skipping an interface that will not open. On Linux, check its udev rule")
         logger.debug("opening %s failed", info['path'], exc_info=True)
         return None
     try:
@@ -1498,6 +1520,16 @@ def _probe(info: dict) -> Optional[tuple[Hello, HostLightingDevice]]:
                    hello.major, hello.minor, PROTOCOL_MAJOR)
     device.close()
     return None
+
+
+def _listing(hello: Hello, device: HostLightingDevice) -> BoardListing:
+    """List one opened board by its HELLO and page 0, then close it."""
+    try:
+        identity = _label(device, hello)
+    finally:
+        device.close()
+    return BoardListing(board_id=hello.board_id, board_label=identity.board_label,
+                        firmware_version=identity.firmware_version, major=hello.major, minor=hello.minor)
 
 
 def _label(device: HostLightingDevice, hello: Hello) -> Identity:
@@ -1520,28 +1552,28 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
 
     :param board_id_prefix: optional hex prefix of the HELLO factory board ID
     :return: an opened HostLightingDevice
-    :raises HostLightingError: when no board, or more than one, matches
+    :raises HostLightingBoardSelectionError: when no board, or more than one, matches
     """
     infos = find_devices()
     if not infos:
-        raise HostLightingError(_no_interface())
-    candidates = []
-    for found in (_probe(info) for info in infos):
-        if found and found[0].board_id.startswith(board_id_prefix.upper()):
-            candidates.append(found)
-        elif found:
-            found[1].close()
-    if not candidates:
-        raise HostLightingError(f"no board speaking protocol {PROTOCOL_MAJOR}.x matches ID prefix "
-                                f"'{board_id_prefix}'")
-    if len(candidates) > 1:
-        boards = []
-        for hello, device in candidates:
-            label = _label(device, hello).board_label
-            boards.append(f"{hello.board_id} ({label})" if label else hello.board_id)
-            device.close()
-        raise HostLightingError(f"multiple boards found: {', '.join(boards)}. Choose one by a board ID prefix")
-    return candidates[0][1]
+        usages = tuple(find_other_majors())
+        raise HostLightingBoardSelectionError(_no_interface(usages), board_id_prefix, (), (), usages)
+    found = [probe for probe in (_probe(info) for info in infos) if probe]
+    matching = [hello.board_id for hello, _ in found if hello.board_id.startswith(board_id_prefix.upper())]
+    if len(matching) == 1:
+        for hello, device in found:
+            if hello.board_id != matching[0]:
+                device.close()
+        return next(device for hello, device in found if hello.board_id == matching[0])
+    boards = tuple(_listing(hello, device) for hello, device in found)
+    matched = tuple(board for board in boards if board.board_id in matching)
+    if not matched:
+        message = f"no board speaking protocol {PROTOCOL_MAJOR}.x matches ID prefix '{board_id_prefix}'"
+    else:
+        named = ', '.join(f"{board.board_id} ({board.board_label})" if board.board_label else board.board_id
+                          for board in matched)
+        message = f"multiple boards found: {named}. Choose one by a board ID prefix"
+    raise HostLightingBoardSelectionError(message, board_id_prefix, boards, matched, ())
 
 
 def find_board(board_id: str) -> Optional[HostLightingDevice]:
@@ -1574,13 +1606,7 @@ def list_boards() -> list:
         found = _probe(info)
         if not found:
             continue
-        hello, device = found
-        try:
-            identity = _label(device, hello)
-        finally:
-            device.close()
-        boards.append(BoardListing(board_id=hello.board_id, board_label=identity.board_label,
-                                   firmware_version=identity.firmware_version, major=hello.major, minor=hello.minor))
+        boards.append(_listing(*found))
     return boards
 
 
@@ -1626,5 +1652,5 @@ def require_capabilities(hello: Hello, requirements: Requirements) -> None:
                                             f"library speaks {PROTOCOL_MAJOR}.x")
     missing = missing_capabilities(hello, requirements)
     if missing:
-        raise HostLightingIncompatibleError(f"the board (protocol {hello.major}.{hello.minor}) does not offer "
-                                            + ', '.join(missing))
+        raise HostLightingIncompatibleError(f"the board speaks protocol {hello.major}.{hello.minor} and does not "
+                                            "offer " + ', '.join(missing))

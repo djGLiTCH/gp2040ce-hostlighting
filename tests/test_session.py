@@ -62,7 +62,9 @@ def test_start_checks_what_the_session_and_the_host_need(board):
     session = session_on(board, require=Requirements(addressing_modes=frozenset({9})))
     with pytest.raises(hl.HostLightingIncompatibleError, match=r'addressing mode 9'):
         session.start()
-    assert not board.sent(hl.CMD_CLAIM)
+    sent = len(board.requests)
+    session.close()
+    assert not board.sent(hl.CMD_CLAIM) and commands(board, sent) == []
     assert hl.CMD_RELEASE in session_on(board, None).requirements().commands
     assert 3 in session_on(board, exclusive=True).requirements().request_flags
 
@@ -122,12 +124,13 @@ def test_a_claim_taken_over_and_given_back_is_taken_again(board):
 
 
 def test_a_lost_claim_stops_the_frames(board, caplog):
-    """Test LOST, a frame not sent while the claim is lost, and the give up that sends nothing."""
-    session = session_on(board).start()
+    """Test LOST without wait_after_takeover, no frame sent while the claim is lost, and a give up sending nothing."""
+    session = session_on(board, wait_after_takeover=False).start()
     board.take_over()
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         update = session.poll()
     assert update.claim.kind is ClaimChangeKind.LOST and update.claim.holder.application_name == 'Other'
+    assert session.claim.state is ClaimState.LOST
     sent = len(board.requests)
     assert session.show(frame_of(0)) is None
     session.close()
@@ -135,12 +138,13 @@ def test_a_lost_claim_stops_the_frames(board, caplog):
 
 
 def test_a_refused_frame_goes_to_the_claim(board, monkeypatch):
-    """Test a status 4 frame refusal: no events applied first, the claim lost, and the next poll saying so."""
+    """Test a status 4 frame refusal: no events applied first, the claim waiting, and the next poll saying so."""
     session = session_on(board).start()
     monkeypatch.setattr(session.device, 'take_events', lambda: [])     # the change not yet seen
     board.take_over()
-    assert session.show(frame_of(0)) == FrameResult(acknowledged=False, resent=False)
-    assert session.claim.state is ClaimState.LOST
+    holder = hl.Controller(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
+    assert session.show(frame_of(0)) == FrameResult(acknowledged=False, resent=False, refused=holder)
+    assert session.claim.state is ClaimState.WAITING
     assert session.poll().claim.kind is ClaimChangeKind.LOST
     board.disconnect_on = {hl.CMD_STAGE}
     session.claim.state = ClaimState.HELD
@@ -176,6 +180,12 @@ def test_a_board_without_events_is_polled(board, monkeypatch):
     board.sleep(1.0)
     update = session.poll()
     assert update.claim.kind is ClaimChangeKind.LOST and hl.CMD_GET_PAGE in commands(board, sent)
+    board.let_go()
+    slow = session_on(board, wait=True, state_poll_seconds=5.0).start()
+    sent = len(board.requests)
+    board.sleep(1.0)
+    slow.poll()
+    assert hl.CMD_GET_PAGE not in commands(board, sent)
 
 
 def test_unanswered_renewals_and_frames_lose_the_board(board):
@@ -250,6 +260,25 @@ def test_a_host_that_does_not_claim(board):
     assert board.requests[-1][3] == hl.BRIGHTNESS_SAVED and not board.live
 
 
+def test_a_host_that_does_not_claim_sends_its_settings_while_unclaimed(board):
+    """Test CONFIGURE at the start, none while another application holds the claim, then again once it has gone."""
+    overlay = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=900)
+    session = session_on(board, None, settings=overlay).start()
+    assert hl.CMD_CONFIGURE in session.requirements().commands
+    assert board.overlay == 1 and board.keepalive_ms == 900
+    sent = len(board.requests)
+    session.poll()
+    assert hl.CMD_CONFIGURE not in commands(board, sent)
+    board.take_over()
+    session.poll()
+    assert hl.CMD_CONFIGURE not in commands(board, sent) and board.overlay == 0
+    board.let_go()
+    session.poll()
+    assert commands(board, sent).count(hl.CMD_CONFIGURE) == 1 and board.overlay == 1
+    plain = session_on(board, None)
+    assert hl.CMD_CONFIGURE not in plain.requirements().commands
+
+
 def test_a_host_that_does_not_claim_leaves_a_holder_alone(board, caplog):
     """Test that no frame is sent while another application holds the claim, and close sends nothing then."""
     session = session_on(board, None).start()
@@ -267,7 +296,7 @@ def test_a_host_that_does_not_claim_leaves_a_holder_alone(board, caplog):
 
 
 def test_a_refresh_that_fails_is_tried_again(board, monkeypatch):
-    """Test a refresh unanswered, refused with status 4, or changing under the reads, then one that lands."""
+    """Test a refresh unanswered, changing under the reads and left a while, refused with status 4, then landing."""
     session = session_on(board).start()
     board.reconfigure(lights=[light_record(0, pin=2, action=9, dup=1, instance=1, instances=2, x=1, y=0),
                               board.lights[1]])
@@ -282,14 +311,88 @@ def test_a_refresh_that_fails_is_tried_again(board, monkeypatch):
         return refresh(device, attempts)
     monkeypatch.setattr(session.cache, 'refresh', failing)
     assert session.poll().pages_read == frozenset() and session.poll().pages_read == frozenset()
+    sent = len(board.requests)
+    assert session.poll().pages_read == frozenset() and commands(board, sent) == []
+    board.sleep(1.0)
     update = session.poll()
     assert update.claim.kind is ClaimChangeKind.LOST and update.pages_read == frozenset()
     session.claim.state = ClaimState.HELD
     assert hl.PAGE_LIGHTS in session.poll().pages_read
     board.reconfigure(lights=board.lights[:1])
+    failures.append(hl.HostLightingRejectedError(hl.CMD_GET_PAGE, hl.STATUS_UNSUPPORTED, 0))
+    assert session.poll().pages_read == frozenset()
+    board.sleep(1.0)
     failures.append(hl.HostLightingDisconnectedError('gone'))
     with pytest.raises(hl.HostLightingDisconnectedError):
         session.poll()
+
+
+def test_a_renewal_unanswered_in_show_is_counted(board, monkeypatch):
+    """Test that the renewal a refusal showing the claim ended leads to, unanswered, counts toward the limit."""
+    session = session_on(board).start()
+    monkeypatch.setattr(session.device, 'take_events', lambda: [])     # the change not yet seen
+    board.let_go()
+    answer = board.answer
+    board.answer = lambda command, sequence, request: (None if command == hl.CMD_CLAIM
+                                                       else answer(command, sequence, request))
+    assert session.show(frame_of(0)).refused.holder_token == 0
+    board.sleep(0.7)
+    session.poll()
+    board.sleep(0.7)
+    with pytest.raises(hl.HostLightingUnansweredError):
+        session.poll()
+
+
+def test_a_poll_ends_at_the_first_request_unanswered(board):
+    """Test that a poll with an unanswered renewal sends nothing more, so that one poll counts one request."""
+    session = session_on(board).start()
+    board.reconfigure(lights=board.lights[:1])
+    answer = board.answer
+    board.answer = lambda command, sequence, request: (None if command == hl.CMD_CLAIM
+                                                       else answer(command, sequence, request))
+    board.sleep(0.7)
+    sent = len(board.requests)
+    assert session.poll().pages_read == frozenset() and commands(board, sent) == [hl.CMD_CLAIM]
+    board.answer = answer
+    board.sleep(0.7)
+    assert hl.PAGE_LIGHTS in session.poll().pages_read
+
+
+def test_reconnect_to_a_board_not_answering_yet_tries_again(board):
+    """Test that a board found but silent, or a bus that cannot be listed, leaves reconnect() to try again."""
+    session = session_on(board).start()
+    answer = board.answer
+    board.answer = lambda command, sequence, request: None
+    found = []
+
+    def reopen(board_id):
+        found.append(fake_device(board))
+        return found[-1]
+    session.reopen = reopen
+    assert not session.reconnect() and found[-1].closed
+
+    def unclosable(board_id):
+        device = fake_device(board)
+        device.close = lambda: (_ for _ in ()).throw(OSError('gone'))
+        return device
+    session.reopen = unclosable
+    assert not session.reconnect()
+    session.reopen = lambda board_id: (_ for _ in ()).throw(OSError('enumeration failed'))
+    assert not session.reconnect()
+    board.answer, session.reopen = answer, reopen
+    session.require = Requirements(addressing_modes=frozenset({9}))
+    with pytest.raises(hl.HostLightingIncompatibleError):
+        session.reconnect()
+    session.require = Requirements()
+    assert session.reconnect() and session.claim.state is ClaimState.HELD
+
+
+def test_the_cache_keeps_the_pages_and_groups_asked_for(board):
+    """Test pages and masks, which leave the other pages and groups unread."""
+    session = session_on(board, pages=[hl.PAGE_LIGHTS], masks={hl.PAGE_LIGHTS: 0b111}).start()
+    pages = [request[3] for request in board.sent(hl.CMD_GET_PAGE)]
+    assert pages == [hl.PAGE_SUMMARY, hl.PAGE_LIGHTS, hl.PAGE_STATE]
+    assert session.cache.controls is None and not session.cache.lights[0].has('grid')
 
 
 def test_a_page_1_read_refused_goes_to_the_claim(board, monkeypatch):
@@ -322,6 +425,9 @@ def test_reconnect_edges_and_a_session_never_started(board, monkeypatch):
     never = session_on(board)
     never.close()
     assert never.device.closed
+    unclaiming = session_on(board, None)
+    unclaiming.close()
+    assert unclaiming.device.closed
 
 
 def test_changes_found_in_turn_combine():

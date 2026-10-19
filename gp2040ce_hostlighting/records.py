@@ -298,10 +298,13 @@ class ControlInput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Instances:
-    """A control's place among the controls with its action, on page 10 and for a light's owner on page 11."""
+    """A control's place among the controls with its action, on page 10 and for a light's owner on page 11.
 
-    instance: int
-    instances: int
+    Both are None for a light with an owner pin that is none or not a control, which the board sends as 0.
+    """
+
+    instance: Optional[int]
+    instances: Optional[int]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

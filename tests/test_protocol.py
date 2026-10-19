@@ -113,7 +113,7 @@ def test_decode_records_honours_the_echoed_groups():
     assert (header.stride, header.count, header.groups) == (9, 5, 0b11100)
     decoded = hl.decode_records(reply)
     assert decoded[4] == records.LightRecord(ordinal=4, owner=records.Owner(pin=6, action=5),
-                                             owner_instances=records.Instances(instance=0, instances=0),
+                                             owner_instances=records.Instances(instance=None, instances=None),
                                              grid=records.GridCell(x=4, y=1))
     assert decoded[4].groups == {'owner', 'owner_instances', 'grid'}
     reply = page_reply(hl.PAGE_LIGHTS, lights, start=0, mask=0b10000)
@@ -323,7 +323,7 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.holder == hl.Controller(holder_token=0, application_name='', exclusive=False,
                                                   claim_generation=4)
-    assert str(rejected.value) == 'command 0x21 (RELEASE) rejected: CLAIMED: the claim has ended (generation 4)'
+    assert str(rejected.value) == 'command 0x21 (RELEASE) rejected: CLAIMED, the claim having ended under generation 4'
 
 
 def test_rejected_builds_the_error_from_a_reply():
@@ -527,10 +527,17 @@ def test_open_device_selects_by_board_id_and_major(monkeypatch):
     monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in boards])
     monkeypatch.setattr(hl, 'HostLightingDevice', lambda path: fake_device(boards[path]))
     assert hl.open_device('4330').device is boards[b'a']
-    with pytest.raises(hl.HostLightingError, match='multiple boards'):
+    with pytest.raises(hl.HostLightingBoardSelectionError, match='multiple boards') as several:
         hl.open_device('')
-    with pytest.raises(hl.HostLightingError, match='no board'):
+    assert [board.board_id for board in several.value.matched] == ['433030343237362E', '0000000000000000']
+    with pytest.raises(hl.HostLightingBoardSelectionError, match='no board') as none:
         hl.open_device('FF')
+    assert none.value.prefix == 'FF' and none.value.matched == () and len(none.value.boards) == 2
+    monkeypatch.setattr(hl, 'find_devices', lambda: [])
+    monkeypatch.setattr(hl, 'find_other_majors', lambda: [hl.USAGE_PROTOCOL_1])
+    with pytest.raises(hl.HostLightingBoardSelectionError, match='pre-release protocol 1.x') as absent:
+        hl.open_device()
+    assert absent.value.boards == () and absent.value.other_majors == (hl.USAGE_PROTOCOL_1,)
 
 
 def test_find_board_opens_only_the_whole_id(monkeypatch):

@@ -51,7 +51,9 @@ its settings flash. The package carries type hints (`py.typed`).
 A host drives the lights in these steps:
 
 1. Open a board with `open_device()`. With several boards connected, pass a hex prefix of the board ID.
-   `find_board()` opens one board by its whole ID and returns `None` when it is not connected.
+   When it finds no board to open, it raises `HostLightingBoardSelectionError`. Its `boards` and `matched`
+   name the boards it found. `find_board()` opens one board by its whole ID and returns `None` when it is not
+   connected.
 2. Read what the board reports with `hello()`, `read_identity()`, `read_record()` and `read_table()`. The two
    reads give a `PageRead` of the records and the state token. Each record carries its `ordinal`, its position
    in the page, and one attribute per field group, named after the specification's, such as `light.owner.pin`.
@@ -82,13 +84,15 @@ with open_device() as device:
 ```
 
 `LightsClaim` logs each change at INFO. Once another application takes the lights over, `maintain()` returns
-a change of kind `LOST`, `keep()` returns `False`, and the lights belong to the new holder. `observe()` applies
-the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4 refusal to the claim.
+a change of kind `LOST` and `keep()` returns `False`. The claim then waits, and each renewal asks for it until
+the board is unclaimed. With `wait_after_takeover=False` the claim ends there, and the lights belong to the new
+holder. `observe()` applies the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4
+refusal to the claim.
 
 A streaming host builds each frame as a `Frame` of entries and runs, staged in the order they were added, and
 sends it with `publish_frame()`. Every report but the last goes with `NO_REPLY`, and the last with
 `COMMIT_AFTER`, which alone is answered and is sent once more when its answer does not come. The `FrameResult`
-says whether the frame was acknowledged.
+says whether the frame was acknowledged, and is true when it was.
 
 A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the Summary, then each page with a
 moved change counter, under the Summary's state token, and returns the pages it read again. A host calls it
@@ -98,8 +102,9 @@ A `Session` runs the specification's whole host flow on these parts. `start()`, 
 board's capabilities, reads the configuration, takes the claim, sends the settings and subscribes to
 `STATE_CHANGED`. `poll()` renews the claim, applies the events, reads changed pages again and returns a
 `SessionUpdate`. Its `restage` says when to stage the whole frame again. `show()` publishes a frame,
-`reconnect()` finds the board again after it leaves the bus, and `close()` gives the claim up. With the name
-`None`, a `Session` runs the flow of a host that does not claim.
+`reconnect()` finds the board again after it leaves the bus, and `close()` gives the claim up. Its cache keeps
+the pages and groups that `pages` and `masks` name, by default all of them. With the name `None`, a `Session`
+runs the flow of a host that does not claim, which sends its settings only while the board is unclaimed.
 
 The example shows the case lights blue for 3 s at 60 frames a second:
 

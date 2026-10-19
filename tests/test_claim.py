@@ -157,8 +157,8 @@ def test_a_renewal_that_takes_a_lapsed_claim_again_configures(hlp_fake_device, h
 
 
 def test_a_claim_taken_over_is_lost(hlp_fake_device, hlp_fake_board, clock, caplog):
-    """Test LOST: renewals stop, keep() returns False, and the give up sends nothing."""
-    claim = lights_claim(hlp_fake_device, clock).take()
+    """Test LOST without wait_after_takeover: renewals stop, keep() returns False, and the give up sends nothing."""
+    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
     hlp_fake_board.take_over(0xB2, b'Other')
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         change = claim.renew()
@@ -171,9 +171,9 @@ def test_a_claim_taken_over_is_lost(hlp_fake_device, hlp_fake_board, clock, capl
     assert claim.state is ClaimState.ENDED and claim.seconds_to_renewal is None
 
 
-def test_a_claim_taken_over_is_waited_for_with_wait(hlp_fake_device, hlp_fake_board, clock, caplog):
-    """Test that a claim taken with wait waits once lost, and is taken back when the board is unclaimed."""
-    claim = lights_claim(hlp_fake_device, clock).take(wait=True)
+def test_a_claim_taken_over_is_waited_for_by_default(hlp_fake_device, hlp_fake_board, clock, caplog):
+    """Test that a claim taken over after it was held waits, and is taken back when the board is unclaimed."""
+    claim = lights_claim(hlp_fake_device, clock).take()
     hlp_fake_board.take_over(0xB2, b'Other')
     with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.claim'):
         assert claim.renew().kind is ClaimChangeKind.LOST and claim.state is ClaimState.WAITING
@@ -184,7 +184,7 @@ def test_a_claim_taken_over_is_waited_for_with_wait(hlp_fake_device, hlp_fake_bo
 
 def test_observe_renews_at_once_after_another_holder(hlp_fake_device, hlp_fake_board, clock):
     """Test that an event showing another holder, even one followed by this claim's, sends the settings again."""
-    claim = lights_claim(hlp_fake_device, clock).take()
+    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
     ours = state_event(token=TOKEN, name=b'app', generation=2)
     assert claim.observe([ours]).kind is ClaimChangeKind.UNCHANGED and len(claims(hlp_fake_board)) == 1
     # another application held the claim between: the settings and the frame are gone, the generation the same
@@ -219,7 +219,7 @@ def test_observe_passes_over_what_shows_no_holder(hlp_fake_device, hlp_fake_boar
 
 def test_refused_applies_the_status_4_table(hlp_fake_device, hlp_fake_board, clock):
     """Test each row: this claim's token under a new generation, token 0, another holder, and the rest."""
-    claim = lights_claim(hlp_fake_device, clock).take()
+    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False).take()
 
     def refusal(shown, status=hl.STATUS_CLAIMED):
         return hl.HostLightingRejectedError(hl.CMD_STAGE, status, 0, shown)
@@ -239,7 +239,7 @@ def test_refused_applies_the_status_4_table(hlp_fake_device, hlp_fake_board, clo
 
 def test_configure_renews_first_and_paces_the_renewals(hlp_fake_device, hlp_fake_board, clock):
     """Test configure() while held, while not held, and a change its renewal finds returned by the next call."""
-    claim = lights_claim(hlp_fake_device, clock)
+    claim = lights_claim(hlp_fake_device, clock, wait_after_takeover=False)
     assert claim.configure(Settings(keepalive_ms=600)) is None and not hlp_fake_board.requests
     claim.take()
     assert claim.seconds_to_renewal == pytest.approx(0.2)
@@ -271,7 +271,8 @@ def test_give_up(hlp_fake_device, hlp_fake_board, clock, caplog):
     claim.take()
     hlp_fake_board.disconnect_on = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)}
     assert not claim.give_up()
-    assert 'could not give the claim up. The keepalive timeout restores the animations' in caplog.text
+    assert 'could not give the claim up, the board is no longer connected' in caplog.text
+    assert 'The keepalive timeout restores the animations' in caplog.text
 
 
 def test_let_lapse_stops_holding_without_giving_up(hlp_fake_device, hlp_fake_board, clock):
@@ -295,7 +296,7 @@ def test_keep_sleeps_between_renewals(hlp_fake_device, hlp_fake_board, clock, mo
         slept.append(round(seconds, 3))
         clock.now += seconds
     monkeypatch.setattr(claim_module, 'time', SimpleNamespace(sleep=sleep, monotonic=clock))
-    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=900)).take()
+    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=900), wait_after_takeover=False).take()
     assert claim.keep(1.0) and slept == [0.3, 0.3, 0.3, 0.1]
     assert len(claims(hlp_fake_board)) == 4
     hlp_fake_board.take_over(0xB2, b'Other')
