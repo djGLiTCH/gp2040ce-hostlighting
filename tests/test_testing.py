@@ -54,7 +54,7 @@ def test_idle_animations_show_on_page_1_and_raise_an_event():
     """Test idle(): page 1's flag bit 2, and on the model board a STATE_CHANGED event."""
     board = ModelBoard()
     device = fake_device(board)
-    device.subscribe(1 << hl.EVENT_STATE_CHANGED)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
     device.read_record(hl.PAGE_STATE)
     board.idle()
     assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
@@ -72,7 +72,7 @@ def test_reconfigure_changes_the_pages_token_and_counters(board_type):
     """Test reconfigure(): the Summary's totals, a new token, the changed pages' counters and an event."""
     board = board_type()
     device = fake_device(board)
-    device.subscribe(1 << hl.EVENT_STATE_CHANGED)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
     before = device.read_record(hl.PAGE_SUMMARY)
     board.reconfigure(lights=[light_record(0, pin=2), light_record(1), light_record(2)],
                       controls=[control_record(2, 1), control_record(3, 2, lit=0)])
@@ -90,7 +90,7 @@ def test_unplug_and_replug(board_type):
     """Test that an unplugged board fails reads and writes, and a replugged one starts a new session."""
     board = board_type()
     device = fake_device(board)
-    device.subscribe(1 << hl.EVENT_STATE_CHANGED)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
     device.claim(hl.CLAIM_TAKE, 0x51, b'app')
     token = device.read_record(hl.PAGE_STATE).token
     board.unplug()

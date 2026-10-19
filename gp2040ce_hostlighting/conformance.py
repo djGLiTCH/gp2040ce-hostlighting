@@ -221,9 +221,11 @@ def _act_as(device: HostLightingDevice, reply: bytes, token: int) -> None:
     """Have the device's requests carry what a token would send after its CLAIM reply.
 
     When the token holds the claim: the generation shown, and FLAG_HOLDER under an exclusive claim. When it
-    does not: neither.
+    does not: neither. The device takes the token as its claim token, so it reads status 4 replies as that
+    token's.
     """
     holds = reply[2] == STATUS_OK and _holder(reply)[0] == token
+    device.claim_token = token
     device.generation = reply[29] if holds else 0
     device.holding_exclusive = holds and bool(reply[28] & CLAIM_EXCLUSIVE)
 
@@ -491,10 +493,9 @@ def _check_lights(checks: Checks, controls: tuple, lights: tuple) -> None:
 
 
 def _check_subscribe(device: HostLightingDevice, checks: Checks, events: frozenset) -> None:
-    checks.check(bool(device.subscribe(1 << EVENT_STATE_CHANGED) & 1), 'SUBSCRIBE 1: event 0 enabled')
-    checks.check(bool(device.subscribe(0) & 1), 'SUBSCRIBE 0 keeps event 0 (subscriptions only add)')
-    checks.check(device.subscribe(0xFFFF) == sum(1 << event for event in events),
-                 'SUBSCRIBE 0xFFFF: the events HELLO lists, no others')
+    checks.check(EVENT_STATE_CHANGED in device.subscribe([EVENT_STATE_CHANGED]), 'SUBSCRIBE 1: event 0 enabled')
+    checks.check(EVENT_STATE_CHANGED in device.subscribe([]), 'SUBSCRIBE 0 keeps event 0 (subscriptions only add)')
+    checks.check(device.subscribe(range(16)) == events, 'SUBSCRIBE 0xFFFF: the events HELLO lists, no others')
     checks.check(EVENT_STATE_CHANGED in device.hello().events_enabled, 'HELLO [45..46] shows event 0')
 
 

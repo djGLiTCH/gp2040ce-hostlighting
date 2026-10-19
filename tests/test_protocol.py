@@ -317,13 +317,14 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == hl.Controller(
         holder_token=0xB2, application_name='MESH', exclusive=True, claim_generation=3)
-    assert str(rejected.value) == "command 0x21 rejected: CLAIMED by 'MESH' (claim 0x000000B2, generation 3)"
+    assert str(rejected.value) == ("command 0x21 (RELEASE) rejected: CLAIMED by 'MESH' (claim 0x000000B2, "
+                                   "generation 3)")
     holder = bytes(20) + bytes([0, 4])                    # the claim lapsed: no holder, the generation now
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.holder == hl.Controller(holder_token=0, application_name='', exclusive=False,
                                                   claim_generation=4)
-    assert str(rejected.value) == 'command 0x21 rejected: CLAIMED: the claim has ended (generation 4)'
+    assert str(rejected.value) == 'command 0x21 (RELEASE) rejected: CLAIMED: the claim has ended (generation 4)'
 
 
 def test_rejected_builds_the_error_from_a_reply():
@@ -450,10 +451,10 @@ def test_stage_entries_chunks_and_commits_once(hlp_fake_device, hlp_fake_board):
 def test_stage_payloads_are_built_without_sending(hlp_fake_device, hlp_fake_board):
     """Test that the payload builders send nothing and give the bytes the staging methods send."""
     entries = [(ordinal, (ordinal, 0, 0)) for ordinal in range(13)]
-    payloads = hl.stage_entries_payloads(hl.ADDRESSING_LIGHT, entries, hl.PIXEL_RGB)
+    payloads = hl.stage_entry_payloads(hl.ADDRESSING_LIGHT, entries, hl.PIXEL_RGB)
     colours = [(index, 1, 2) for index in range(40)]
     runs = hl.stage_run_payloads(hl.ADDRESSING_LED_RUN, 5, colours, hl.PIXEL_RGB)
-    assert not hlp_fake_board.requests and hl.stage_entries_payloads(hl.ADDRESSING_LIGHT, []) == []
+    assert not hlp_fake_board.requests and hl.stage_entry_payloads(hl.ADDRESSING_LIGHT, []) == []
     assert [payload[1] for payload in payloads] == [11, 2]
     assert [struct.unpack_from('<HB', run, 1) for run in runs] == [(5, 19), (24, 19), (43, 2)]
     hlp_fake_device.stage_entries(hl.ADDRESSING_LIGHT, entries, hl.PIXEL_RGB)
@@ -468,7 +469,7 @@ def test_fill_and_configure(hlp_fake_device, hlp_fake_board):
     hlp_fake_device.fill((1, 2, 3, 4), hl.PIXEL_RGBW, commit=True)
     (fill,) = hlp_fake_board.sent(hl.CMD_FILL)
     assert fill[2] == hl.FLAG_COMMIT_AFTER and fill[3:8] == bytes([0x10, 1, 2, 3, 4])
-    assert hlp_fake_device.configure(overlay=True, keepalive_ms=300, brightness=False) == hl.Settings(
+    assert hlp_fake_device.configure(hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False) == hl.Settings(
         takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False)
 
 
@@ -504,21 +505,21 @@ def test_a_failed_read_is_a_departed_board(hlp_fake_device, hlp_fake_board):
         hlp_fake_device.next_event(0.01)
 
 
-def test_send_reboot_tolerates_a_departed_board(hlp_fake_device, hlp_fake_board):
+def test_reboot_tolerates_a_departed_board(hlp_fake_device, hlp_fake_board):
     """Test that a board already gone still means the reboot is under way."""
     hlp_fake_board.departed = True
-    assert not hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, bytes([hl.REBOOT_BOOTSEL]) + hl.MAGIC_REBOOT)
+    assert not hlp_fake_device.reboot(hl.REBOOT_BOOTSEL)
 
 
-def test_send_reboot_tolerates_the_board_leaving(hlp_fake_device, hlp_fake_board):
-    """Test that a vanished board means the reboot is under way, and a rejection still raises."""
-    payload = bytes([hl.REBOOT_BOOTSEL]) + hl.MAGIC_REBOOT
+def test_reboot_tolerates_the_board_leaving(hlp_fake_device, hlp_fake_board, hlp_model_board):
+    """Test that a vanished board means the reboot is under way, and a refusal still raises."""
     hlp_fake_board.disconnect_on.add(hl.CMD_REBOOT)
-    assert not hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, payload)
+    assert not hlp_fake_device.reboot(hl.REBOOT_BOOTSEL)
     hlp_fake_board.disconnect_on.clear()
-    assert hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, payload)
+    assert hlp_fake_device.reboot(hl.REBOOT_BOOTSEL)
+    assert hlp_fake_board.sent(hl.CMD_REBOOT)[-1][3:8] == bytes([hl.REBOOT_BOOTSEL]) + hl.MAGIC_REBOOT
     with pytest.raises(hl.HostLightingRejectedError):
-        hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, bytes([hl.REBOOT_BOOTSEL]) + b'BOXT')
+        fake_device(hlp_model_board).reboot(0xFF)
 
 
 def test_open_device_selects_by_board_id_and_major(monkeypatch):
@@ -577,10 +578,10 @@ def test_open_device_skips_interfaces_that_fail(monkeypatch):
     assert hl.open_device().device is good
 
 
-def test_send_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fake_board):
+def test_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fake_board):
     """Test that a reply that never comes means the reboot is under way."""
     hlp_fake_board.answer = lambda *_: None
-    assert not hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, bytes([hl.REBOOT_BOOTSEL]) + hl.MAGIC_REBOOT)
+    assert not hlp_fake_device.reboot(hl.REBOOT_BOOTSEL)
 
 
 def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
@@ -640,8 +641,9 @@ def test_decode_partial_groups_of_controls_and_animations():
 
 def test_subscribe_and_next_event(hlp_fake_device, hlp_fake_board):
     """Test SUBSCRIBE's reply, events kept while waiting for a reply, and the event wait, which keeps replies."""
-    assert hlp_fake_device.subscribe(1) == 1 and hlp_fake_device.subscribe(0) == 1
-    assert hlp_fake_device.subscribe(0xFFFF) == 1
+    assert hlp_fake_device.subscribe([hl.EVENT_STATE_CHANGED]) == {0} and hlp_fake_device.subscribe([]) == {0}
+    assert hlp_fake_device.subscribe(range(16)) == {0}
+    assert struct.unpack_from('<H', hlp_fake_board.sent(hl.CMD_SUBSCRIBE)[-1], 3)[0] == 0xFFFF
     hlp_fake_board.before[hl.CMD_HELLO] = [state_event(profile=2)]    # arrives before the HELLO reply: kept
     hlp_fake_device.hello()
     hlp_fake_board.outbox.append(state_event(profile=3))

@@ -20,6 +20,7 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: OS Independent",
     "Topic :: Utilities",
+    "Typing :: Typed",
 ]
 
 [project.urls]
@@ -66,5 +67,8 @@ log_cli_level = "WARNING"
 
 [tool.setuptools]
 packages = ["gp2040ce_hostlighting", "gp2040ce_hostlighting.tools"]
+
+[tool.setuptools.package-data]
+gp2040ce_hostlighting = ["py.typed"]
 
 [tool.setuptools_scm]

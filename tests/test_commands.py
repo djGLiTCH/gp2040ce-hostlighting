@@ -307,7 +307,8 @@ def test_settings_shows_and_changes(hlp_run_on_fake_board, hlp_fake_board, capsy
     assert hlp_fake_board.sent(hl.CMD_SET_ANIMATION_SPEED)[-1][3:8] == bytes([0, 0, 3, 0xFF, 0xFF])
     assert hlp_fake_board.sent(hl.CMD_SET_BRIGHTNESS)[-1][3:5] == bytes([7, 1])
     assert 'animation off' in out and 'speeds 3/5/5' in out and 'brightness step 7 of 0-10' in out
-    with pytest.raises(SystemExit, match='--profile 2: command 0x30 rejected: INVALID_ARG at request byte 3'):
+    with pytest.raises(SystemExit,
+                       match=r'--profile 2: command 0x30 \(SET_PROFILE\) rejected: INVALID_ARG at request byte 3'):
         hlp_run_on_fake_board(tools.settings, '--profile', '2')
 
 
@@ -403,7 +404,7 @@ def test_stream_counts_frames_the_board_refuses(hlp_run_on_model_board, hlp_mode
     hlp_run_on_model_board(tools.stream, '--seconds', '0.25')
     out = capsys.readouterr().out
     assert 'rainbow: 0 of 15 frames acknowledged (120 LEDs)\n' in out
-    assert '  the first unacknowledged frame: command 0x10 rejected: INVALID_ARG at request byte 4\n' in out
+    assert '  the first unacknowledged frame: command 0x10 (STAGE) rejected: INVALID_ARG at request byte 4\n' in out
 
 
 def test_stream_frame_size(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -509,8 +510,8 @@ def test_a_retaken_claim_gets_its_settings_again():
     device = Device()
     claim = hl.LightsClaim(device, 'hlp-test', 0x51)
     claim.configure(overlay=False, keepalive_ms=2000, brightness=False)
-    overlay = {'overlay': True, 'keepalive_ms': 2000, 'brightness': True}
-    claim.configure(**overlay)
+    overlay = {'takeover': hl.TAKEOVER_OVERLAY, 'keepalive_ms': 2000, 'brightness_applied': True}
+    claim.configure(overlay=True, keepalive_ms=2000, brightness=True)
     assert claim.renew() and len(device.configured) == 2      # the same generation: nothing sent again
     device.retaken = 4                                        # the claim lapsed: this renewal takes it again
     assert claim.renew() and device.configured[2:] == [overlay]

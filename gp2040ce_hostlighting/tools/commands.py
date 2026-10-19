@@ -18,25 +18,21 @@ import os
 import pathlib
 import re
 import secrets
-import struct
 import sys
 import time
 from dataclasses import fields
 from importlib import metadata
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLEAR, CMD_HELLO,
-                                            CMD_REBOOT, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS,
-                                            CMD_SET_INPUT_MODE, CMD_SET_PROFILE, EVENT_STATE_CHANGED, KIND_BUTTON,
-                                            KIND_CASE, KIND_PLAYERS, MAGIC_INPUT_MODE, MAGIC_REBOOT, PAGE_ANIMATIONS,
+                                            BRIGHTNESS_SAVED, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_HELLO,
+                                            EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE, KIND_PLAYERS, PAGE_ANIMATIONS,
                                             PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE,
                                             PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_WEBCONFIG,
                                             SPEED_UNCHANGED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingDevice,
                                             HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
-                                            LightsClaim, decode_state_changed, key_name, open_device, send_reboot,
-                                            stage_capacity)
+                                            LightsClaim, decode_state_changed, key_name, open_device, stage_capacity)
 from gp2040ce_hostlighting.records import Hello, StateRecord
 
 logger = logging.getLogger(__name__)
@@ -440,14 +436,13 @@ def settings():
         if args.unsaved:
             _hold_unsaved_brightness(device, args.brightness, args.seconds, args.force, args.exclusive)
         if args.profile is not None:
-            _apply(device, f"--profile {args.profile}", CMD_SET_PROFILE, bytes([args.profile]))
+            _apply(f"--profile {args.profile}", lambda: device.set_profile(args.profile))
         if args.animation is not None:
-            _apply(device, f"--animation {args.animation}", CMD_SET_ANIMATION, struct.pack('<H', args.animation))
+            _apply(f"--animation {args.animation}", lambda: device.set_animation(args.animation))
         if args.speed is not None:
-            _apply(device, f"--speed {args.speed}", CMD_SET_ANIMATION_SPEED,
-                   struct.pack('<HBBB', args.speed, *speeds))
+            _apply(f"--speed {args.speed}", lambda: device.set_animation_speed(args.speed, *speeds))
         if args.brightness is not None and not args.unsaved:
-            _apply(device, f"--brightness {args.brightness}", CMD_SET_BRIGHTNESS, bytes([args.brightness, 1]))
+            _apply(f"--brightness {args.brightness}", lambda: device.set_brightness(args.brightness, save=True))
         _print_settings(device, names)
     finally:
         device.close()
@@ -475,15 +470,15 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     the step would end at the keepalive timeout.
     """
     with holding_lights(device, 'hlp-settings', force, exclusive) as claim:
-        _apply(device, f"--brightness {step}", CMD_SET_BRIGHTNESS, bytes([step, 0]))
+        _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds)
 
 
-def _apply(device: HostLightingDevice, option: str, command: int, payload: bytes) -> None:
-    """Send one board-feature command, naming the option when the board refuses it."""
+def _apply(option: str, change: Callable[[], None]) -> None:
+    """Make one board-feature change, naming the option when the board refuses it."""
     try:
-        device.request_ok(command, payload)
+        change()
     except HostLightingRejectedError as error:
         raise SystemExit(f"error: {option}: {error}") from error
 
@@ -540,7 +535,7 @@ def watch():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        if not device.subscribe(1 << EVENT_STATE_CHANGED) & (1 << EVENT_STATE_CHANGED):
+        if EVENT_STATE_CHANGED not in device.subscribe([EVENT_STATE_CHANGED]):
             raise HostLightingError("the board did not enable STATE_CHANGED")
         read = device.read_record(PAGE_STATE)
         last = _state_fields(read.records[0], read.token)
@@ -765,12 +760,12 @@ def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float,
         if not claim.keep(seconds):
             return
     if lights:
-        device.request_ok(CMD_CLEAR)
+        device.clear()
         device.stage_run(ADDRESSING_LIGHT_RUN, 0, [_hue(i, len(lights)) for i in range(len(lights))], commit=True)
         print(f"phase 2: {len(lights)} lights, one hue each")
         if not claim.keep(seconds):
             return
-    device.request_ok(CMD_CLEAR)
+    device.clear()
     claim.configure(overlay=True, keepalive_ms=2000, brightness=True)
     if overlay:
         outcomes = device.stage_entries(ADDRESSING_ACTION, [(action, (255, 255, 255)) for _, action in overlay],
@@ -808,7 +803,7 @@ def input_mode():
         elif known[args.mode].mode.detected:
             print(f"note: {known[args.mode].name} presents the lighting interface once the board has detected "
                   "a PC, a few seconds and a second enumeration after it starts")
-        send_reboot(device, CMD_SET_INPUT_MODE, bytes([args.mode]) + MAGIC_INPUT_MODE)
+        device.set_input_mode(args.mode, allow_no_lighting=True)      # checked against page 2 above
         print(f"input mode {args.mode} ({known[args.mode].name}) set. The board is rebooting")
     finally:
         device.close()
@@ -821,7 +816,7 @@ def reboot_webconfig():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        send_reboot(device, CMD_REBOOT, bytes([REBOOT_WEBCONFIG]) + MAGIC_REBOOT)
+        device.reboot(REBOOT_WEBCONFIG)
         print("rebooting to web configurator")
     finally:
         device.close()
@@ -834,7 +829,7 @@ def reboot_bootsel():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        send_reboot(device, CMD_REBOOT, bytes([REBOOT_BOOTSEL]) + MAGIC_REBOOT)
+        device.reboot(REBOOT_BOOTSEL)
         print("rebooting to BOOTSEL. Watch for the RPI-RP2 drive")
     finally:
         device.close()
