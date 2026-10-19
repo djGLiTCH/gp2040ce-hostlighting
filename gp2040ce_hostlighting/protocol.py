@@ -82,7 +82,7 @@ FLAG_HOLDER = 0x08              # sent by the holder of an exclusive claim, whic
 # bits 4-6 carry the claim generation the sender acts under, 1-7, or 0 for none. A request other than CLAIM under a
 # generation that is no longer current is refused, and an exclusive claim needs it beside FLAG_HOLDER
 FLAG_GENERATION_SHIFT = 4
-FLAG_GENERATION_MASK = 0x70
+FLAG_GENERATION = 0x70
 GENERATION_MAX = 7
 
 REPLY_FLAG = 0x80
@@ -90,10 +90,10 @@ EVENT_MARKER = 0x80             # [0] of an event. There is no command 0x00
 STATUS_OK = 0
 STATUS_UNSUPPORTED = 1
 STATUS_INVALID = 2
-STATUS_STALE = 3
+STATUS_STALE_TOKEN = 3
 STATUS_CLAIMED = 4
 STATUS_NAMES = {STATUS_OK: 'OK', STATUS_UNSUPPORTED: 'UNSUPPORTED', STATUS_INVALID: 'INVALID_ARG',
-                STATUS_STALE: 'STALE_TOKEN', STATUS_CLAIMED: 'CLAIMED'}
+                STATUS_STALE_TOKEN: 'STALE_TOKEN', STATUS_CLAIMED: 'CLAIMED'}
 EVENT_STATE_CHANGED = 0
 
 # pages
@@ -108,9 +108,9 @@ PAGE_ANIMATIONS = 12
 PAGE_RANGES = ((0, 7), (8, 15), (16, 23), (24, 31))     # board, configuration, diagnostics, reserved
 
 # every page reply's header. The records area is [12..59] and the state token [60..63]
-RECORDS_OFFSET = 12
-RECORDS_AREA = 48
-TOKEN_OFFSET = 60
+HEADER_RECORDS = 12
+RECORD_AREA = 48
+HEADER_TOKEN = 60
 
 # each page's field groups, in mask bit order, and their widths in bytes. Page 0's groups are
 # strings of up to 48 bytes each
@@ -135,8 +135,9 @@ KEY_EXPANDER = KEY_SOURCES[2][1]
 KEY_PREFIXES = {'gpio': 'GP', 'hall_effect': 'HE', 'expander': 'PCF'}
 
 # the none values: they never equal a key
-NONE_8 = 0xFF
-NONE_16 = 0xFFFF
+PIN_NONE = 0xFF
+SLOT_NONE = 0xFF
+INDEX_NONE = 0xFFFF
 ACTION_NONE = -32768            # 0x8000 as a signed 16-bit action
 ANIMATION_OFF = 0xFFFF
 SPEED_UNCHANGED = 0xFF          # SET_ANIMATION_SPEED: leave this speed as it is
@@ -367,7 +368,7 @@ def decode_page_header(reply: bytes) -> dict:
         stride and the state token
     :raises HostLightingError: if the reply is too short
     """
-    _require_length(reply, TOKEN_OFFSET + 4, 'the GET_PAGE reply')
+    _require_length(reply, HEADER_TOKEN + 4, 'the GET_PAGE reply')
     return {
         'status': reply[2],
         'page': reply[3],
@@ -376,7 +377,7 @@ def decode_page_header(reply: bytes) -> dict:
         'count': reply[8],
         'stride': reply[9],
         'groups': _u16(reply, 10),
-        'token': _u32(reply, TOKEN_OFFSET),
+        'token': _u32(reply, HEADER_TOKEN),
     }
 
 
@@ -453,10 +454,10 @@ def _control_group(group: int, data: bytes) -> dict:
         return {'instance': _u16(data, 0), 'instances': _u16(data, 2)}
     if group == 2:
         first = _u16(data, 0)
-        return {'first_led': None if first == NONE_16 else first,
-                'grid_rectangle': None if first == NONE_16 else tuple(data[2:6])}
+        return {'first_led': None if first == INDEX_NONE else first,
+                'grid_rectangle': None if first == INDEX_NONE else tuple(data[2:6])}
     first = _u16(data, 0)
-    return {'first_light': None if first == NONE_16 else first, 'light_count': _u16(data, 2)}
+    return {'first_light': None if first == INDEX_NONE else first, 'light_count': _u16(data, 2)}
 
 
 def _light_group(group: int, data: bytes) -> dict:
@@ -466,13 +467,13 @@ def _light_group(group: int, data: bytes) -> dict:
         return {'kind': data[0], 'duplicated': bool(data[1] & 0x01)}
     if group == 2:
         action = _s16(data, 1)
-        return {'owner_pin': None if data[0] == NONE_8 else data[0],
+        return {'owner_pin': None if data[0] == PIN_NONE else data[0],
                 'owner_action': None if action == ACTION_NONE else action}
     if group == 3:
         return {'owner_instance': _u16(data, 0), 'owner_instances': _u16(data, 2)}
     if group == 4:
         return {'grid': (data[0], data[1])}
-    return {'palette_slot': None if data[0] == NONE_8 else data[0]}
+    return {'palette_slot': None if data[0] == SLOT_NONE else data[0]}
 
 
 def _animation_group(group: int, data: bytes) -> dict:
@@ -513,12 +514,12 @@ def decode_records(reply: bytes) -> list:
     if header['count'] and header['stride'] < echoed:
         raise HostLightingError(f"page {page} records are {header['stride']} bytes apart, narrower than the "
                                 f"{echoed} bytes of the groups echoed")
-    if header['count'] * header['stride'] > RECORDS_AREA:
+    if header['count'] * header['stride'] > RECORD_AREA:
         raise HostLightingError(f"the page {page} reply holds {header['count']} records of {header['stride']} "
-                                f"bytes, more than its {RECORDS_AREA}-byte records area")
+                                f"bytes, more than its {RECORD_AREA}-byte records area")
     records = []
     for index in range(header['count']):
-        offset = RECORDS_OFFSET + index * header['stride']
+        offset = HEADER_RECORDS + index * header['stride']
         record: dict = {'ordinal': header['start'] + index}
         for group, width in enumerate(widths):
             if header['groups'] & (1 << group):
@@ -537,7 +538,7 @@ def decode_state_changed(event: bytes) -> tuple[dict, int]:
     """
     if event[1] != EVENT_STATE_CHANGED:
         raise HostLightingError(f"event {event[1]} is not STATE_CHANGED")
-    return decode_records(event)[0], _u32(event, TOKEN_OFFSET)
+    return decode_records(event)[0], _u32(event, HEADER_TOKEN)
 
 
 def decode_identity(reply: bytes) -> dict:
@@ -550,9 +551,9 @@ def decode_identity(reply: bytes) -> dict:
     :return: {group bit: string} for the groups the reply echoes
     :raises HostLightingError: if the reply is too short
     """
-    _require_length(reply, RECORDS_OFFSET, 'the page 0 reply')
+    _require_length(reply, HEADER_RECORDS, 'the page 0 reply')
     groups = _u16(reply, 10)
-    area = bytes(reply[RECORDS_OFFSET:RECORDS_OFFSET + RECORDS_AREA])
+    area = bytes(reply[HEADER_RECORDS:HEADER_RECORDS + RECORD_AREA])
     strings = {}
     used = 0
     for group in range(len(IDENTITY_FIELDS)):
@@ -576,7 +577,7 @@ class HostLightingError(RuntimeError):
     """Errors talking to a Host Lighting interface."""
 
 
-class HostLightingRejected(HostLightingError):
+class HostLightingRejectedError(HostLightingError):
     """The board answered a command with a status other than 0."""
 
     def __init__(self, command: int, status: int, offset: int, holder: Optional[dict] = None):
@@ -596,11 +597,11 @@ class HostLightingRejected(HostLightingError):
         super().__init__(f"command 0x{command:02X} rejected: {STATUS_NAMES.get(status, hex(status))}{detail}")
 
 
-class HostLightingTimeout(HostLightingError):
+class HostLightingTimeoutError(HostLightingError):
     """No reply arrived in time. The board may be busy, for example writing its settings."""
 
 
-class HostLightingStale(HostLightingError):
+class HostLightingStaleTokenError(HostLightingError):
     """The board's state changed: the state token a read named is out of date."""
 
     def __init__(self, page: int, token: int):
@@ -610,7 +611,7 @@ class HostLightingStale(HostLightingError):
         super().__init__(f"page {page}: state token 0x{token:08X} is out of date")
 
 
-class HostLightingDisconnected(HostLightingError):
+class HostLightingDisconnectedError(HostLightingError):
     """A read or a write on the HID device failed: the board has left the bus."""
 
 
@@ -657,28 +658,28 @@ class HostLightingDevice:
 
         hidapi reports a failed write by a negative result, and does not raise.
 
-        :raises HostLightingDisconnected: if the device does not take the report
+        :raises HostLightingDisconnectedError: if the device does not take the report
         """
         sending = f"sending command 0x{report[1]:02X}" if len(report) > 1 else "writing"
         try:
             written = self.device.write(report)
         except OSError as error:
-            raise HostLightingDisconnected(f"the board is no longer connected ({sending} failed with "
-                                           f"{error})") from error
+            raise HostLightingDisconnectedError(f"the board is no longer connected ({sending} failed with "
+                                                f"{error})") from error
         if isinstance(written, int) and written < 0:
-            raise HostLightingDisconnected(f"the board is no longer connected ({sending} failed)")
+            raise HostLightingDisconnectedError(f"the board is no longer connected ({sending} failed)")
 
     def _read(self, timeout_ms: int) -> bytes:
         """Read one report, or nothing within the timeout.
 
         :param timeout_ms: how long to wait, where 0 returns at once
-        :raises HostLightingDisconnected: if the device cannot be read
+        :raises HostLightingDisconnectedError: if the device cannot be read
         """
         try:
             return bytes(self.device.read(REPORT_SIZE, timeout_ms))
         except OSError as error:
-            raise HostLightingDisconnected(f"the board is no longer connected (reading failed with "
-                                           f"{error})") from error
+            raise HostLightingDisconnectedError(f"the board is no longer connected (reading failed with "
+                                                f"{error})") from error
 
     def send(self, command: int, payload: bytes = b'', flags: int = 0, sequence: Optional[int] = None) -> int:
         """Send one request without waiting for its reply.
@@ -693,7 +694,7 @@ class HostLightingDevice:
         if sequence is None:
             self.sequence = (self.sequence % 255) + 1
             sequence = self.sequence
-        if not flags & FLAG_GENERATION_MASK:
+        if not flags & FLAG_GENERATION:
             flags |= self.generation << FLAG_GENERATION_SHIFT
         if self.holding_exclusive:
             flags |= FLAG_HOLDER
@@ -701,7 +702,7 @@ class HostLightingDevice:
         # the interface uses unnumbered reports. hidapi wants a leading 0x00 report ID on write
         try:
             self._write(b'\x00' + build_request(command, sequence, payload, flags))
-        except HostLightingDisconnected:
+        except HostLightingDisconnectedError:
             self.awaited.discard((command, sequence))
             raise
         return sequence
@@ -758,7 +759,7 @@ class HostLightingDevice:
                 return report
             # otherwise another application's reply with this request's numbers: dropped
         self.awaited.discard((command, sequence))
-        raise HostLightingTimeout(f"no reply to command 0x{command:02X} within {timeout} s")
+        raise HostLightingTimeoutError(f"no reply to command 0x{command:02X} within {timeout} s")
 
     def _await(self, command: int, sequence: int, flags: int) -> None:
         """Note a request that will be answered. No report kept for an earlier one with its numbers answers it."""
@@ -824,7 +825,7 @@ class HostLightingDevice:
         :param timeout: seconds to wait for the reply
         :param accept: optional test a matching report must also pass
         :return: the reply report
-        :raises HostLightingRejected: on any other status, naming the claim's holder for CLAIMED
+        :raises HostLightingRejectedError: on any other status, naming the claim's holder for CLAIMED
         """
         reply = self.request(command, payload, flags, timeout, accept)
         if reply[2] != STATUS_OK:
@@ -832,7 +833,7 @@ class HostLightingDevice:
         return reply
 
     @staticmethod
-    def rejected(command: int, reply: bytes) -> HostLightingRejected:
+    def rejected(command: int, reply: bytes) -> HostLightingRejectedError:
         """Build the error for a refused request.
 
         A status 2 reply carries the offset of the invalid request byte at [3], and a status 4 reply the claim's
@@ -843,8 +844,8 @@ class HostLightingDevice:
         :return: the error to raise
         """
         if reply[2] != STATUS_CLAIMED:
-            return HostLightingRejected(command, reply[2], reply[3])
-        return HostLightingRejected(command, reply[2], 0, decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])))
+            return HostLightingRejectedError(command, reply[2], reply[3])
+        return HostLightingRejectedError(command, reply[2], 0, decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])))
 
     def hello(self) -> dict:
         """Send HELLO and decode the reply.
@@ -868,15 +869,15 @@ class HostLightingDevice:
         :param mask: field groups to return, or 0 for every group
         :param token: expected state token, 0 for no check
         :return: the reply report, with status 0 or 3 (STALE_TOKEN)
-        :raises HostLightingRejected: on any other status
+        :raises HostLightingRejectedError: on any other status
         """
         def echoes(reply: bytes) -> bool:
-            if reply[2] not in (STATUS_OK, STATUS_STALE):
+            if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
                 return True
             header = decode_page_header(reply)
             if header['page'] != page or header['start'] != start:
                 return False
-            if reply[2] == STATUS_STALE:
+            if reply[2] == STATUS_STALE_TOKEN:
                 return True
             if mask:
                 return not header['groups'] & ~mask
@@ -885,7 +886,7 @@ class HostLightingDevice:
             return header['groups'] & known == known
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
-        if reply[2] not in (STATUS_OK, STATUS_STALE):
+        if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
             raise self.rejected(CMD_GET_PAGE, reply)
         return reply
 
@@ -918,14 +919,14 @@ class HostLightingDevice:
         :param token: the state token to read under, not 0
         :param mask: field groups to return, or 0 for every group
         :return: the decoded records
-        :raises HostLightingStale: if the board's state no longer matches the token
+        :raises HostLightingStaleTokenError: if the board's state no longer matches the token
         :raises HostLightingError: if the board stops making progress
         """
         if not token:
             raise ValueError("read_table_at needs the state token to read under")
         walked = self._walk_table(page, mask, token)
         if walked is None:
-            raise HostLightingStale(page, token)
+            raise HostLightingStaleTokenError(page, token)
         return walked[0]
 
     def _walk_table(self, page: int, mask: int, token: int) -> Optional[tuple[list, int]]:
@@ -936,7 +937,7 @@ class HostLightingDevice:
         records: list = []
         while True:
             reply = self.get_page(page, len(records), mask, token)
-            if reply[2] == STATUS_STALE:
+            if reply[2] == STATUS_STALE_TOKEN:
                 return None
             header = decode_page_header(reply)
             token = header['token']
@@ -1299,7 +1300,7 @@ def send_reboot(device: HostLightingDevice, command: int, payload: bytes) -> boo
     try:
         device.request_ok(command, payload)
         return True
-    except HostLightingRejected:
+    except HostLightingRejectedError:
         raise
     except (HostLightingError, OSError):
         logger.debug("no acknowledgement before the disconnect. The reboot is proceeding")

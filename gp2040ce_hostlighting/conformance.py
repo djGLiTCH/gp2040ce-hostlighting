@@ -26,16 +26,16 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             CMD_GET_PAGE, CMD_HELLO, CMD_REBOOT, CMD_RELEASE, CMD_SET_ANIMATION,
                                             CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE,
                                             CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE, CMD_UNSTAGE, COMMAND_RANGES,
-                                            CONTROLLER_SIZE, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER,
-                                            FLAG_GENERATION_MASK, FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE,
-                                            FLAG_NO_REPLY, GENERATION_MAX, IDENTITY_FIELDS, KEY_EXPANDER, KEY_TRIGGER,
-                                            MAGIC_INPUT_MODE, MAGIC_REBOOT, NONE_8, PAGE_ANIMATIONS, PAGE_CONTROLS,
-                                            PAGE_GROUPS, PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES,
-                                            PAGE_RANGES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW,
-                                            PIXEL_SIZES, PROTOCOL_MAJOR, RECORDS_AREA, RECORDS_OFFSET, REPLY_FLAG,
-                                            STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
-                                            HostLightingDevice, HostLightingDisconnected, HostLightingError,
-                                            HostLightingRejected, LightsClaim, decode_controller, decode_key,
+                                            CONTROLLER_SIZE, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER, FLAG_GENERATION,
+                                            FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE, FLAG_NO_REPLY,
+                                            GENERATION_MAX, HEADER_RECORDS, IDENTITY_FIELDS, KEY_EXPANDER, KEY_TRIGGER,
+                                            MAGIC_INPUT_MODE, MAGIC_REBOOT, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS,
+                                            PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_RANGES,
+                                            PAGE_STATE, PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW,
+                                            PIXEL_SIZES, PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATUS_CLAIMED,
+                                            STATUS_INVALID, STATUS_OK, STATUS_STALE_TOKEN, STATUS_UNSUPPORTED,
+                                            HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
+                                            HostLightingRejectedError, LightsClaim, decode_controller, decode_key,
                                             decode_page_header, decode_records, decode_state_changed, is_event,
                                             key_name, stage_capacity)
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # what a protocol 2.0 board implements, from the protocol reference. A later 2.x board lists more
 REQUEST_FLAGS = {FLAG_COMMIT_AFTER.bit_length() - 1, FLAG_NO_REPLY.bit_length() - 1, FLAG_KEEPALIVE.bit_length() - 1,
-                 FLAG_HOLDER.bit_length() - 1} | {bit for bit in range(8) if FLAG_GENERATION_MASK >> bit & 1}
+                 FLAG_HOLDER.bit_length() - 1} | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1}
 COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
             CMD_CLEAR, CMD_COMMIT, CMD_RELEASE, CMD_SET_PROFILE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
             CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_REBOOT}
@@ -249,7 +249,7 @@ def _answered(device: HostLightingDevice, command: int, sequence: int, timeout: 
     try:
         device.wait_reply(command, sequence, timeout)
         return True
-    except HostLightingDisconnected:
+    except HostLightingDisconnectedError:
         raise
     except HostLightingError:
         return False
@@ -317,7 +317,7 @@ def _mask_ok(device: HostLightingDevice, page: int, mask: int, widths: tuple, to
     later = 0 if mask else header['groups'] & ~known
     return (header['page'] == page and header['groups'] == groups | later
             and (header['stride'] > stride if later else header['stride'] == stride)
-            and header['count'] == min(RECORDS_AREA // header['stride'], header['total']) and header['token'] == token)
+            and header['count'] == min(RECORD_AREA // header['stride'], header['total']) and header['token'] == token)
 
 
 def _check_pages(device: HostLightingDevice, checks: Checks, hello: dict) -> int:
@@ -345,7 +345,7 @@ def _check_pages(device: HostLightingDevice, checks: Checks, hello: dict) -> int
     reply = device.get_page(PAGE_LIGHTS, 1, 0b11, token ^ 1)
     header = decode_page_header(reply)
     echoed = (header['page'], header['start'], header['token']) == (PAGE_LIGHTS, 1, token)
-    checks.check(reply[2] == STATUS_STALE and echoed and (header['count'], header['groups']) == (0, 0),
+    checks.check(reply[2] == STATUS_STALE_TOKEN and echoed and (header['count'], header['groups']) == (0, 0),
                  'stale token: status 3, page and start echoed, no records, no groups')
     changes = device.read_record(PAGE_SUMMARY, 0b10)[0]['page_changes']
     checks.check(all(count == 0 for page, count in changes.items() if page not in hello['pages']),
@@ -418,7 +418,7 @@ def _unlit_positions(device: HostLightingDevice) -> list:
         if not header['count']:
             break
         for index in range(header['count']):
-            record = reply[RECORDS_OFFSET + index * header['stride']:RECORDS_OFFSET + (index + 1) * header['stride']]
+            record = reply[HEADER_RECORDS + index * header['stride']:HEADER_RECORDS + (index + 1) * header['stride']]
             if not record[3] & 0x02 and bytes(record[4:10]) != b'\xff\xff' + bytes(4):
                 wrong.append(record[0])
         start, total = start + header['count'], header['total']
@@ -453,8 +453,8 @@ def _check_controls(checks: Checks, controls: list, lights: list, unlit_position
     checks.check(not wrong, 'Controls agree with the Lights page (flags, instances, position, lights)')
     keys = [control['key'] for control in controls]
     checks.check(keys == sorted(set(keys)), 'Controls in ascending key order, each key once')
-    checks.check(NONE_8 not in keys, 'no control key is 0xFF (none)')
-    later = [key_name(key) for key in keys if decode_key(key)[0] == 'unknown' and key != NONE_8]
+    checks.check(PIN_NONE not in keys, 'no control key is 0xFF (none)')
+    later = [key_name(key) for key in keys if decode_key(key)[0] == 'unknown' and key != PIN_NONE]
     if later:
         checks.note(f"keys beyond 2.0: {', '.join(later)}")
     checks.check(not any(control['lit'] for control in controls if control['source'] not in ('gpio', 'hall_effect')),
@@ -1120,11 +1120,11 @@ def _round_trips(device: HostLightingDevice, count: int) -> list:
         start = time.perf_counter()
         try:
             device.request_ok(CMD_HELLO)
-        except HostLightingRejected as refused:
+        except HostLightingRejectedError as refused:
             if refused.status == STATUS_CLAIMED and refused.holder and refused.holder['holder_token']:
                 raise _TakenOver(f"'{refused.holder['holder_name']}' took the lights over") from None
             continue
-        except HostLightingDisconnected:
+        except HostLightingDisconnectedError:
             raise
         except HostLightingError:
             continue
@@ -1148,7 +1148,7 @@ def _frame(device: HostLightingDevice, leds: int, index: int, pipelined: bool) -
             payload = bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', first, count) + bytes(colours[0]) * count
             device.request_ok(CMD_STAGE, payload, FLAG_COMMIT_AFTER if first + count >= leds else 0)
         return True
-    except HostLightingDisconnected:
+    except HostLightingDisconnectedError:
         raise
     except HostLightingError:
         return False

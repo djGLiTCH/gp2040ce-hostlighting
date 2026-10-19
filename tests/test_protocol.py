@@ -218,7 +218,7 @@ def test_replies_read_early_are_kept_for_their_requests(hlp_fake_device, hlp_fak
 
 def test_claim_takes_an_invalid_argument_reply_without_an_echo(hlp_fake_device):
     """Test that CLAIM's invalid argument reply, which carries no echo, is taken as its reply."""
-    with pytest.raises(hl.HostLightingRejected) as rejected:
+    with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.claim(hl.CLAIM_TAKE, 0)
     assert (rejected.value.status, rejected.value.offset) == (hl.STATUS_INVALID, 4)
 
@@ -264,13 +264,13 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
             return bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)
         return answer(command, sequence, request)
     hlp_fake_board.answer = claimed
-    with pytest.raises(hl.HostLightingRejected) as rejected:
+    with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == {
         'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': True, 'claim_generation': 3}
     assert str(rejected.value) == "command 0x21 rejected: CLAIMED by 'MESH' (claim 0x000000B2, generation 3)"
     holder = bytes(20) + bytes([0, 4])                    # the claim lapsed: no holder, the generation now
-    with pytest.raises(hl.HostLightingRejected) as rejected:
+    with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.holder == {'holder_token': 0, 'holder_name': '', 'claim_exclusive': False,
                                      'claim_generation': 4}
@@ -323,7 +323,7 @@ def test_request_times_out(hlp_fake_device, hlp_fake_board):
 
 def test_rejection_carries_status_and_offset(hlp_fake_device):
     """Test that a status other than 0 raises with the offending byte."""
-    with pytest.raises(hl.HostLightingRejected) as caught:
+    with pytest.raises(hl.HostLightingRejectedError) as caught:
         hlp_fake_device.get_page(13)
     assert caught.value.status == hl.STATUS_INVALID and caught.value.offset == 3
     assert 'at request byte 3' in str(caught.value)
@@ -363,10 +363,10 @@ def test_read_table_at_reads_under_the_callers_token(hlp_fake_device, hlp_fake_b
     reads = [struct.unpack_from('<BHIH', read, 3) for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
     assert [(start, expected) for _, start, expected, _ in reads] == [(0, token), (3, token), (6, token)]
     hlp_fake_board.stale_once_at = 3
-    with pytest.raises(hl.HostLightingStale) as raised:
+    with pytest.raises(hl.HostLightingStaleTokenError) as raised:
         hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, token)
     assert (raised.value.page, raised.value.token) == (hl.PAGE_LIGHTS, token)
-    assert issubclass(hl.HostLightingStale, hl.HostLightingError)
+    assert issubclass(hl.HostLightingStaleTokenError, hl.HostLightingError)
     assert len(hlp_fake_board.sent(hl.CMD_GET_PAGE)) == 3 + 2
     with pytest.raises(ValueError):
         hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, 0)
@@ -422,34 +422,34 @@ def test_fill_and_configure(hlp_fake_device, hlp_fake_board):
 
 
 def test_a_late_reply_is_a_timeout(hlp_fake_device, hlp_fake_board):
-    """Test that no reply in time raises HostLightingTimeout, which is a HostLightingError."""
+    """Test that no reply in time raises HostLightingTimeoutError, which is a HostLightingError."""
     sequence = hlp_fake_device.send(hl.CMD_HELLO)
     hlp_fake_board.outbox.clear()
-    with pytest.raises(hl.HostLightingTimeout, match='no reply to command 0x01'):
+    with pytest.raises(hl.HostLightingTimeoutError, match='no reply to command 0x01'):
         hlp_fake_device.wait_reply(hl.CMD_HELLO, sequence, timeout=0.01)
-    assert issubclass(hl.HostLightingTimeout, hl.HostLightingError)
-    assert not issubclass(hl.HostLightingTimeout, hl.HostLightingDisconnected)
+    assert issubclass(hl.HostLightingTimeoutError, hl.HostLightingError)
+    assert not issubclass(hl.HostLightingTimeoutError, hl.HostLightingDisconnectedError)
 
 
 def test_a_failed_write_is_a_departed_board(hlp_fake_device, hlp_fake_board):
     """Test that a write hidapi reports as failed raises at once and leaves no request awaited."""
     hlp_fake_board.departed = True
-    with pytest.raises(hl.HostLightingDisconnected):
+    with pytest.raises(hl.HostLightingDisconnectedError):
         hlp_fake_device.send(hl.CMD_HELLO)
     assert not hlp_fake_device.awaited and not hlp_fake_board.requests
-    assert issubclass(hl.HostLightingDisconnected, hl.HostLightingError)
+    assert issubclass(hl.HostLightingDisconnectedError, hl.HostLightingError)
 
 
 def test_a_failed_read_is_a_departed_board(hlp_fake_device, hlp_fake_board):
-    """Test that a read error raises HostLightingDisconnected from every call that reads."""
+    """Test that a read error raises HostLightingDisconnectedError from every call that reads."""
     sequence = hlp_fake_device.send(hl.CMD_HELLO)
     hlp_fake_board.departed = True
-    with pytest.raises(hl.HostLightingDisconnected) as raised:
+    with pytest.raises(hl.HostLightingDisconnectedError) as raised:
         hlp_fake_device.wait_reply(hl.CMD_HELLO, sequence)
     assert isinstance(raised.value.__cause__, OSError)
-    with pytest.raises(hl.HostLightingDisconnected):
+    with pytest.raises(hl.HostLightingDisconnectedError):
         hlp_fake_device.collect(0.01)
-    with pytest.raises(hl.HostLightingDisconnected):
+    with pytest.raises(hl.HostLightingDisconnectedError):
         hlp_fake_device.next_event(0.01)
 
 
@@ -466,7 +466,7 @@ def test_send_reboot_tolerates_the_board_leaving(hlp_fake_device, hlp_fake_board
     assert not hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, payload)
     hlp_fake_board.disconnect_on.clear()
     assert hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, payload)
-    with pytest.raises(hl.HostLightingRejected):
+    with pytest.raises(hl.HostLightingRejectedError):
         hl.send_reboot(hlp_fake_device, hl.CMD_REBOOT, bytes([hl.REBOOT_BOOTSEL]) + b'BOXT')
 
 
@@ -548,7 +548,7 @@ def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
     def always_stale(sequence, request):
         hlp_fake_board.token += 1
         return page_reply(hl.PAGE_PROFILES, [], struct.unpack_from('<H', request, 4)[0], 0, hlp_fake_board.token,
-                          sequence, hl.STATUS_STALE)
+                          sequence, hl.STATUS_STALE_TOKEN)
     hlp_fake_board.page = lambda sequence, request: (always_stale(sequence, request)
                                                      if struct.unpack_from('<I', request, 6)[0]
                                                      else real_page(sequence, request))
@@ -655,7 +655,7 @@ def test_a_claimed_page_read_names_the_holder(hlp_fake_device, hlp_fake_board):
             return bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)
         return answer(command, sequence, request)
     hlp_fake_board.answer = claimed
-    with pytest.raises(hl.HostLightingRejected) as rejected:
+    with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.get_page(hl.PAGE_STATE)
     assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == {
         'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': False, 'claim_generation': 5}
@@ -751,11 +751,11 @@ def test_a_disconnect_names_what_failed():
         def write(self, data):
             return -1
 
-    with pytest.raises(hl.HostLightingDisconnected, match=r'sending command 0x01 failed with device gone\)'):
+    with pytest.raises(hl.HostLightingDisconnectedError, match=r'sending command 0x01 failed with device gone\)'):
         hl.HostLightingDevice(handle=Gone()).send(hl.CMD_HELLO)
-    with pytest.raises(hl.HostLightingDisconnected, match=r'\(sending command 0x01 failed\)$'):
+    with pytest.raises(hl.HostLightingDisconnectedError, match=r'\(sending command 0x01 failed\)$'):
         hl.HostLightingDevice(handle=Refusing()).send(hl.CMD_HELLO)
-    with pytest.raises(hl.HostLightingDisconnected, match=r'\(reading failed with read error\)'):
+    with pytest.raises(hl.HostLightingDisconnectedError, match=r'\(reading failed with read error\)'):
         hl.HostLightingDevice(handle=Gone()).collect(0.01)
 
 

@@ -581,8 +581,8 @@ def test_conformance_catches_a_board_that_ignores_the_generation(hlp_run_on_mode
     def without_generation(data):
         # as a board that reads no generation: the holder's requests keep theirs, so its claim still works
         report = bytearray(data)
-        if (report[3] & hl.FLAG_GENERATION_MASK) >> hl.FLAG_GENERATION_SHIFT != hlp_model_board.generation:
-            report[3] &= ~hl.FLAG_GENERATION_MASK
+        if (report[3] & hl.FLAG_GENERATION) >> hl.FLAG_GENERATION_SHIFT != hlp_model_board.generation:
+            report[3] &= ~hl.FLAG_GENERATION
         return write(bytes(report))
     monkeypatch.setattr(hlp_model_board, 'write', without_generation)
     with pytest.raises(SystemExit):
@@ -602,7 +602,7 @@ def test_conformance_catches_an_exclusive_claim_that_needs_no_generation(hlp_run
 
     def holder_is_enough(data):
         report = bytearray(data)
-        if report[3] & hl.FLAG_HOLDER and not report[3] & hl.FLAG_GENERATION_MASK:
+        if report[3] & hl.FLAG_HOLDER and not report[3] & hl.FLAG_GENERATION:
             report[3] |= hlp_model_board.generation << hl.FLAG_GENERATION_SHIFT
         return write(bytes(report))
     monkeypatch.setattr(hlp_model_board, 'write', holder_is_enough)
@@ -687,9 +687,8 @@ def test_round_trips_stop_once_another_application_holds_the_claim():
     """Test that hlp-bench takes a HELLO refused under its generation as the claim lost, not as a lost reply."""
     class Device:
         def request_ok(self, command):
-            raise hl.HostLightingRejected(command, hl.STATUS_CLAIMED, 0, {'holder_token': 0xB2, 'holder_name': 'MESH',
-                                                                          'claim_exclusive': False,
-                                                                          'claim_generation': 3})
+            raise hl.HostLightingRejectedError(command, hl.STATUS_CLAIMED, 0, {
+                'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': False, 'claim_generation': 3})
 
     with pytest.raises(hl_conformance._TakenOver):
         hl_conformance._round_trips(Device(), 3)

@@ -31,16 +31,16 @@ def page_reply(page: int, records: list, start: int = 0, mask: int = 0, token: i
     wanted = (mask or (1 << len(widths)) - 1) if status == hl.STATUS_OK else 0     # a stale reply echoes no groups
     groups = stride = 0
     for group, width in enumerate(widths):
-        if wanted & (1 << group) and stride + width <= hl.RECORDS_AREA:
+        if wanted & (1 << group) and stride + width <= hl.RECORD_AREA:
             groups |= 1 << group
             stride += width
     total = len(records)
-    count = 0 if status != hl.STATUS_OK or not stride else max(0, min(hl.RECORDS_AREA // stride, total - start))
+    count = 0 if status != hl.STATUS_OK or not stride else max(0, min(hl.RECORD_AREA // stride, total - start))
     body = b''.join(b''.join(record[group] for group in range(len(widths)) if groups & (1 << group))
                     for record in records[start:start + count])
     header = bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, status, page])
     header += struct.pack('<HHBBH', start, total, count, stride, groups)
-    return header + body.ljust(hl.RECORDS_AREA, b'\x00') + struct.pack('<I', token)
+    return header + body.ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', token)
 
 
 def state_record(live=0, mode=0, profile=1, player=1, animation=0, step=5, number=3, token=0, name=b'',
@@ -85,13 +85,13 @@ def identity_reply(strings: list, mask: int = 0xFF, sequence: int = 1) -> bytes:
             continue
         raw = text.encode()[:hl.IDENTITY_STRING_MAX]
         piece = raw + (b'\x00' if len(raw) < hl.IDENTITY_STRING_MAX else b'')
-        if len(area) + len(piece) > hl.RECORDS_AREA:
+        if len(area) + len(piece) > hl.RECORD_AREA:
             continue
         area += piece
         groups |= 1 << group
     header = bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_OK, hl.PAGE_IDENTITY])
     header += struct.pack('<HHBBH', 0, 1, 1, len(area), groups)
-    return header + area[:hl.RECORDS_AREA].ljust(hl.RECORDS_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
+    return header + area[:hl.RECORD_AREA].ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
 
 
 def hello_reply(sequence=1, major=2, board_id=BOARD_ID, subscribed=0, queue_limit=16) -> bytes:
@@ -329,7 +329,7 @@ class FakeBoard:
             self.stale_once_at = None
             self.token += 1
         if token and token != self.token:
-            return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE)
+            return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE_TOKEN)
         if page == hl.PAGE_IDENTITY:
             return identity_reply(self.identity, mask or 0xFF, sequence)
         state = [self.state[0], self.controller()] + self.state[2:]
@@ -504,7 +504,7 @@ class ModelBoard(FakeBoard):
         queued = [report for report in self.outbox if report[0] != hl.EVENT_MARKER]
         if not flags & hl.FLAG_NO_REPLY and len(queued) >= self.queue_limit:
             return len(data)            # discarded: neither executed nor answered
-        generation = (flags & hl.FLAG_GENERATION_MASK) >> hl.FLAG_GENERATION_SHIFT
+        generation = (flags & hl.FLAG_GENERATION) >> hl.FLAG_GENERATION_SHIFT
         # a request other than CLAIM under a generation that is no longer current: the holder has changed
         outdated = (command in self.COMMANDS and command != hl.CMD_CLAIM and
                     generation not in (0, self.generation))

@@ -33,7 +33,7 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
                                             PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
                                             REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, HostLightingDevice,
-                                            HostLightingDisconnected, HostLightingError, HostLightingRejected,
+                                            HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
                                             LightsClaim, decode_state_changed, key_name, open_device, send_reboot,
                                             stage_capacity)
 
@@ -470,7 +470,7 @@ def _apply(device: HostLightingDevice, option: str, command: int, payload: bytes
     """Send one board-feature command, naming the option when the board refuses it."""
     try:
         device.request_ok(command, payload)
-    except HostLightingRejected as error:
+    except HostLightingRejectedError as error:
         raise SystemExit(f"error: {option}: {error}") from error
 
 
@@ -666,7 +666,7 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
         try:
             claim.device.stage_run(ADDRESSING_LED_RUN, 0, colours, commit=True)
             acknowledged += 1
-        except HostLightingDisconnected:
+        except HostLightingDisconnectedError:
             raise
         except HostLightingError as error:
             failure = failure or error
