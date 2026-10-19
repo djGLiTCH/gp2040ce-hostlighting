@@ -109,10 +109,14 @@ def test_input_mode_checks_page_2(hlp_run_on_fake_board, hlp_fake_board, capsys)
 
 
 def test_reboots_and_ping(hlp_run_on_fake_board, hlp_fake_board, capsys):
-    """Test the REBOOT targets and hlp-ping."""
-    hlp_run_on_fake_board(tools.reboot_webconfig)
-    hlp_run_on_fake_board(tools.reboot_bootsel)
-    assert [request[3:8] for request in hlp_fake_board.sent(hl.CMD_REBOOT)] == [b'\x01BOOT', b'\x02BOOT']
+    """Test hlp-reboot's three targets and hlp-ping."""
+    for target in ('gamepad', 'webconfig', 'bootsel'):
+        hlp_run_on_fake_board(tools.reboot, target)
+    assert [request[3:8] for request in hlp_fake_board.sent(hl.CMD_REBOOT)] == [b'\x00BOOT', b'\x01BOOT',
+                                                                                b'\x02BOOT']
+    assert 'rebooting into the saved input mode\nrebooting to web configurator\n' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        hlp_run_on_fake_board(tools.reboot, 'flash')
     hlp_run_on_fake_board(tools.ping)
     out = capsys.readouterr().out
     assert 'Haute42 COSMOX M Ultra (v0.7.12-88-ga83f820), board ID 433030343237362E' in out

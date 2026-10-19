@@ -1,9 +1,8 @@
 """The hlp-* commands for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
 hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light,
-hlp-stream, hlp-buttons, hlp-input-mode, hlp-reboot-webconfig and
-hlp-reboot-bootsel. Given GP2040-CE's .proto files (`-P`), they print enum
-names beside the values. The commands that drive the LEDs hold a LightsClaim,
+hlp-stream, hlp-buttons, hlp-input-mode and hlp-reboot. Given GP2040-CE's
+.proto files (`-P`), they print enum names beside the values. The commands that drive the LEDs hold a LightsClaim,
 and print its INFO lines as part of their output. tools.conformance shares
 hlp_command, device_parser, add_claim_arguments and ranged.
 
@@ -16,7 +15,6 @@ import functools
 import logging
 import os
 import pathlib
-import re
 import sys
 import time
 from dataclasses import fields
@@ -24,17 +22,18 @@ from importlib import metadata
 from typing import Callable
 
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
+from gp2040ce_hostlighting.enums import read_enum_names
 from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
                                             KIND_PLAYERS, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
                                             PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
-                                            REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, TAKEOVER_OVERLAY,
-                                            TAKEOVER_WHOLE_FRAME, HostLightingClaimedError, HostLightingDevice,
-                                            HostLightingError, HostLightingRejectedError, HostLightingTimeoutError,
-                                            HostLightingUnansweredError, decode_state_changed, key_name, open_device,
-                                            stage_capacity)
+                                            REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
+                                            TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingClaimedError,
+                                            HostLightingDevice, HostLightingError, HostLightingRejectedError,
+                                            HostLightingTimeoutError, HostLightingUnansweredError, decode_state_changed,
+                                            key_name, open_device, stage_capacity)
 from gp2040ce_hostlighting.records import Hello, Settings, StateRecord
 
 logger = logging.getLogger(__name__)
@@ -93,25 +92,6 @@ class CommandParser(argparse.ArgumentParser):
         return parsed, unknown
 
 
-PROTO_COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/', re.S)
-PROTO_ENUM = re.compile(r'\benum\s+(\w+)\s*\{(.*?)\}', re.S)
-PROTO_VALUE = re.compile(r'^\s*(\w+)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*(?:\[[^\]]*\])?\s*;', re.M)
-
-
-def proto_enums(text: str) -> dict:
-    """Read the enum blocks of a .proto file.
-
-    :param text: the file's contents
-    :return: {enum name: {value: value name}}, with the first name where values share a number
-    """
-    names: dict = {}
-    for enum in PROTO_ENUM.finditer(PROTO_COMMENT.sub('', text)):
-        values = names.setdefault(enum.group(1), {})
-        for value in PROTO_VALUE.finditer(enum.group(2)):
-            values.setdefault(int(value.group(2), 0), value.group(1))
-    return names
-
-
 def enum_names() -> dict:
     """Name GP2040-CE's enum values from its enums.proto, when the command was given it with -P.
 
@@ -119,19 +99,7 @@ def enum_names() -> dict:
 
     :return: {enum name: {value: value name}}, empty unless -P was given and a file reads
     """
-    names: dict = {}
-    for path in common_options.proto_files_path:
-        file = path.expanduser()
-        if file.is_dir():
-            file = file / 'enums.proto'
-            if not file.is_file():
-                logger.debug("no enums.proto in %s", path)
-                continue
-        try:
-            names.update(proto_enums(file.read_text(encoding='utf-8')))
-        except (OSError, UnicodeDecodeError):
-            logger.warning("could not read %s for names (-d shows why)", file)
-            logger.debug("reading the .proto file failed", exc_info=True)
+    names = read_enum_names(common_options.proto_files_path)
     if common_options.proto_files_path and not names:
         logger.warning("no enum names found in the -P paths")
     return names
@@ -821,27 +789,25 @@ def input_mode():
         device.close()
 
 
-@hlp_command
-def reboot_webconfig():
-    """Reboot a board into web configurator mode."""
-    parser = device_parser("Reboot a GP2040-CE board into its web configurator (usually at 192.168.7.1).")
-    args, _ = parser.parse_known_args()
-    device = open_device(args.board_id)
-    try:
-        device.reboot(REBOOT_WEBCONFIG)
-        print("rebooting to web configurator")
-    finally:
-        device.close()
+# hlp-reboot's targets: the REBOOT target and what the command prints
+REBOOT_TARGETS = {'gamepad': (REBOOT_GAMEPAD, "rebooting into the saved input mode"),
+                  'webconfig': (REBOOT_WEBCONFIG, "rebooting to web configurator"),
+                  'bootsel': (REBOOT_BOOTSEL, "rebooting to BOOTSEL. Watch for the RPI-RP2 drive")}
 
 
 @hlp_command
-def reboot_bootsel():
-    """Reboot a board into the RP2040/RP2350 bootloader for flashing."""
-    parser = device_parser("Reboot a GP2040-CE board into BOOTSEL mode (the RPI-RP2 drive) for flashing.")
+def reboot():
+    """Reboot a board into its saved input mode, its web configurator or BOOTSEL."""
+    parser = device_parser("Reboot a GP2040-CE board: gamepad into its saved input mode, which can differ from "
+                           "the mode it runs when a boot hotkey chose that one, webconfig into its web "
+                           "configurator (usually at 192.168.7.1), or bootsel into BOOTSEL mode (the RPI-RP2 "
+                           "drive) for flashing.")
+    parser.add_argument('target', choices=list(REBOOT_TARGETS), help="where to reboot to")
     args, _ = parser.parse_known_args()
+    target, message = REBOOT_TARGETS[args.target]
     device = open_device(args.board_id)
     try:
-        device.reboot(REBOOT_BOOTSEL)
-        print("rebooting to BOOTSEL. Watch for the RPI-RP2 drive")
+        device.reboot(target)
+        print(message)
     finally:
         device.close()

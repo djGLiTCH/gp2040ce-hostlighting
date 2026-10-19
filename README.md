@@ -22,7 +22,13 @@ the `_internal` folder they share, which also holds the licences of this package
 
 | Path | Holds |
 |---|---|
-| `gp2040ce_hostlighting/protocol.py` | The protocol: constants, framing, decoders, the device, the claim and discovery |
+| `gp2040ce_hostlighting/protocol.py` | The protocol: constants, framing, decoders, errors, the device, discovery and capability checks |
+| `gp2040ce_hostlighting/records.py` | The records and field groups every decoder returns |
+| `gp2040ce_hostlighting/claim.py` | `LightsClaim`, which takes, renews, follows and gives up the claim |
+| `gp2040ce_hostlighting/frames.py` | `Frame` and `publish_frame()`, a streaming host's frames |
+| `gp2040ce_hostlighting/cache.py` | `ConfigurationCache`, the configuration pages read again when they change |
+| `gp2040ce_hostlighting/session.py` | `Session`, the specification's whole host flow |
+| `gp2040ce_hostlighting/enums.py` | GP2040-CE's enum names, read from its `.proto` files |
 | `gp2040ce_hostlighting/conformance.py` | The conformance checks and the round trip and frame-rate measurements |
 | `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
 | `gp2040ce_hostlighting/tools/` | The `hlp-*` commands: `commands.py`, and `conformance.py` for `hlp-conformance` and `hlp-bench` |
@@ -37,8 +43,10 @@ adds to GP2040-CE as `docs/host-lighting.md`.
 ## The library
 
 `gp2040ce_hostlighting.protocol` speaks Host Lighting Protocol 2.0 to a board. It needs only the `hidapi`
-package. It never prints, exits or sets up logging. It logs to its own module logger, and each failure raises a
-subclass of `HostLightingError`.
+package. The library never prints, exits or sets up logging. Each module logs to its own logger, and each
+failure raises a subclass of `HostLightingError`. A device, and everything built on it, belongs to one thread.
+Each call that sends an answered request blocks for its round trip, and for about 200 ms while the board writes
+its settings flash. The package carries type hints (`py.typed`).
 
 A host drives the lights in these steps:
 
@@ -116,6 +124,12 @@ A host that sends with `send()` and waits with `wait_reply()` reads the reports 
 `drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
 reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.
 
+### Enum names
+
+The pages carry GP2040-CE's enum values verbatim, such as an action or a light type. `read_enum_names()` in
+`gp2040ce_hostlighting.enums` reads their names from GP2040-CE's `enums.proto`, given as the file or its
+directory, so a host can show `BUTTON_PRESS_UP` beside action 1. The library keeps no list of its own.
+
 ### Testing a host
 
 `gp2040ce_hostlighting.testing` fakes a board, so a host's tests run without one. `fake_device(FakeBoard())`
@@ -192,8 +206,9 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
 * `hlp-input-mode` sets the board's input mode and reboots into it. It accepts the modes the board lists. A
   mode without the lighting interface needs `--force`, because these tools cannot switch the board back from
   one.
-* `hlp-reboot-webconfig` / `hlp-reboot-bootsel` reboot the board into the web configurator or the BOOTSEL
-  bootloader for flashing.
+* `hlp-reboot gamepad|webconfig|bootsel` reboots the board into its saved input mode, the web configurator or
+  the BOOTSEL bootloader for flashing. The saved input mode can differ from the one the board runs when a boot
+  hotkey chose that one.
 * `hlp-conformance` checks a board against the protocol and prints each rule it checks. It covers the HELLO
   capabilities, framing, every page and field mask and the pages' cross-references. It covers takeover,
   keepalive and claim-lease timing, the claim generation and the `CONFIGURE` defaults at each change of
