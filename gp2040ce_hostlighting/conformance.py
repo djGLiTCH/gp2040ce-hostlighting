@@ -35,12 +35,13 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             MAGIC_REBOOT, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
                                             PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_RANGES, PAGE_STATE,
                                             PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES,
-                                            PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATUS_CLAIMED, STATUS_INVALID,
-                                            STATUS_OK, STATUS_STALE_TOKEN, STATUS_UNSUPPORTED, TAKEOVER_OVERLAY,
-                                            HostLightingClaimedError, HostLightingDevice, HostLightingDisconnectedError,
-                                            HostLightingError, HostLightingRejectedError, decode_controller, decode_key,
-                                            decode_page_header, decode_records, decode_state_changed, is_event,
-                                            key_name, stage_capacity)
+                                            PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATE_IDLE, STATE_LIVE,
+                                            STATE_UNSAVED, STATUS_CLAIMED, STATUS_INVALID, STATUS_OK,
+                                            STATUS_STALE_TOKEN, STATUS_UNSUPPORTED, SUMMARY_WHITE_CHANNEL,
+                                            TAKEOVER_OVERLAY, HostLightingClaimedError, HostLightingDevice,
+                                            HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
+                                            decode_controller, decode_key, decode_page_header, decode_records,
+                                            decode_state_changed, is_event, key_name, stage_capacity)
 from gp2040ce_hostlighting.records import (Controller, ControlLights, ControlRecord, Hello, Instances, LightRecord,
                                            Position, Settings, StateRecord)
 
@@ -353,6 +354,17 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
                            if page not in hello.pages),
                        'Summary change counters: 0 for the pages the board does not have', f"{changes.counters}")
     yield checks.check(device.read_record(PAGE_SUMMARY, 0b10).records[0].changes == changes, 'a read steps no counter')
+    summary = device.get_page(PAGE_SUMMARY, 0, 1)
+    colour_format, flags = summary[HEADER_RECORDS + 6], summary[HEADER_RECORDS + 7]
+    yield checks.check(not flags & ~SUMMARY_WHITE_CHANNEL, 'Summary flags: bit 0 alone', f"0x{flags:02X}")
+    # GP2040-CE's LEDFormat 2 and 3, GRBW and RGBW, have a white emitter
+    yield checks.check(bool(flags & SUMMARY_WHITE_CHANNEL) == (colour_format in (2, 3)),
+                       'Summary white channel: set for a GRBW or RGBW chain alone', f"colour format {colour_format}")
+    state_flags = device.get_page(PAGE_STATE, 0, 1)[HEADER_RECORDS]
+    yield checks.check(not state_flags & ~(STATE_LIVE | STATE_UNSAVED | STATE_IDLE), 'State flags: bits 0 to 2 alone',
+                       f"0x{state_flags:02X}")
+    yield checks.note(f"animations {'idle' if state_flags & STATE_IDLE else 'not idle'}, button layout orientation "
+                      f"{summary[HEADER_RECORDS + 13]}")
     identity = device.read_identity()
     yield checks.check(all(getattr(identity, item.name) is not None for item in fields(identity)),
                        'page 0: every identity string')
