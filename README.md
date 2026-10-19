@@ -86,6 +86,32 @@ A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the 
 moved change counter, under the Summary's state token, and returns the pages it read again. A host calls it
 after each change of the state token, and calls `clear()` after a reconnect.
 
+A `Session` runs the specification's whole host flow on these parts. `start()`, or a `with` block, checks the
+board's capabilities, reads the configuration, takes the claim, sends the settings and subscribes to
+`STATE_CHANGED`. `poll()` renews the claim, applies the events, reads changed pages again and returns a
+`SessionUpdate`. Its `restage` says when to stage the whole frame again. `show()` publishes a frame,
+`reconnect()` finds the board again after it leaves the bus, and `close()` gives the claim up. With the name
+`None`, a `Session` runs the flow of a host that does not claim.
+
+The example shows the case lights blue for 3 s at 60 frames a second:
+
+```python
+import time
+
+from gp2040ce_hostlighting.frames import Frame
+from gp2040ce_hostlighting.protocol import (
+    ADDRESSING_KIND, KIND_CASE, open_device)
+from gp2040ce_hostlighting.session import Session
+
+with Session(open_device(), 'my-host') as session:
+    frame = Frame()
+    frame.entries(ADDRESSING_KIND, [(KIND_CASE, (0, 0, 255))])
+    for _ in range(180):
+        session.poll()
+        session.show(frame)
+        time.sleep(1 / 60)
+```
+
 A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
 `drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
 reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.
