@@ -77,6 +77,11 @@ with open_device() as device:
 a change of kind `LOST`, `keep()` returns `False`, and the lights belong to the new holder. `observe()` applies
 the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4 refusal to the claim.
 
+A streaming host builds each frame as a `Frame` of entries and runs, staged in the order they were added, and
+sends it with `publish_frame()`. Every report but the last goes with `NO_REPLY`, and the last with
+`COMMIT_AFTER`, which alone is answered and is sent once more when its answer does not come. The `FrameResult`
+says whether the frame was acknowledged.
+
 A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
 `drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
 reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.

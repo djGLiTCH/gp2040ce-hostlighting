@@ -21,9 +21,10 @@ import sys
 import time
 from dataclasses import fields
 from importlib import metadata
-from typing import Callable, Optional
+from typing import Callable
 
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
+from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
@@ -31,8 +32,9 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
                                             REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, TAKEOVER_OVERLAY,
                                             TAKEOVER_WHOLE_FRAME, HostLightingClaimedError, HostLightingDevice,
-                                            HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
-                                            decode_state_changed, key_name, open_device, stage_capacity)
+                                            HostLightingError, HostLightingRejectedError, HostLightingTimeoutError,
+                                            HostLightingUnansweredError, decode_state_changed, key_name, open_device,
+                                            stage_capacity)
 from gp2040ce_hostlighting.records import Hello, Settings, StateRecord
 
 logger = logging.getLogger(__name__)
@@ -631,7 +633,8 @@ def stream():
     """Stream whole frames, as a worked example of a streaming host."""
     parser = device_parser("Take a GP2040-CE board's lights over and stream whole frames: red, green and blue "
                            "fills, then a rainbow at 60 fps, then give the claim up. Each frame is LED runs "
-                           "sent with NO_REPLY, COMMIT_AFTER on the last report, which alone is answered.")
+                           "sent with NO_REPLY, COMMIT_AFTER on the last report, which alone is answered and is "
+                           "sent once more when unanswered.")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long the rainbow runs (default: 5)")
     parser.add_argument('--leds', type=ranged(1, 0xFFFF), help="LEDs per frame (default: the LED extent)")
     parser.add_argument('--timeout-test', action='store_true',
@@ -664,32 +667,47 @@ def _stream(claim: LightsClaim, leds: int, seconds: float, timeout_test: bool) -
 def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
     """Stream a moving rainbow at about 60 fps, renewing the claim when due.
 
+    Each frame goes as the specification has a streaming host send it. A frame unacknowledged after its resend is
+    not shown, and the board is lost only when a HELLO then goes unanswered too.
+
     :return: False when another application took the lights over
+    :raises HostLightingUnansweredError: when the board answers neither a frame nor the HELLO after it
     """
     frames = max(1, int(seconds * 60))
     start = time.monotonic()
     acknowledged = 0
-    failure: Optional[HostLightingError] = None
-    for frame in range(frames):
-        colours = [_hue(led + frame * leds / 120, leds) for led in range(leds)]
+    failure = ''
+    for index in range(frames):
+        frame = Frame()
+        frame.run(ADDRESSING_LED_RUN, 0, [_hue(led + index * leds / 120, leds) for led in range(leds)])
         try:
-            claim.device.stage_run(ADDRESSING_LED_RUN, 0, colours, commit=True)
-            acknowledged += 1
-        except HostLightingDisconnectedError:
-            raise
+            if publish_frame(claim.device, frame).acknowledged:
+                acknowledged += 1
+            else:
+                failure = failure or "no acknowledgement, the last report sent twice"
+                _answers_hello(claim.device)
         except HostLightingRejectedError as error:
-            failure = failure or error
+            failure = failure or str(error)
             claim.refused(error)        # a status 4 refusal shows a change of holder
-        except HostLightingError as error:
-            failure = failure or error
         claim.maintain()
         if claim.state is not ClaimState.HELD:
             return False
-        time.sleep(max(0.0, start + (frame + 1) / 60 - time.monotonic()))
+        time.sleep(max(0.0, start + (index + 1) / 60 - time.monotonic()))
     print(f"rainbow: {acknowledged} of {frames} frames acknowledged ({leds} LEDs)")
     if failure:
         print(f"  the first unacknowledged frame: {failure}")
     return True
+
+
+def _answers_hello(device: HostLightingDevice) -> None:
+    """Send HELLO. Its reply, of any status, shows the board is still there.
+
+    :raises HostLightingUnansweredError: when it goes unanswered
+    """
+    try:
+        device.request(CMD_HELLO)
+    except HostLightingTimeoutError:
+        raise HostLightingUnansweredError("the board answers neither a frame nor HELLO") from None
 
 
 def _time_expiry(device: HostLightingDevice) -> None:

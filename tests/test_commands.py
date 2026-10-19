@@ -234,19 +234,35 @@ def test_tool_errors_are_one_line(hlp_run_on_fake_board, hlp_fake_board):
         hlp_run_on_fake_board(tools.caps)
 
 
-def test_stream_stops_when_the_board_has_gone(hlp_run_on_model_board, hlp_model_board, monkeypatch):
+def test_stream_stops_when_the_board_has_gone(hlp_run_on_model_board, hlp_model_board):
     """Test that hlp-stream ends when the board leaves the bus, where it used to send every frame unanswered."""
-    staged = []
-
-    def depart(self, addressing, first, colours, pixel_format=hl.PIXEL_RGB, commit=False):
-        staged.append(first)
-        hlp_model_board.departed = True
-        self.send(hl.CMD_STAGE, b'')
-
-    monkeypatch.setattr(hl.HostLightingDevice, 'stage_run', depart)
+    hlp_model_board.disconnect_on = {hl.CMD_STAGE}
     with pytest.raises(SystemExit, match='error: the board is no longer connected'):
         hlp_run_on_model_board(tools.stream, '--seconds', '1')
-    assert len(staged) == 1
+    assert len(hlp_model_board.sent(hl.CMD_STAGE)) == 1
+
+
+def test_stream_resends_and_asks_hello_after_a_missed_frame(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test that a frame unanswered twice is not shown, HELLO is asked, and one unanswered too ends the run."""
+    answer, dropped = hlp_model_board.answer, []
+
+    def dropping(command, sequence, request):
+        if command == hl.CMD_STAGE and len(dropped) < limit[0]:
+            dropped.append(sequence)
+            return None
+        if command == hl.CMD_HELLO and dropped and limit[0] > 2:
+            return None
+        return answer(command, sequence, request)
+    hlp_model_board.answer = dropping
+    limit = [2]
+    hlp_run_on_model_board(tools.stream, '--seconds', '1')
+    out = capsys.readouterr().out
+    assert 'rainbow: 59 of 60 frames acknowledged (4 LEDs)' in out
+    assert '  the first unacknowledged frame: no acknowledgement, the last report sent twice' in out
+    dropped.clear()
+    limit = [3]
+    with pytest.raises(SystemExit, match='error: the board answers neither a frame nor HELLO'):
+        hlp_run_on_model_board(tools.stream, '--seconds', '1')
 
 
 def test_enum_names_from_the_proto_files(monkeypatch, tmp_path, caplog):
