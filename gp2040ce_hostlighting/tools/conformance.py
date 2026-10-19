@@ -4,9 +4,8 @@ hlp-conformance checks one board against the protocol and reports each rule it c
 capabilities, framing, every page and field mask, the pages' cross-references, takeover and keepalive timing,
 the claim lease and generation, shared and exclusive claims, unsaved brightness, staging, events and
 board-feature argument checks, delivery of replies to a second handle, then round trip and throughput.
-hlp-bench runs the round trip and frame-rate measurements on their own,
-at length. Both hold the claim while they run,
-so other applications leave the lights alone, and give it up at the end.
+hlp-bench runs the round trip and frame-rate measurements on their own, at length. Both hold the claim while
+they run, so other applications leave the lights alone, and give it up at the end.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -32,19 +31,19 @@ def _line(result: CheckResult) -> str:
 
 
 @hlp_command
-def conformance():
+def conformance() -> None:
     """Check a board's Host Lighting implementation against the protocol."""
     parser = device_parser("Check a GP2040-CE board's Host Lighting implementation against the protocol: HELLO, "
                            "framing, the pages and their cross-references, takeover, keepalive and claim timing, "
                            "the claim generation, shared and exclusive claims, unsaved brightness, staging, events, "
-                           "argument checks and delivery of replies to a second handle, "
-                           "then round trip and throughput. It holds the "
-                           "claim while it runs, so run it with no other lighting application.")
+                           "argument checks and delivery of replies to a second handle, then round trip and "
+                           "throughput. It holds the claim while it runs, so run it with no other lighting "
+                           "application.")
     parser.add_argument('--settings', action='store_true',
                         help="also change and restore brightness, animation and speeds (writes the settings flash)")
     parser.add_argument('--quick', action='store_true', help="shorter timing runs")
     add_claim_arguments(parser)
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     checks = Checks()
     start, section = time.monotonic(), ''
@@ -67,7 +66,7 @@ def conformance():
 def _bench(device: HostLightingDevice, claim: LightsClaim, leds: int, quick: bool) -> None:
     """Run hlp-bench's measurements, maintaining the claim between them."""
     count = 100 if quick else 300
-    trips = sorted(measure_round_trips(device, count))
+    trips = sorted(measure_round_trips(device, count, claim))
     claim.maintain()
     if trips:
         print(f"round trip: median {statistics.median(trips):.2f} ms, p95 {trips[int(len(trips) * 0.95) - 1]:.2f} ms "
@@ -82,7 +81,7 @@ def _bench(device: HostLightingDevice, claim: LightsClaim, leds: int, quick: boo
 
 
 @hlp_command
-def bench():
+def bench() -> None:
     """Measure a board's Host Lighting round trip and frame rates."""
     parser = device_parser("Measure a GP2040-CE board's Host Lighting round trip and frame rates: HELLO round "
                            "trips, whole frames paced at 60 fps, then frames back to back with every report "
@@ -90,7 +89,7 @@ def bench():
     parser.add_argument('--leds', type=ranged(1, 0xFFFF), help="LEDs per frame (default: the LED extent)")
     parser.add_argument('--quick', action='store_true', help="fewer samples: 100 round trips, 60 frames, 1 s runs")
     add_claim_arguments(parser)
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1

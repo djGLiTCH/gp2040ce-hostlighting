@@ -1,9 +1,8 @@
 """The hlp-* commands for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
-hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light,
-hlp-stream, hlp-buttons, hlp-input-mode and hlp-reboot. Given GP2040-CE's
-.proto files (`-P`), they print enum names beside the values. The commands that drive the LEDs hold a LightsClaim,
-and print its INFO lines as part of their output. tools.conformance shares
+hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light, hlp-stream, hlp-buttons, hlp-input-mode and
+hlp-reboot. Given GP2040-CE's .proto files (`-P`), they print enum names beside the values. The commands that drive
+the LEDs hold a LightsClaim and print its INFO lines as part of their output. tools.conformance shares
 hlp_command, device_parser, add_claim_arguments and ranged.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
@@ -19,7 +18,7 @@ import sys
 import time
 from dataclasses import fields
 from importlib import metadata
-from typing import Callable
+from typing import Any, Callable, Optional, Sequence
 
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
 from gp2040ce_hostlighting.enums import read_enum_names
@@ -27,14 +26,15 @@ from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
-                                            KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES,
-                                            PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
-                                            REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
-                                            TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingClaimedError,
-                                            HostLightingDevice, HostLightingError, HostLightingRejectedError,
-                                            HostLightingTimeoutError, HostLightingUnansweredError, decode_state_changed,
-                                            key_name, open_device, stage_capacity)
-from gp2040ce_hostlighting.records import Hello, Settings, StateRecord
+                                            KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_IDENTITY,
+                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY,
+                                            PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG,
+                                            SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
+                                            HostLightingClaimedError, HostLightingDevice, HostLightingError,
+                                            HostLightingRejectedError, HostLightingTimeoutError,
+                                            HostLightingUnansweredError, decode_state_changed, key_name, open_device,
+                                            stage_capacity)
+from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +69,16 @@ class _ClaimLines(logging.Handler):
             print(record.getMessage())
 
 
-class CommandParser(argparse.ArgumentParser):
-    """An hlp-* command's parser: applies the common options once the command line is parsed."""
+def _not_claim_line(record: logging.LogRecord) -> bool:
+    """Leave the claim's INFO lines, which _ClaimLines prints, out of the log, so that -d shows each once."""
+    return not (record.name == 'gp2040ce_hostlighting.claim' and record.levelno == logging.INFO)
 
-    def parse_known_args(self, args=None, namespace=None):
+
+class CommandParser(argparse.ArgumentParser):
+    """An hlp-* command's parser, which applies the common options once the command line is parsed."""
+
+    def parse_known_args(self, args: Optional[Sequence[str]] = None,  # type: ignore[override]
+                         namespace: Optional[argparse.Namespace] = None) -> tuple[argparse.Namespace, list[str]]:
         """Parse the command line, then set up logging and the .proto paths.
 
         The log goes to stderr, at WARNING or with -d at DEBUG. The claim's INFO lines are printed instead.
@@ -85,6 +91,7 @@ class CommandParser(argparse.ArgumentParser):
             logging.basicConfig(level=level, stream=sys.stderr,
                                 format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
             logging.root.handlers[0].setLevel(level)
+            logging.root.handlers[0].addFilter(_not_claim_line)
         claim_log = logging.getLogger('gp2040ce_hostlighting.claim')
         claim_log.setLevel(min(level, logging.INFO))
         if not any(isinstance(handler, _ClaimLines) for handler in claim_log.handlers):
@@ -92,7 +99,7 @@ class CommandParser(argparse.ArgumentParser):
         return parsed, unknown
 
 
-def enum_names() -> dict:
+def enum_names() -> dict[str, dict[int, str]]:
     """Name GP2040-CE's enum values from its enums.proto, when the command was given it with -P.
 
     -P takes the file or the directory that holds it. A directory without enums.proto is skipped.
@@ -105,24 +112,26 @@ def enum_names() -> dict:
     return names
 
 
-def _named(value: int, names: dict, enum: str) -> str:
+def _named(value: int, names: dict[str, dict[int, str]], enum: str) -> str:
     """Show a GP2040-CE enum value verbatim, with its name when known."""
     name = names.get(enum, {}).get(value)
     return f"{value} ({name})" if name else str(value)
 
 
-def hlp_command(function):
-    """Report a command's HID and protocol errors as a one-line exit, not a traceback."""
+def hlp_command(function: Callable[[], None]) -> Callable[[], None]:
+    """Report a command's HID and protocol errors as a one-line exit, and Ctrl-C as exit 130, not a traceback."""
     @functools.wraps(function)
-    def run():
+    def run() -> None:
         """Run the command."""
         try:
             function()
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None     # the claim was given up and the device closed on the way out
         except HostLightingClaimedError as error:
             raise SystemExit(f"error: {error}. Add --force to take them over") from error
         except BrokenPipeError:
             # The reader of the output has exited. Python flushes stdout again at exit, so it is pointed at
-            # devnull first: the method of the note on SIGPIPE in Python's signal module documentation.
+            # devnull first, by the method of the note on SIGPIPE in Python's signal module documentation.
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
             raise SystemExit(1) from None
         except (HostLightingError, OSError) as error:
@@ -146,11 +155,11 @@ def add_claim_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the flags of a command that holds the lights: --force and --exclusive."""
     parser.add_argument('--force', action='store_true', help="take the lights over from another application")
     parser.add_argument('--exclusive', action='store_true',
-                        help="claim the lights exclusively: until the claim is given up, the board refuses changes "
-                             "from applications that do not hold the claim (default: a shared claim)")
+                        help="claim the lights exclusively, so that until the claim is given up the board refuses "
+                             "changes from applications that do not hold the claim (default: a shared claim)")
 
 
-def ranged(low: int, high: int):
+def ranged(low: int, high: int) -> Callable[[str], int]:
     """Build an argparse type for an integer from low to high, decimal or 0x hex."""
     def parse(text: str) -> int:
         """Parse and range-check one value."""
@@ -169,7 +178,7 @@ def _animation(text: str) -> int:
     return ANIMATION_OFF if text == 'off' else ranged(0, 0xFFFF)(text)
 
 
-def _parse_colour(text: str) -> tuple:
+def _parse_colour(text: str) -> tuple[int, ...]:
     """Parse RRGGBB or RRGGBBWW hex into a colour tuple.
 
     :param text: six or eight hex digits
@@ -180,7 +189,7 @@ def _parse_colour(text: str) -> tuple:
     return tuple(bytes.fromhex(text))
 
 
-def _hue(index: float, count: int) -> tuple:
+def _hue(index: float, count: int) -> tuple[int, int, int]:
     """One of count evenly spaced, fully saturated hues."""
     red, green, blue = colorsys.hsv_to_rgb((index / max(count, 1)) % 1.0, 1.0, 1.0)
     return int(red * 255), int(green * 255), int(blue * 255)
@@ -192,14 +201,14 @@ def _hue(index: float, count: int) -> tuple:
 
 
 @hlp_command
-def ping():
+def ping() -> None:
     """Check a board's Host Lighting interface and protocol version."""
     parser = device_parser("Say HELLO to a GP2040-CE Host Lighting interface and time the round trip.")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         hello = device.hello()
-        identity = device.read_identity()
+        identity = device.read_identity() if PAGE_IDENTITY in hello.pages else Identity()
         print(f"{identity.board_label or '?'} ({identity.firmware_version or '?'}), board ID {hello.board_id}")
         print(f"magic {hello.magic.decode('ascii', 'replace')}, protocol {hello.major}.{hello.minor}, "
               f"reply queue limit {hello.reply_queue_limit}")
@@ -214,33 +223,43 @@ def ping():
 
 
 @hlp_command
-def caps():
-    """Print everything a board reports about itself, page by page."""
+def caps() -> None:
+    """Print everything a board reports about itself, page by page, each page the board lists."""
     parser = device_parser("Read and decode a GP2040-CE board's Host Lighting capabilities and pages.")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     names = enum_names()
     device = open_device(args.board_id)
     try:
-        _print_hello(device.hello())
-        identity = device.read_identity()
-        print("page 0 (identity):")
-        for item in fields(identity):
-            label = item.name.replace('_', ' ').replace(' id', ' ID')
-            print(f"  {label}: {getattr(identity, item.name) or '?'}")
-        _print_state(device)
-        _print_input_modes(device)
-        _print_summary(device, names)
-        _print_profiles(device)
-        _print_controls(device, names)
-        _print_lights(device, names)
-        _print_animations(device)
+        hello = device.hello()
+        _print_hello(hello)
+        pages: tuple[tuple[int, Callable[[], None]], ...] = (
+                 (PAGE_IDENTITY, lambda: _print_identity(device)),
+                 (PAGE_STATE, lambda: _print_state(device, names)),
+                 (PAGE_INPUT_MODES, lambda: _print_input_modes(device)),
+                 (PAGE_SUMMARY, lambda: _print_summary(device, names)),
+                 (PAGE_PROFILES, lambda: _print_profiles(device)),
+                 (PAGE_CONTROLS, lambda: _print_controls(device, names)),
+                 (PAGE_LIGHTS, lambda: _print_lights(device, names)),
+                 (PAGE_ANIMATIONS, lambda: _print_animations(device, names)))
+        for page, show in pages:
+            if page in hello.pages:
+                show()
     finally:
         device.close()
 
 
+def _print_identity(device: HostLightingDevice) -> None:
+    """Read and print page 0, the board's identity."""
+    identity = device.read_identity()
+    print("page 0 (identity):")
+    for item in fields(identity):
+        label = item.name.replace('_', ' ').replace(' id', ' ID')
+        print(f"  {label}: {getattr(identity, item.name) or '?'}")
+
+
 def _print_hello(hello: Hello) -> None:
     """Print the HELLO reply's version, board ID and capabilities."""
-    def listed(values: frozenset) -> str:
+    def listed(values: frozenset[int]) -> str:
         return ', '.join(str(value) for value in sorted(values)) or 'none'
 
     print(f"protocol {hello.major}.{hello.minor}, board ID {hello.board_id}, "
@@ -251,14 +270,15 @@ def _print_hello(hello: Hello) -> None:
           f"events: {listed(hello.events)} (subscribed now: {listed(hello.events_enabled)})")
 
 
-def _print_state(device: HostLightingDevice) -> None:
+def _print_state(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Read and print page 1, the board's state."""
     read = device.read_record(PAGE_STATE)
     record = read.records[0]
     state, holder, settings = record.state, record.controller, record.settings
     animation = 'off' if state.animation is None else state.animation
-    print(f"page 1 (state), token 0x{read.token:08X}: input mode {state.input_mode}, profile {state.profile}, "
-          f"player {state.player}, animation {animation}{' (idle)' if state.animations_idle else ''}, "
+    print(f"page 1 (state), token 0x{read.token:08X}: input mode {_named(state.input_mode, names, 'InputMode')}, "
+          f"profile {state.profile}, player {state.player}, animation {animation}"
+          f"{' (idle)' if state.animations_idle else ''}, "
           f"brightness step {state.brightness_step_shown}"
           + (f" (unsaved; saved step {state.saved_brightness_step})" if state.brightness_unsaved else ''))
     live = 'live' if state.takeover_live else 'not live'
@@ -281,11 +301,11 @@ def _print_input_modes(device: HostLightingDevice) -> None:
     for mode in modes:
         note = ''
         if mode.mode.lighting:
-            note = ' - lighting once a PC is detected' if mode.mode.detected else ' - lighting'
+            note = ' (lighting once a PC is detected)' if mode.mode.detected else ' (lighting)'
         print(f"  {mode.mode.value:3d} {mode.name}{note}")
 
 
-def _print_summary(device: HostLightingDevice, names: dict) -> None:
+def _print_summary(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Read and print page 8, the summary a host sizes itself from."""
     record = device.read_record(PAGE_SUMMARY).records[0]
     summary = record.summary
@@ -313,7 +333,7 @@ def _print_profiles(device: HostLightingDevice) -> None:
         print(f"  {profile.number} {state} {profile.label}".rstrip())
 
 
-def _print_controls(device: HostLightingDevice, names: dict) -> None:
+def _print_controls(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Read and print page 10, every input with an action, lit or not."""
     read = device.read_table(PAGE_CONTROLS)
     controls = read.records
@@ -323,7 +343,7 @@ def _print_controls(device: HostLightingDevice, names: dict) -> None:
         pieces = [key_name(control.input.key), 'action ' + _named(control.input.action, names, 'GpioAction')]
         if control.instances.instances > 1:
             pieces.append(f"instance {control.instances.instance} of {control.instances.instances}")
-        if control.input.lit:
+        if control.input.lit and control.position.grid_rectangle is not None:
             x0, y0, x1, y1 = control.position.grid_rectangle
             cell = f"({x0},{y0})" if (x0, y0) == (x1, y1) else f"({x0},{y0})-({x1},{y1})"
             pieces.append(f"LED {control.position.first_led} at {cell}, {control.lights.light_count} light(s) "
@@ -333,7 +353,7 @@ def _print_controls(device: HostLightingDevice, names: dict) -> None:
         print("  " + ' '.join(pieces))
 
 
-def _print_lights(device: HostLightingDevice, names: dict) -> None:
+def _print_lights(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Read and print page 11, every light."""
     read = device.read_table(PAGE_LIGHTS)
     lights = read.records
@@ -356,19 +376,22 @@ def _print_lights(device: HostLightingDevice, names: dict) -> None:
         print("  " + ' '.join(pieces))
 
 
-def _print_animations(device: HostLightingDevice) -> None:
+def _print_animations(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Read and print page 12, the on-board animations."""
     animations = device.read_table(PAGE_ANIMATIONS).records
     print(f"page 12 (animations): {len(animations)}")
     for animation in animations:
         effects, speeds = animation.effects, animation.speeds
         state = 'enabled' if effects.enabled else 'disabled'
-        print(f"  {animation.ordinal} {state}, effects idle/pressed/case {effects.idle}/{effects.pressed}/"
-              f"{effects.case}, speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
+        print(f"  {animation.ordinal} {state}, effects "
+              f"idle {_named(effects.idle, names, 'AnimationNonPressedEffects')}, "
+              f"pressed {_named(effects.pressed, names, 'AnimationPressedEffects')}, "
+              f"case {_named(effects.case, names, 'AnimationNonPressedEffects')}, "
+              f"speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
 
 
 @hlp_command
-def settings():
+def settings() -> None:
     """Show or change a board's profile, animation, animation speeds and brightness."""
     parser = device_parser("Show a GP2040-CE board's input profile, animation, animation speeds and brightness, "
                            "or change them. The board applies a change live and saves it to its settings flash "
@@ -388,7 +411,7 @@ def settings():
                         help="show --brightness unsaved for --seconds, holding the claim, then the saved step again")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long --unsaved holds the step (default: 5)")
     add_claim_arguments(parser)
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     speeds = _checked_options(args)
     names = enum_names()
     device = open_device(args.board_id)
@@ -408,7 +431,7 @@ def settings():
         device.close()
 
 
-def _checked_options(args: argparse.Namespace) -> tuple:
+def _checked_options(args: argparse.Namespace) -> tuple[int, int, int]:
     """Check how hlp-settings' options combine, and return the speeds for --speed."""
     speeds = (args.idle, args.pressed, args.case)
     if args.speed is None and speeds != (SPEED_UNCHANGED,) * 3:
@@ -416,7 +439,7 @@ def _checked_options(args: argparse.Namespace) -> tuple:
     if args.speed is not None and speeds == (SPEED_UNCHANGED,) * 3:
         raise SystemExit("--speed needs at least one of --idle, --pressed, --case")
     if args.unsaved and (args.brightness is None or (args.profile, args.animation, args.speed) != (None,) * 3):
-        raise SystemExit("--unsaved takes --brightness alone: the other settings are always saved")
+        raise SystemExit("--unsaved takes --brightness alone. The other settings are always saved")
     if (args.force or args.exclusive) and not args.unsaved:
         raise SystemExit("--force and --exclusive go with --unsaved, which holds the claim")
     return speeds
@@ -427,12 +450,12 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     """Show a brightness step unsaved while holding the claim. The give up ends it and the saved step returns.
 
     Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without giving up,
-    the step would end at the keepalive timeout.
+    the step would end at the keepalive timeout. A claim taken again after a lapse shows the step again.
     """
     with LightsClaim(device, 'hlp-settings', wait_when_taken_over=False).take(exclusive, force) as claim:
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
-        claim.keep(seconds)
+        claim.keep(seconds, lambda: device.set_brightness(step))
 
 
 def _apply(option: str, change: Callable[[], None]) -> None:
@@ -443,7 +466,7 @@ def _apply(option: str, change: Callable[[], None]) -> None:
         raise SystemExit(f"error: {option}: {error}") from error
 
 
-def _print_settings(device: HostLightingDevice, names: dict) -> None:
+def _print_settings(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
     """Print the settings hlp-settings changes, with the values each accepts."""
     state = device.read_record(PAGE_STATE).records[0].state
     summary = device.read_record(PAGE_SUMMARY).records[0].summary
@@ -468,7 +491,7 @@ def _print_settings(device: HostLightingDevice, names: dict) -> None:
           f"(maximum {summary.brightness_maximum}){', unsaved' if state.brightness_unsaved else ''}")
 
 
-def _state_fields(record: StateRecord, token: int) -> dict:
+def _state_fields(record: StateRecord, token: int) -> dict[str, Any]:
     """Page 1's fields for hlp-watch, group by group in order, then the state token."""
     shown = {item.name: getattr(group, item.name) for group in (record.state, record.controller, record.settings)
              for item in fields(group)}
@@ -476,7 +499,7 @@ def _state_fields(record: StateRecord, token: int) -> dict:
     return shown
 
 
-def _state_text(key: str, value) -> str:
+def _state_text(key: str, value: object) -> str:
     """Show one page 1 field for hlp-watch."""
     if key in ('token', 'holder_token'):
         return f"0x{value:08X}"
@@ -486,13 +509,13 @@ def _state_text(key: str, value) -> str:
 
 
 @hlp_command
-def watch():
+def watch() -> None:
     """Print a board's STATE_CHANGED events as they arrive."""
     parser = device_parser("Subscribe to a GP2040-CE board's STATE_CHANGED event and print page 1, then what each "
                            "event changes. The subscription is shared by every application and lasts until the "
                            "board's USB session ends.")
     parser.add_argument('--seconds', type=float, default=0.0, help="stop after this long (default: until Ctrl-C)")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         if EVENT_STATE_CHANGED not in device.subscribe([EVENT_STATE_CHANGED]):
@@ -522,7 +545,7 @@ def watch():
 
 
 @hlp_command
-def fill():
+def fill() -> None:
     """Fill a board's LEDs with one colour as a quick visual test."""
     parser = device_parser("Fill a GP2040-CE board's LEDs with a colour, hold, then restore animations.")
     parser.add_argument('--scope', choices=['all', 'buttons', 'turbo', 'case', 'players'], default='all',
@@ -530,26 +553,29 @@ def fill():
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the fill (default: 3)")
     add_claim_arguments(parser)
     parser.add_argument('colour', help="colour as RRGGBB or RRGGBBWW hex, e.g. FF0000 for red")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     colour = _parse_colour(args.colour)
     pixel_format = PIXEL_RGBW if len(colour) == 4 else PIXEL_RGB
     kinds = {'buttons': (KIND_BUTTON,), 'turbo': (KIND_TURBO,), 'case': (KIND_CASE,), 'players': KIND_PLAYERS}
     device = open_device(args.board_id)
+
+    def stage() -> None:
+        if args.scope == 'all':
+            device.fill(colour, pixel_format, commit=True)
+        else:
+            device.stage_entries(ADDRESSING_KIND, [(kind, colour) for kind in kinds[args.scope]], pixel_format,
+                                 commit=True)
     try:
         with LightsClaim(device, 'hlp-fill', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
-            if args.scope == 'all':
-                device.fill(colour, pixel_format, commit=True)
-            else:
-                device.stage_entries(ADDRESSING_KIND, [(kind, colour) for kind in kinds[args.scope]], pixel_format,
-                                     commit=True)
+            stage()
             print(f"filled {args.scope} with #{args.colour.upper()} for {args.seconds} s")
-            claim.keep(args.seconds)
+            claim.keep(args.seconds, stage)
     finally:
         device.close()
 
 
 @hlp_command
-def set_light():
+def set_light() -> None:
     """Colour individual lights by ordinal, pin, action or kind."""
     parser = device_parser("Colour lights on a GP2040-CE board by their page 11 ordinal (or by pin, action or "
                            "kind), hold, then restore animations.")
@@ -558,11 +584,9 @@ def set_light():
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the colours (default: 3)")
     add_claim_arguments(parser)
     parser.add_argument('entries', nargs='+', metavar='ADDRESS:RRGGBB[WW]',
-                        help="an address and its colour, e.g. 3:FF0000, where an eight-digit colour adds a white byte, "
-                             "with -- before the entries when an address is negative")
-    args, unknown = parser.parse_known_args()
-    if any(':' in item for item in unknown):
-        raise SystemExit("put -- before the entries when an address is negative, e.g. --by action -- -10:FF0000")
+                        help="an address and its colour, e.g. 3:FF0000 or -10:FF0000, where an eight-digit colour "
+                             "adds a white byte")
+    args = parser.parse_args()
     addressing = {'light': ADDRESSING_LIGHT, 'pin': ADDRESSING_PIN, 'action': ADDRESSING_ACTION,
                   'kind': ADDRESSING_KIND}[args.by]
     low, high = ADDRESS_RANGES[addressing]
@@ -591,13 +615,13 @@ def set_light():
                            for bit in range(min(capacity, len(entries) - report * capacity))
                            if not (outcome.outcome >> bit) & 1]
                 print(f"skipped addresses (no light, or none below the LED limit): {missing}")
-            claim.keep(args.seconds)
+            claim.keep(args.seconds, lambda: device.stage_entries(addressing, entries, pixel_format, commit=True))
     finally:
         device.close()
 
 
 @hlp_command
-def stream():
+def stream() -> None:
     """Stream whole frames, as a worked example of a streaming host."""
     parser = device_parser("Take a GP2040-CE board's lights over and stream whole frames: red, green and blue "
                            "fills, then a rainbow at 60 fps, then give the claim up. Each frame is LED runs "
@@ -608,7 +632,7 @@ def stream():
     parser.add_argument('--timeout-test', action='store_true',
                         help="after the rainbow, go silent and time how long the board keeps the frame")
     add_claim_arguments(parser)
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
@@ -623,12 +647,12 @@ def _stream(claim: LightsClaim, leds: int, seconds: float, timeout_test: bool) -
     for name, colour in (('red', (255, 0, 0)), ('green', (0, 255, 0)), ('blue', (0, 0, 255))):
         claim.device.fill(colour, commit=True)
         print(f"filled {name}")
-        if not claim.keep(1.0):
+        if not claim.keep(1.0, functools.partial(claim.device.fill, colour, commit=True)):
             return
     if _rainbow(claim, leds, seconds) and timeout_test:
         claim.renew()
         if claim.state is ClaimState.HELD:
-            claim.let_lapse()       # renewed just now: the keepalive and the claim's lease lapse together
+            claim.let_lapse()       # renewed just now, so the keepalive and the claim's lease lapse together
             _time_expiry(claim.device)
 
 
@@ -653,7 +677,7 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
                 acknowledged += 1
             else:
                 failure = failure or "no acknowledgement, the last report sent twice"
-                _answers_hello(claim.device)
+                _answers_hello(claim)
         except HostLightingRejectedError as error:
             failure = failure or str(error)
             claim.refused(error)        # a status 4 refusal shows a change of holder
@@ -667,20 +691,22 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
     return True
 
 
-def _answers_hello(device: HostLightingDevice) -> None:
-    """Send HELLO. Its reply, of any status, shows the board is still there.
+def _answers_hello(claim: LightsClaim) -> None:
+    """Send HELLO. Its reply, of any status, shows the board is still there. A status 4 reply goes to the claim.
 
     :raises HostLightingUnansweredError: when it goes unanswered
     """
     try:
-        device.request(CMD_HELLO)
+        reply = claim.device.request(CMD_HELLO)
     except HostLightingTimeoutError:
         raise HostLightingUnansweredError("the board answers neither a frame nor HELLO") from None
+    if reply[2] == STATUS_CLAIMED:
+        claim.refused(claim.device.rejected(CMD_HELLO, reply))
 
 
 def _time_expiry(device: HostLightingDevice) -> None:
     """Go silent and report when page 1 shows the takeover ended."""
-    print("silent: waiting for the keepalive timeout")
+    print("silent, waiting for the keepalive timeout")
     start = time.monotonic()
     while device.read_record(PAGE_STATE).records[0].state.takeover_live and time.monotonic() - start < 15:
         time.sleep(0.02)
@@ -693,7 +719,7 @@ OVERLAY_BUTTONS = (('BUTTON_PRESS_B1', 5), ('BUTTON_PRESS_B2', 6), ('BUTTON_PRES
                    ('BUTTON_PRESS_L1', 9), ('BUTTON_PRESS_R1', 10), ('BUTTON_PRESS_L2', 11), ('BUTTON_PRESS_R2', 12))
 
 
-def overlay_buttons(controls: tuple, names: dict) -> list:
+def overlay_buttons(controls: tuple[ControlRecord, ...], names: dict[str, dict[int, str]]) -> list[tuple[str, int]]:
     """Pick the buttons of OVERLAY_BUTTONS that the board lights.
 
     :param controls: the page 10 records
@@ -707,7 +733,7 @@ def overlay_buttons(controls: tuple, names: dict) -> list:
 
 
 @hlp_command
-def buttons():
+def buttons() -> None:
     """Colour every lit control and every light with its own hue, then the lit buttons over the animations."""
     parser = device_parser("Take a GP2040-CE board's lights over: every lit control its own hue (staged by "
                            "action), then every light its own hue (one light run), then the lit buttons among "
@@ -715,7 +741,7 @@ def buttons():
                            "give the claim up.")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long each phase holds (default: 5)")
     add_claim_arguments(parser)
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         controls = device.read_table(PAGE_CONTROLS).records
@@ -726,10 +752,12 @@ def buttons():
         device.close()
 
 
-def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float, overlay: list) -> None:
+def _buttons(claim: LightsClaim, controls: tuple[ControlRecord, ...], lights: tuple[LightRecord, ...],
+             seconds: float, overlay: list[tuple[str, int]]) -> None:
     """Run hlp-buttons' three phases, stopping if another application takes the lights over.
 
-    The give up restores the CONFIGURE defaults, whole-frame takeover included.
+    The give up restores the CONFIGURE defaults, whole-frame takeover included. A claim taken again after a lapse
+    stages the phase again.
     """
     device = claim.device
     actions = sorted({control.input.action for control in controls if control.input.lit})
@@ -737,35 +765,39 @@ def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float,
         hues = [(action, _hue(i, len(actions))) for i, action in enumerate(actions)]
         outcomes = device.stage_entries(ADDRESSING_ACTION, hues, commit=True)
         print(f"phase 1: {sum(outcome.applied for outcome in outcomes)} of {len(actions)} lit actions, one hue each")
-        if not claim.keep(seconds):
+        if not claim.keep(seconds, lambda: device.stage_entries(ADDRESSING_ACTION, hues, commit=True)):
             return
     if lights:
+        colours = [_hue(i, len(lights)) for i in range(len(lights))]
         device.clear()
-        device.stage_run(ADDRESSING_LIGHT_RUN, 0, [_hue(i, len(lights)) for i in range(len(lights))], commit=True)
+        device.stage_run(ADDRESSING_LIGHT_RUN, 0, colours, commit=True)
         print(f"phase 2: {len(lights)} lights, one hue each")
-        if not claim.keep(seconds):
+        if not claim.keep(seconds, lambda: device.stage_run(ADDRESSING_LIGHT_RUN, 0, colours, commit=True)):
             return
     device.clear()
     claim.configure(Settings(takeover=TAKEOVER_OVERLAY))
+    if claim.state is not ClaimState.HELD:
+        return          # taken over, so nothing is staged into another application's frame
+    white = [(action, (255, 255, 255)) for _, action in overlay]
     if overlay:
-        outcomes = device.stage_entries(ADDRESSING_ACTION, [(action, (255, 255, 255)) for _, action in overlay],
-                                        commit=True)
+        outcomes = device.stage_entries(ADDRESSING_ACTION, white, commit=True)
         print(f"phase 3: overlay, {' '.join(label for label, _ in overlay)} white over the animations "
               f"({sum(outcome.applied for outcome in outcomes)} applied)")
     else:
         print("phase 3: overlay, the board lights none of B1-B4, L1, R1, L2 and R2")
-    claim.keep(seconds)
+    claim.keep(seconds, lambda: device.stage_entries(ADDRESSING_ACTION, white, commit=True) if white else None)
 
 
 @hlp_command
-def input_mode():
+def input_mode() -> None:
     """Set a board's input mode over Host Lighting."""
     parser = device_parser("Set a GP2040-CE board's input mode. The board saves it and reboots into it.")
-    parser.add_argument('mode', type=int, help="InputMode value. Page 2 (hlp-caps) lists the modes the board "
-                                               "accepts and which carry the lighting interface")
+    parser.add_argument('mode', type=ranged(0, 0xFF),
+                        help="InputMode value, decimal or 0x hex. Page 2 (hlp-caps) lists the modes the board accepts "
+                             "and which carry the lighting interface")
     parser.add_argument('--force', action='store_true',
                         help="switch even into a mode without the lighting interface, which these tools cannot leave")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         modes = device.read_table(PAGE_INPUT_MODES).records
@@ -778,7 +810,7 @@ def input_mode():
                      "leave it")
             if not args.force:
                 raise SystemExit(f"{known[args.mode].name} has no lighting interface and these tools cannot "
-                                 f"switch the board back: {leave}. Add --force to switch anyway")
+                                 f"switch the board back. {leave.capitalize()}. Add --force to switch anyway")
             print(f"note: {known[args.mode].name} has no lighting interface, and {leave}")
         elif known[args.mode].mode.detected:
             print(f"note: {known[args.mode].name} presents the lighting interface once the board has detected "
@@ -796,14 +828,14 @@ REBOOT_TARGETS = {'gamepad': (REBOOT_GAMEPAD, "rebooting into the saved input mo
 
 
 @hlp_command
-def reboot():
+def reboot() -> None:
     """Reboot a board into its saved input mode, its web configurator or BOOTSEL."""
     parser = device_parser("Reboot a GP2040-CE board: gamepad into its saved input mode, which can differ from "
                            "the mode it runs when a boot hotkey chose that one, webconfig into its web "
                            "configurator (usually at 192.168.7.1), or bootsel into BOOTSEL mode (the RPI-RP2 "
                            "drive) for flashing.")
     parser.add_argument('target', choices=list(REBOOT_TARGETS), help="where to reboot to")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
     target, message = REBOOT_TARGETS[args.target]
     device = open_device(args.board_id)
     try:

@@ -11,7 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 import struct
 import zlib
-from typing import Any
+from typing import Any, Iterable, Optional, Sequence, Union
 
 from gp2040ce_hostlighting import protocol as hl
 # bound at import, so a test that replaces protocol.HostLightingDevice still gets real devices here
@@ -24,13 +24,13 @@ __all__ = ['BOARD_ID', 'FakeBoard', 'ModelBoard', 'attach', 'control_record', 'f
 BOARD_ID = bytes.fromhex('433030343237362E')
 
 
-def page_reply(page: int, records: list, start: int = 0, mask: int = 0, token: int = 0x1234ABCD,
-               sequence: int = 1, status: int = hl.STATUS_OK, widths: tuple = ()) -> bytes:
+def page_reply(page: int, records: Sequence[Sequence[bytes]], start: int = 0, mask: int = 0, token: int = 0x1234ABCD,
+               sequence: int = 1, status: int = hl.STATUS_OK, widths: tuple[int, ...] = ()) -> bytes:
     """Build a GET_PAGE reply as the firmware does: groups in bit order while one record fits in 48 bytes.
 
     widths, when given, replaces the page's 2.0 group widths, for a later 2.x board's groups.
     """
-    widths = widths or hl.PAGE_GROUPS[page]
+    widths = widths or hl.PAGE_GROUPS.get(page, ())                                # page 0 only when stale
     wanted = (mask or (1 << len(widths)) - 1) if status == hl.STATUS_OK else 0     # a stale reply echoes no groups
     groups = stride = 0
     for group, width in enumerate(widths):
@@ -46,10 +46,12 @@ def page_reply(page: int, records: list, start: int = 0, mask: int = 0, token: i
     return header + body.ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', token)
 
 
-def state_record(takeover_live=0, input_mode=0, profile=1, player=1, animation=0, brightness_step_shown=5,
-                 takeover_number=3, holder_token=0, application_name=b'', takeover=0, keepalive_ms=2000,
-                 brightness_applied=1, brightness_unsaved=0, exclusive=0, saved_brightness_step=None,
-                 claim_generation=1, animations_idle=0) -> list:
+def state_record(takeover_live: int = 0, input_mode: int = 0, profile: int = 1, player: int = 1,
+                 animation: int = 0, brightness_step_shown: int = 5, takeover_number: int = 3,
+                 holder_token: int = 0, application_name: bytes = b'', takeover: int = 0,
+                 keepalive_ms: int = 2000, brightness_applied: int = 1, brightness_unsaved: int = 0,
+                 exclusive: int = 0, saved_brightness_step: Optional[int] = None, claim_generation: int = 1,
+                 animations_idle: int = 0) -> list[bytes]:
     """One page 1 record as its three groups, with the saved step the step shown unless given.
 
     Each keyword is the field of the same name in records.State, Controller or Settings.
@@ -63,11 +65,12 @@ def state_record(takeover_live=0, input_mode=0, profile=1, player=1, animation=0
             struct.pack('<BHB', takeover, keepalive_ms, brightness_applied)]
 
 
-def summary_record(led_extent=19, led_limit=100, render_hz=40, colour_format=0, white_channel=0,
-                   brightness_maximum=255, brightness_steps=10, animation_speed_steps=10, button_layout=0,
-                   button_layout_right=0, button_layout_orientation=0, grid_width=9, grid_height=6, profiles=3,
-                   controls=12, lit_controls=10, unlit_controls=2, lights=16, animations=3,
-                   counters=bytes(8)) -> list:
+def summary_record(led_extent: int = 19, led_limit: int = 100, render_hz: int = 40, colour_format: int = 0,
+                   white_channel: int = 0, brightness_maximum: int = 255, brightness_steps: int = 10,
+                   animation_speed_steps: int = 10, button_layout: int = 0, button_layout_right: int = 0,
+                   button_layout_orientation: int = 0, grid_width: int = 9, grid_height: int = 6,
+                   profiles: int = 3, controls: int = 12, lit_controls: int = 10, unlit_controls: int = 2,
+                   lights: int = 16, animations: int = 3, counters: bytes = bytes(8)) -> list[bytes]:
     """One page 8 record as its two groups, the Summary and the configuration pages' change counters.
 
     Each keyword is the field of the same name in records.Summary or Changes.
@@ -79,8 +82,10 @@ def summary_record(led_extent=19, led_limit=100, render_hz=40, colour_format=0, 
             bytes(counters)]
 
 
-def control_record(key, action, duplicated=0, lit=1, instance=1, instances=1, first_led=0,
-                   grid_rectangle=(1, 0, 1, 0), first_light=0, light_count=1) -> list:
+def control_record(key: int, action: int, duplicated: int = 0, lit: int = 1, instance: int = 1,
+                   instances: int = 1, first_led: int = 0,
+                   grid_rectangle: tuple[int, int, int, int] = (1, 0, 1, 0), first_light: int = 0,
+                   light_count: int = 1) -> list[bytes]:
     """One page 10 record. Each keyword is the field of the same name in its group's record class."""
     flags = duplicated | (lit << 1)
     return [struct.pack('<BhB', key, action, flags), struct.pack('<HH', instance, instances),
@@ -88,19 +93,20 @@ def control_record(key, action, duplicated=0, lit=1, instance=1, instances=1, fi
             struct.pack('<HH', first_light if lit else 0xFFFF, light_count)]
 
 
-def light_record(first_led, led_count=1, kind=0, duplicated=0, pin=0xFF, action=hl.ACTION_NONE, instance=0,
-                 instances=0, x=0, y=0, slot=0xFF) -> list:
+def light_record(first_led: int, led_count: int = 1, kind: int = 0, duplicated: int = 0, pin: int = 0xFF,
+                 action: int = hl.ACTION_NONE, instance: int = 0, instances: int = 0, x: int = 0, y: int = 0,
+                 slot: int = 0xFF) -> list[bytes]:
     """One page 11 record. Each keyword is the field of the same name in its group's record class."""
     return [struct.pack('<HH', first_led, led_count), bytes([kind, duplicated]), struct.pack('<Bh', pin, action),
             struct.pack('<HH', instance, instances), bytes([x, y]), bytes([slot])]
 
 
-def identity_reply(strings: list, mask: int = 0xFF, sequence: int = 1) -> bytes:
-    """Build a page 0 reply: strings in bit order while they fit in the 48-byte area."""
+def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, start: int = 0) -> bytes:
+    """Build a page 0 reply: strings in bit order while they fit in the 48-byte area, and none past start 0."""
     area = b''
     groups = 0
     for group, text in enumerate(strings):
-        if not mask & (1 << group):
+        if start or not mask & (1 << group):
             continue
         raw = text.encode()[:hl.IDENTITY_STRING_MAX]
         piece = raw + (b'\x00' if len(raw) < hl.IDENTITY_STRING_MAX else b'')
@@ -109,11 +115,12 @@ def identity_reply(strings: list, mask: int = 0xFF, sequence: int = 1) -> bytes:
         area += piece
         groups |= 1 << group
     header = bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_OK, hl.PAGE_IDENTITY])
-    header += struct.pack('<HHBBH', 0, 1, 1, len(area), groups)
+    header += struct.pack('<HHBBH', start, 1, 1 if groups else 0, len(area), groups)
     return header + area[:hl.RECORD_AREA].ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
 
 
-def hello_reply(sequence=1, major=2, board_id=BOARD_ID, events_enabled=0, reply_queue_limit=16) -> bytes:
+def hello_reply(sequence: int = 1, major: int = 2, board_id: bytes = BOARD_ID, events_enabled: int = 0,
+                reply_queue_limit: int = 16) -> bytes:
     """Build a HELLO reply with this firmware's capabilities."""
     commands = sum(1 << c for c in (0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21,
                                     0x30, 0x31, 0x32, 0x33, 0x70, 0x71))
@@ -136,7 +143,7 @@ _CHANGES_CONTROLS = 2
 _CHANGES_LIGHTS = 3
 
 
-def _pixel(data: bytes, pixel_format: int) -> tuple:
+def _pixel(data: bytes, pixel_format: int) -> tuple[int, ...]:
     """Decode one staged pixel as the colour it carries: RGB, RGBW, or RGB565 widened to 8 bits."""
     if pixel_format == hl.PIXEL_RGB565:
         value = struct.unpack_from('<H', data)[0]
@@ -152,39 +159,50 @@ def _check_written(data: bytes) -> None:
                          f"starting 0x{data[0] if data else 0:02X}")
 
 
-class _Outbox(list):
+class _Outbox(list[bytes]):
     """A fake board's reports waiting for its first handle.
 
     Each report queued is copied to every other open handle, as the operating system delivers each input
     report to every application with the interface open.
     """
 
-    def __init__(self, board):
+    def __init__(self, board: 'FakeBoard') -> None:
         """Start empty, for one board."""
         super().__init__()
         self.board = board
 
-    def append(self, report) -> None:
+    def append(self, report: bytes) -> None:
         """Queue one report."""
         super().append(report)
         self.deliver([report])
 
-    def extend(self, reports) -> None:
+    def extend(self, reports: Iterable[bytes]) -> None:
         """Queue several reports."""
         reports = list(reports)
         super().extend(reports)
         self.deliver(reports)
 
-    def deliver(self, reports) -> None:
+    def deliver(self, reports: Iterable[bytes]) -> None:
         """Give the other open handles their copies."""
         for handle in self.board.handles:
             handle.inbox.extend(bytes(report) for report in reports)
 
 
 class FakeBoard:
-    """Answer HLP 2.0 requests the way the firmware does."""
+    """Answer HLP 2.0 requests the way the firmware does.
 
-    def __init__(self):
+    Each request is answered and checked as the firmware does: the commands it lists, the arguments, the staging
+    capacities and the addressable LED limit, page 0's start, CONFIGURE's settings on page 1, the takeover and its
+    number, and what a change of holder resets. ModelBoard adds the timing, the reply queue limit, the claim
+    generation's and the exclusive claim's refusals, events and the change counters.
+    """
+
+    COMMANDS = {hl.CMD_HELLO, hl.CMD_GET_PAGE, hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_STAGE,
+                hl.CMD_UNSTAGE, hl.CMD_FILL, hl.CMD_CLEAR, hl.CMD_COMMIT, hl.CMD_RELEASE, hl.CMD_SET_PROFILE,
+                hl.CMD_SET_ANIMATION, hl.CMD_SET_ANIMATION_SPEED, hl.CMD_SET_BRIGHTNESS, hl.CMD_SET_INPUT_MODE,
+                hl.CMD_REBOOT}
+
+    def __init__(self) -> None:
         """Set up a small board: three controls (one an expander pin), a button light and a case strip."""
         self.state = state_record()
         self.summary = summary_record()
@@ -200,26 +218,31 @@ class FakeBoard:
         self.identity = ['Haute42 COSMOX M Ultra', 'Haute42COSMOXMUltra', 'rp2040', 'v0.7.12-88-ga83f820',
                          '0.7.12', 'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
         self.token = 0x1234ABCD
-        self.requests: list = []
+        self.requests: list[bytes] = []
         self.outbox = _Outbox(self)
-        self.handles: list = []         # other applications' handles (_SecondHandle), beside the first
+        # other applications' handles, beside the first
+        self.handles: list[_SecondHandle] = []
         self.opened = False
         self.stale_once_at = None       # a GET_PAGE start at which the token changes once
         # commands, or (command, [3]) pairs, at which the board drops off the bus
-        self.disconnect_on: set = set()
-        self.departed = False           # the board has left the bus: a write fails and a read raises
+        self.disconnect_on: set[Union[int, tuple[int, int]]] = set()
+        self.departed = False           # the board has left the bus, so a write fails and a read raises
         self.holder_token = 0
         self.holder_name = bytes(16)
         self.holder_flags = 0
         self.generation = 1             # steps 1 to 7 and back to 1 at every change of holder
         self.saved_step = self.state[0][6]
         self.subscribed = 0
-        self.before: dict = {}          # command -> reports that arrive between it and its reply
-        self.after: dict = {}           # command -> reports queued after its reply (events)
-        self.later_groups: dict = {}    # page -> a group a later 2.x board adds, the same bytes in every record
+        self.queue_limit = 16
+        # command -> reports that arrive between it and its reply, and reports queued after its reply (events)
+        self.before: dict[int, list[bytes]] = {}
+        self.after: dict[int, list[bytes]] = {}
+        # page -> a group a later 2.x board adds, the same bytes in every record
+        self.later_groups: dict[int, bytes] = {}
         self.board_id = BOARD_ID
-        self.staged: dict = {}          # LED index -> colour, the staged frame
-        self.frames: list = []          # every frame published, as LED index -> colour
+        # LED index -> colour, the staged frame, and every frame published
+        self.staged: dict[int, tuple[int, ...]] = {}
+        self.frames: list[dict[int, tuple[int, ...]]] = []
 
     def write(self, data: bytes) -> int:
         """Take one report as hidapi writes it (report ID 0 first) and queue the reply."""
@@ -235,52 +258,116 @@ class FakeBoard:
         publishes = command == hl.CMD_COMMIT or flags & hl.FLAG_COMMIT_AFTER
         if reply is not None and reply[2] == hl.STATUS_OK and publishes:
             self._record_frame()
+            self._start_takeover()
         self.outbox.extend(self.before.pop(command, []))
         if reply is not None and not flags & hl.FLAG_NO_REPLY:
             self.outbox.append(reply)
         self.outbox.extend(self.after.pop(command, []))
         return len(data)
 
-    def answer(self, command: int, sequence: int, request: bytes):
-        """Build the reply to one request."""
+    def answer(self, command: int, sequence: int, request: bytes) -> Optional[bytes]:
+        """Build the reply to one request as the firmware does, or None when the request gets none."""
+        if command == 0 or command & hl.REPLY_FLAG:
+            return None
         ok = bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_OK])
+        if command not in self.COMMANDS:
+            return ok[:2] + bytes([hl.STATUS_UNSUPPORTED]) + bytes(61)
         if command == hl.CMD_HELLO:
-            return hello_reply(sequence, board_id=self.board_id)
+            return hello_reply(sequence, board_id=self.board_id, events_enabled=self.subscribed,
+                               reply_queue_limit=self.queue_limit)
         if command == hl.CMD_GET_PAGE:
             return self._page(sequence, request)
-        if command == hl.CMD_CONFIGURE:
-            return (ok + request[3:7]).ljust(hl.REPORT_SIZE, b'\x00')
-        if command == hl.CMD_CLAIM:
-            return self._claim(ok, request)
-        if command == hl.CMD_STAGE:
-            return self._stage(ok, request)
-        if command in (hl.CMD_CLEAR, hl.CMD_RELEASE, hl.CMD_FILL):
-            self._stage_whole_frame(command, request)
-        if command == hl.CMD_SUBSCRIBE or hl.CMD_SET_PROFILE <= command <= hl.CMD_SET_BRIGHTNESS:
-            return self._feature(ok, command, request)
-        if command in (hl.CMD_SET_INPUT_MODE, hl.CMD_REBOOT):
-            wrong = self._wrong_magic(request, hl.MAGIC_INPUT_MODE if command == hl.CMD_SET_INPUT_MODE else
-                                      hl.MAGIC_REBOOT)
-            if wrong:
-                return ok[:2] + bytes([hl.STATUS_INVALID, wrong]) + bytes(60)
-        return ok.ljust(hl.REPORT_SIZE, b'\x00')
+        handlers = {hl.CMD_CLAIM: self._claim, hl.CMD_CONFIGURE: self._configure, hl.CMD_SUBSCRIBE: self._subscribe,
+                    hl.CMD_STAGE: self._stage, hl.CMD_UNSTAGE: self._unstage, hl.CMD_FILL: self._fill,
+                    hl.CMD_CLEAR: self._lifecycle, hl.CMD_COMMIT: self._lifecycle, hl.CMD_RELEASE: self._lifecycle,
+                    hl.CMD_SET_INPUT_MODE: self._guarded, hl.CMD_REBOOT: self._guarded}
+        if command in handlers:
+            return handlers[command](ok, request)
+        return self._feature(ok, command, request)
 
     @staticmethod
     def _wrong_magic(request: bytes, magic: bytes) -> int:
         """Return the offset of the first magic byte ([4..7]) that differs from the magic, or 0."""
         return next((4 + index for index, byte in enumerate(magic) if request[4 + index] != byte), 0)
 
+    @staticmethod
+    def _invalid(ok: bytes, offset: int) -> bytes:
+        """Build a status 2 reply naming the request byte at fault."""
+        return ok[:2] + bytes([hl.STATUS_INVALID, offset]) + bytes(60)
+
+    def _configure(self, ok: bytes, request: bytes) -> bytes:
+        """Set the takeover mode, the timeout (0 = 2000, clamped to 100-10000) and brightness scaling, on page 1."""
+        overlay, timeout, brightness = request[3], struct.unpack_from('<H', request, 4)[0], request[6]
+        if overlay > 1:
+            return self._invalid(ok, 3)
+        if brightness > 1:
+            return self._invalid(ok, 6)
+        settings = struct.pack('<BHB', overlay, 2000 if timeout == 0 else min(max(timeout, 100), 10000), brightness)
+        self.state = self.state[:2] + [settings]
+        return (ok + settings).ljust(hl.REPORT_SIZE, b'\x00')
+
+    def _subscribe(self, ok: bytes, request: bytes) -> bytes:
+        """Add the events asked for that the board has."""
+        return self._feature(ok, hl.CMD_SUBSCRIBE, request)
+
+    def _lifecycle(self, ok: bytes, request: bytes) -> bytes:
+        """CLEAR unstages every pixel and RELEASE ends the takeover. COMMIT publishes, which write() records."""
+        if request[0] == hl.CMD_RELEASE:
+            self._end_takeover()
+        elif request[0] == hl.CMD_CLEAR:
+            self.staged.clear()
+        return ok.ljust(hl.REPORT_SIZE, b'\x00')
+
+    def _fill(self, ok: bytes, request: bytes) -> bytes:
+        """Apply FILL with a known pixel format in bits 4-7. Bits 0-3 are ignored."""
+        if request[3] >> 4 not in hl.PIXEL_SIZES:
+            return self._invalid(ok, 3)
+        self._fill_staged(request)
+        return ok.ljust(hl.REPORT_SIZE, b'\x00')
+
+    def _guarded(self, ok: bytes, request: bytes) -> bytes:
+        """SET_INPUT_MODE and REBOOT: a listed mode or a known target, then the magic, byte by byte."""
+        if request[0] == hl.CMD_SET_INPUT_MODE:
+            valid, magic = request[3] != 255 and request[3] in [mode[0][0] for mode in self.modes], hl.MAGIC_INPUT_MODE
+        else:
+            valid, magic = request[3] in (hl.REBOOT_GAMEPAD, hl.REBOOT_WEBCONFIG, hl.REBOOT_BOOTSEL), hl.MAGIC_REBOOT
+        if not valid:
+            return self._invalid(ok, 3)
+        wrong = self._wrong_magic(request, magic)
+        return self._invalid(ok, wrong) if wrong else ok.ljust(hl.REPORT_SIZE, b'\x00')
+
+    def _start_takeover(self) -> None:
+        """Show a takeover live from its first publish, with the next takeover number."""
+        if not self.state[0][0] & hl.STATE_LIVE:
+            self.set_state(0, bytes([self.state[0][0] | hl.STATE_LIVE]))
+            self.set_state(7, bytes([(self.state[0][7] + 1) & 0xFF]))
+
+    def _end_takeover(self) -> None:
+        """End the takeover, which clears the staged frame as CLEAR does."""
+        self.staged.clear()
+        self.set_state(0, bytes([self.state[0][0] & ~hl.STATE_LIVE]))
+
+    def _change_holder(self) -> None:
+        """Do what every change of holder does.
+
+        It ends the takeover and an unsaved step, returns the CONFIGURE settings to their defaults and steps the
+        claim generation.
+        """
+        self._end_takeover()
+        self._show_step(self.saved_step)
+        self.state = self.state[:2] + [struct.pack('<BHB', hl.TAKEOVER_WHOLE_FRAME, 2000, 1)]
+        self.generation = self.generation % hl.GENERATION_MAX + 1
+
     def _claim(self, ok: bytes, request: bytes) -> bytes:
         """Answer CLAIM as the firmware keeps the holder."""
         action, token = request[3], struct.unpack_from('<I', request, 4)[0]
         if action > hl.CLAIM_GIVE_UP or token == 0:
-            return ok[:2] + bytes([hl.STATUS_INVALID, 3 if action > hl.CLAIM_GIVE_UP else 4]) + bytes(60)
+            return self._invalid(ok, 3 if action > hl.CLAIM_GIVE_UP else 4)
         given_up = action == hl.CLAIM_GIVE_UP and token == self.holder_token
         taken = action != hl.CLAIM_GIVE_UP and token != self.holder_token and (
             action == hl.CLAIM_TAKE_OVER or not self.holder_token)
         if given_up or taken:
-            self._show_step(self.saved_step)     # a change of holder ends an unsaved step
-            self.generation = self.generation % hl.GENERATION_MAX + 1
+            self._change_holder()
         if action == hl.CLAIM_GIVE_UP:
             if token == self.holder_token:
                 self.holder_token, self.holder_name, self.holder_flags = 0, bytes(16), 0
@@ -362,8 +449,16 @@ class FakeBoard:
         self.set_state(0, bytes([self.state[0][0] & ~0x02 | (0x02 if step != self.saved_step else 0)]))
 
     def _stage(self, ok: bytes, request: bytes) -> bytes:
-        """Answer STAGE by entries with each entry's outcome, staging the LEDs each reaches."""
+        """Answer STAGE with each run member's or entry's outcome, staging the LEDs each reaches."""
         addressing, pixel_format, count = request[3] & 0x0F, request[3] >> 4, request[4]
+        if pixel_format not in hl.PIXEL_SIZES:
+            return self._invalid(ok, 3)
+        if addressing in (hl.ADDRESSING_LED_RUN, hl.ADDRESSING_LIGHT_RUN):
+            return self._run(ok, request, addressing)
+        if addressing not in hl.ADDRESS_SIZES:
+            return self._invalid(ok, 3)
+        if not 0 < count <= hl.stage_capacity(addressing, pixel_format):
+            return self._invalid(ok, 4)
         address_size = hl.ADDRESS_SIZES[addressing]
         size = address_size + hl.PIXEL_SIZES[pixel_format]
         applied, mask = 0, 0
@@ -377,12 +472,50 @@ class FakeBoard:
                 self.staged.update((led, colour) for led in leds)
         return (ok + bytes([applied, count - applied]) + struct.pack('<I', mask)).ljust(hl.REPORT_SIZE, b'\x00')
 
-    def _stage_whole_frame(self, command: int, request: bytes) -> None:
-        """Apply CLEAR or RELEASE, which unstage every LED, or FILL."""
-        if command == hl.CMD_FILL:
-            self._fill_staged(request)
+    def _unstage(self, ok: bytes, request: bytes) -> bytes:
+        """Answer UNSTAGE with each run member's or entry's outcome, unstaging the LEDs each reaches."""
+        addressing = request[3] & 0x0F
+        if addressing in (hl.ADDRESSING_LED_RUN, hl.ADDRESSING_LIGHT_RUN):
+            return self._run(ok, request, addressing)
+        if addressing not in hl.ADDRESS_SIZES:
+            return self._invalid(ok, 3)
+        count, size = request[4], hl.ADDRESS_SIZES[addressing]
+        if not 0 < count <= hl.stage_capacity(addressing, None):
+            return self._invalid(ok, 4)
+        reached = [self._leds_of(addressing, request[5 + i * size:5 + (i + 1) * size]) for i in range(count)]
+        for leds in reached:
+            for led in leds:
+                self.staged.pop(led, None)
+        return self._outcome(ok, [bool(leds) for leds in reached])
+
+    def _run(self, ok: bytes, request: bytes, addressing: int) -> bytes:
+        """Stage or unstage a run of LEDs or lights, within its capacity and, for LEDs, the addressable LED limit."""
+        capacity = hl.stage_capacity(addressing, request[3] >> 4 if request[0] == hl.CMD_STAGE else None)
+        first, count = struct.unpack_from('<H', request, 4)[0], request[6]
+        led_run, limit = addressing == hl.ADDRESSING_LED_RUN, self.led_limit()
+        if led_run and first >= limit:
+            return self._invalid(ok, 4)
+        if not 0 < count <= capacity or (led_run and first + count > limit):
+            return self._invalid(ok, 6)
+        members = [[first + i] if led_run else self._light_leds(first + i) for i in range(count)]
+        if request[0] == hl.CMD_STAGE:
+            pixel_format = request[3] >> 4
+            size = hl.PIXEL_SIZES[pixel_format]
+            for index, leds in enumerate(members):
+                colour = _pixel(request[7 + index * size:7 + (index + 1) * size], pixel_format)
+                self.staged.update((led, colour) for led in leds)
         else:
-            self.staged.clear()
+            for leds in members:
+                for led in leds:
+                    self.staged.pop(led, None)
+        return self._outcome(ok, [bool(leds) for leds in members])
+
+    @staticmethod
+    def _outcome(ok: bytes, applied: list[bool]) -> bytes:
+        """Build a STAGE or UNSTAGE reply: the entries applied and skipped, and the outcome mask."""
+        mask = sum(1 << i for i, done in enumerate(applied) if done)
+        return (ok + bytes([sum(applied), len(applied) - sum(applied)]) + struct.pack('<I', mask)).ljust(
+            hl.REPORT_SIZE, b'\x00')
 
     def _fill_staged(self, request: bytes) -> None:
         """Stage FILL's pixel on every LED below the addressable LED limit."""
@@ -403,7 +536,7 @@ class FakeBoard:
         if token and token != self.token:
             return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE_TOKEN)
         if page == hl.PAGE_IDENTITY:
-            return identity_reply(self.identity, mask or 0xFF, sequence)
+            return identity_reply(self.identity, mask or 0xFF, sequence, start)
         state = [self.state[0], self._controller()] + self.state[2:]
         tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_SUMMARY: [self.summary],
                   hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
@@ -418,16 +551,17 @@ class FakeBoard:
 
     def led_limit(self) -> int:
         """Give the Summary's addressable LED limit."""
-        return struct.unpack_from('<H', self.summary[0], _SUMMARY_LIMIT)[0]
+        limit: int = struct.unpack_from('<H', self.summary[0], _SUMMARY_LIMIT)[0]
+        return limit
 
-    def _light_leds(self, ordinal: int) -> list:
+    def _light_leds(self, ordinal: int) -> list[int]:
         """List one light's LEDs below the addressable LED limit, none for a light that does not exist."""
         if ordinal >= len(self.lights):
             return []
         first, count = struct.unpack_from('<HH', self.lights[ordinal][0])
         return [led for led in range(first, first + count) if led < self.led_limit()]
 
-    def _leds_of(self, addressing: int, entry: bytes) -> list:
+    def _leds_of(self, addressing: int, entry: bytes) -> list[int]:
         """List the LEDs a STAGE or UNSTAGE entry's address reaches, none when no light with LEDs is behind it."""
         if addressing == hl.ADDRESSING_LIGHT:
             return self._light_leds(struct.unpack_from('<H', entry)[0])
@@ -443,23 +577,24 @@ class FakeBoard:
     # -- what another application, the user or the bus does --------------------
 
     def take_over(self, token: int = 0xB2, name: bytes = b'Other', exclusive: bool = False) -> None:
-        """Have another application take the claim over."""
+        """Have another application take the claim over, a change of holder."""
         if token != self.holder_token:
-            self.generation = self.generation % hl.GENERATION_MAX + 1
+            self._change_holder()
         self.holder_token, self.holder_name = token, name.ljust(16, b'\x00')
         self.holder_flags = hl.CLAIM_EXCLUSIVE if exclusive else 0
 
     def let_go(self) -> None:
-        """Have the holder give the claim up."""
+        """Have the holder give the claim up, a change of holder."""
         if self.holder_token:
-            self.generation = self.generation % hl.GENERATION_MAX + 1
+            self._change_holder()
         self.holder_token, self.holder_name, self.holder_flags = 0, bytes(16), 0
 
     def idle(self, idle: bool = True) -> None:
         """Have the LED idle timeout turn the animations off, or a button press wake them."""
         self.set_state(0, bytes([self.state[0][0] & ~hl.STATE_IDLE | (hl.STATE_IDLE if idle else 0)]))
 
-    def reconfigure(self, lights=None, controls=None) -> None:
+    def reconfigure(self, lights: Optional[list[list[bytes]]] = None,
+                    controls: Optional[list[list[bytes]]] = None) -> None:
         """Change the Lights or Controls page, as a profile switch or a change of add-on input does.
 
         The Summary's totals follow, the state token changes and the changed pages' counters step.
@@ -481,7 +616,7 @@ class FakeBoard:
             self.outbox.append(state_event(self.token))
 
     def unplug(self) -> None:
-        """Take the board off the bus: a write fails and a read raises."""
+        """Take the board off the bus, so that a write fails and a read raises."""
         self.departed = True
 
     def replug(self) -> None:
@@ -500,7 +635,10 @@ class FakeBoard:
         self.generation = 1
         self.summary = [self.summary[0], bytes(8)]
 
-    def read(self, size: int, timeout_ms: int = 0) -> list:
+    def _serve(self) -> None:
+        """Send what waits on the board to every open handle. FakeBoard keeps nothing waiting."""
+
+    def read(self, size: int, timeout_ms: int = 0) -> list[int]:
         """Give hidapi's next input report, or nothing."""
         if self.departed:
             raise OSError("read error")
@@ -510,12 +648,12 @@ class FakeBoard:
         """Close, as hidapi does."""
         self.opened = False
 
-    def sent(self, command: int) -> list:
+    def sent(self, command: int) -> list[bytes]:
         """Every request with this command."""
         return [request for request in self.requests if request[0] == command]
 
 
-def state_event(token: int = 0x1234ABCD, **fields) -> bytes:
+def state_event(token: int = 0x1234ABCD, **fields: Any) -> bytes:
     """Build a STATE_CHANGED event, [3..63] of a page 1 reply with mask 0, under a state token.
 
     The other keywords are state_record's.
@@ -540,15 +678,16 @@ class _SecondHandle:
     def __init__(self, board: FakeBoard):
         """Open a handle beside the board's first."""
         self.board = board
-        self.inbox: list = []
+        self.inbox: list[bytes] = []
         board.handles.append(self)
 
     def write(self, data: bytes) -> int:
         """Send one report to the board."""
         return self.board.write(data)
 
-    def read(self, size: int, timeout_ms: int = 0) -> list:
+    def read(self, size: int, timeout_ms: int = 0) -> list[int]:
         """Give this handle's next report, or with none, wait the timeout on the board's clock when it has one."""
+        self.board._serve()
         if self.inbox:
             return list(self.inbox.pop(0))
         if timeout_ms and hasattr(self.board, 'sleep'):
@@ -557,7 +696,8 @@ class _SecondHandle:
 
     def close(self) -> None:
         """Close this handle."""
-        self.board.handles.remove(self)
+        if self in self.board.handles:          # a replug() closed every handle already
+            self.board.handles.remove(self)
 
 
 def fake_device(board: FakeBoard) -> hl.HostLightingDevice:
@@ -581,14 +721,10 @@ class ModelBoard(FakeBoard):
     unsaved brightness step and its keepalive, events sent only while no reply waits, run and entry staging with the
     capacity and limit rules, FILL, UNSTAGE, the magic-guarded commands, and a state token and change counters that
     follow the configuration pages. Each report written takes 1 ms. A read with nothing to read waits its timeout.
+    Reports wait on the board until a handle reads, where a host's operating system takes them as they come.
     """
 
-    COMMANDS = {hl.CMD_HELLO, hl.CMD_GET_PAGE, hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_STAGE,
-                hl.CMD_UNSTAGE, hl.CMD_FILL, hl.CMD_CLEAR, hl.CMD_COMMIT, hl.CMD_RELEASE, hl.CMD_SET_PROFILE,
-                hl.CMD_SET_ANIMATION, hl.CMD_SET_ANIMATION_SPEED, hl.CMD_SET_BRIGHTNESS, hl.CMD_SET_INPUT_MODE,
-                hl.CMD_REBOOT}
-
-    def __init__(self):
+    def __init__(self) -> None:
         """Set up a small, self-consistent board.
 
         It has three controls, one lit, with a Hall-effect trigger that shares the lit control's action, a button
@@ -609,9 +745,10 @@ class ModelBoard(FakeBoard):
         self.overlay, self.keepalive_ms, self.brightness = 0, 2000, 1
         self.refreshed = self.leased = self.unsaved_refreshed = 0.0
         self.pending = False
+        self.queue: list[bytes] = []    # the reports waiting on the board until a handle reads
         self.steal_at = None            # a time at which another application takes the claim over
         self.queue_limit = 16
-        self._hashes: list = []         # each configuration page as last hashed, for the change counters
+        self._hashes: list[int] = []         # each configuration page as last hashed, for the change counters
         self._refresh()
         self._seen = (tuple(self.state), self.token)
 
@@ -640,15 +777,16 @@ class ModelBoard(FakeBoard):
             raise OSError("device disconnected")
         self.now += 0.001
         self._tick()
-        queued = [report for report in self.outbox if report[0] != hl.EVENT_MARKER]
+        queued = [report for report in self.queue if report[0] != hl.EVENT_MARKER]
         if not flags & hl.FLAG_NO_REPLY and len(queued) >= self.queue_limit:
-            return len(data)            # discarded: neither executed nor answered
+            return len(data)            # discarded, neither executed nor answered
         generation = (flags & hl.FLAG_GENERATION) >> hl.FLAG_GENERATION_SHIFT
-        # a request other than CLAIM under a generation that is no longer current: the holder has changed
+        # a request other than CLAIM under a generation that is no longer current, since the holder has changed
         outdated = (command in self.COMMANDS and command != hl.CMD_CLAIM and
                     generation not in (0, self.generation))
         guarded = self.holder_token and self.holder_flags & hl.CLAIM_EXCLUSIVE and not (
             flags & hl.FLAG_HOLDER and generation == self.generation)
+        reply: Optional[bytes]
         if outdated or (guarded and self._refused(command, flags)):
             reply = self._claimed(command, sequence)
         else:
@@ -656,25 +794,33 @@ class ModelBoard(FakeBoard):
         acts = self._flags_act(command, request, bool(guarded))
         if reply is not None and reply[2] == hl.STATUS_OK and acts:
             self._apply_flags(command, flags)
-        self.outbox.extend(self.before.pop(command, []))
+        self.queue.extend(self.before.pop(command, []))
         if reply is not None and not flags & hl.FLAG_NO_REPLY:
-            self.outbox.append(reply)
+            self.queue.append(reply)
         self._note()
-        self.outbox.extend(self.after.pop(command, []))
+        self.queue.extend(self.after.pop(command, []))
         return len(data)
 
-    def read(self, size: int, timeout_ms: int = 0) -> list:
-        """Give the next reply, else a pending event, else wait the timeout (none for a non-blocking read)."""
-        if self.departed:
-            raise OSError("read error")
+    def _serve(self) -> None:
+        """Send the reports waiting, then a pending event, to every open handle, as a read of any handle has USB do.
+
+        An event goes only once no reply waits, as the firmware sends it.
+        """
         self._tick()
-        if self.outbox:
-            return list(self.outbox.pop(0))
+        if self.queue:
+            self.outbox.extend(self.queue)
+            self.queue.clear()
         if self.pending:
             self.pending = False
-            event = self._event()
-            self.outbox.deliver([event])
-            return list(event)
+            self.outbox.append(self._event())
+
+    def read(self, size: int, timeout_ms: int = 0) -> list[int]:
+        """Give the next report, after the board sends what waits, else wait the timeout (none when non-blocking)."""
+        if self.departed:
+            raise OSError("read error")
+        self._serve()
+        if self.outbox:
+            return list(self.outbox.pop(0))
         if timeout_ms:
             self.now += timeout_ms / 1000
             self._tick()
@@ -706,25 +852,10 @@ class ModelBoard(FakeBoard):
         """
         return not guarded or (command == hl.CMD_CLAIM and self.holder_token == struct.unpack_from('<I', request, 4)[0])
 
-    def answer(self, command: int, sequence: int, request: bytes):
-        """Build the reply to one request, or None when the request gets none."""
-        if command == 0 or command & hl.REPLY_FLAG:
-            return None
-        ok = bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_OK])
-        if command not in self.COMMANDS:
-            return ok[:2] + bytes([hl.STATUS_UNSUPPORTED]) + bytes(61)
-        if command == hl.CMD_HELLO:
-            return hello_reply(sequence, events_enabled=self.subscribed, reply_queue_limit=self.queue_limit)
-        if command == hl.CMD_GET_PAGE:
-            self._refresh()
-            return self._page(sequence, request)
-        handlers = {hl.CMD_CLAIM: self._claim, hl.CMD_CONFIGURE: self._configure, hl.CMD_SUBSCRIBE: self._subscribe,
-                    hl.CMD_STAGE: self._stage, hl.CMD_UNSTAGE: self._unstage, hl.CMD_FILL: self._fill,
-                    hl.CMD_CLEAR: self._lifecycle, hl.CMD_COMMIT: self._lifecycle, hl.CMD_RELEASE: self._lifecycle,
-                    hl.CMD_SET_INPUT_MODE: self._guarded, hl.CMD_REBOOT: self._guarded}
-        if command in handlers:
-            return handlers[command](ok, request)
-        return self._feature(ok, command, request)
+    def _page(self, sequence: int, request: bytes) -> bytes:
+        """Answer GET_PAGE from the pages as they stand now."""
+        self._refresh()
+        return super()._page(sequence, request)
 
     def _claim(self, ok: bytes, request: bytes) -> bytes:
         """Claim, take over or give up. Each claim or take over by the holder renews the lease."""
@@ -757,7 +888,8 @@ class ModelBoard(FakeBoard):
         super().idle(idle)
         self._note()
 
-    def reconfigure(self, lights=None, controls=None) -> None:
+    def reconfigure(self, lights: Optional[list[list[bytes]]] = None,
+                    controls: Optional[list[list[bytes]]] = None) -> None:
         """Change the Lights or Controls page. The token and the counters follow the pages, and an event is raised."""
         summary = bytearray(self.summary[0])
         if lights is not None:
@@ -776,6 +908,7 @@ class ModelBoard(FakeBoard):
         self.live = False
         self.overlay, self.keepalive_ms, self.brightness = 0, 2000, 1
         self.pending = False
+        self.queue.clear()
         self._hashes = []
         self._refresh()
         self._seen = (tuple(self.state), self.token)
@@ -808,42 +941,6 @@ class ModelBoard(FakeBoard):
             self._seen = (tuple(self.state), self.token)
         return reply
 
-    def _stage(self, ok: bytes, request: bytes) -> bytes:
-        """Stage a run or entries, with the capacity, limit and addressing rules."""
-        addressing, pixel_format = request[3] & 0x0F, request[3] >> 4
-        if pixel_format not in hl.PIXEL_SIZES:
-            return self._invalid(ok, 3)
-        if addressing in (hl.ADDRESSING_LED_RUN, hl.ADDRESSING_LIGHT_RUN):
-            return self._run(ok, request, addressing, hl.stage_capacity(addressing, pixel_format))
-        if addressing not in hl.ADDRESS_SIZES:
-            return self._invalid(ok, 3)
-        if not 0 < request[4] <= hl.stage_capacity(addressing, pixel_format):
-            return self._invalid(ok, 4)
-        return super()._stage(ok, request)
-
-    def _unstage(self, ok: bytes, request: bytes) -> bytes:
-        """Unstage a run or entries: the same addressing, no pixels. Bits 4-7 are ignored."""
-        addressing = request[3] & 0x0F
-        if addressing in (hl.ADDRESSING_LED_RUN, hl.ADDRESSING_LIGHT_RUN):
-            return self._run(ok, request, addressing, hl.stage_capacity(addressing, None))
-        if addressing not in hl.ADDRESS_SIZES:
-            return self._invalid(ok, 3)
-        count, size = request[4], hl.ADDRESS_SIZES[addressing]
-        if not 0 < count <= hl.stage_capacity(addressing, None):
-            return self._invalid(ok, 4)
-        reached = [self._leds_of(addressing, request[5 + i * size:5 + (i + 1) * size]) for i in range(count)]
-        for leds in reached:
-            for led in leds:
-                self.staged.pop(led, None)
-        return self._outcome(ok, [bool(leds) for leds in reached])
-
-    def _fill(self, ok: bytes, request: bytes) -> bytes:
-        """Apply FILL with a known pixel format in bits 4-7. Bits 0-3 are ignored."""
-        if request[3] >> 4 not in hl.PIXEL_SIZES:
-            return self._invalid(ok, 3)
-        self._fill_staged(request)
-        return ok.ljust(hl.REPORT_SIZE, b'\x00')
-
     def _lifecycle(self, ok: bytes, request: bytes) -> bytes:
         """CLEAR, COMMIT (starts a takeover when none is live) and RELEASE (ends it)."""
         if request[0] == hl.CMD_COMMIT:
@@ -854,49 +951,7 @@ class ModelBoard(FakeBoard):
             self.staged.clear()
         return ok.ljust(hl.REPORT_SIZE, b'\x00')
 
-    def _guarded(self, ok: bytes, request: bytes) -> bytes:
-        """SET_INPUT_MODE and REBOOT: a listed mode or a known target, then the magic, byte by byte."""
-        if request[0] == hl.CMD_SET_INPUT_MODE:
-            valid, magic = request[3] != 255 and request[3] in [mode[0][0] for mode in self.modes], hl.MAGIC_INPUT_MODE
-        else:
-            valid, magic = request[3] in (hl.REBOOT_GAMEPAD, hl.REBOOT_WEBCONFIG, hl.REBOOT_BOOTSEL), hl.MAGIC_REBOOT
-        if not valid:
-            return self._invalid(ok, 3)
-        wrong = self._wrong_magic(request, magic)
-        return self._invalid(ok, wrong) if wrong else ok.ljust(hl.REPORT_SIZE, b'\x00')
-
     # -- state -------------------------------------------------------------------
-
-    def _run(self, ok: bytes, request: bytes, addressing: int, capacity: int) -> bytes:
-        first, count = struct.unpack_from('<H', request, 4)[0], request[6]
-        led_run = addressing == hl.ADDRESSING_LED_RUN
-        limit = self.led_limit()
-        if led_run and first >= limit:
-            return self._invalid(ok, 4)
-        if not 0 < count <= capacity or (led_run and first + count > limit):
-            return self._invalid(ok, 6)
-        members = [[first + i] if led_run else self._light_leds(first + i) for i in range(count)]
-        if request[0] == hl.CMD_STAGE:
-            pixel_format = request[3] >> 4
-            size = hl.PIXEL_SIZES[pixel_format]
-            for index, leds in enumerate(members):
-                colour = _pixel(request[7 + index * size:7 + (index + 1) * size], pixel_format)
-                self.staged.update((led, colour) for led in leds)
-        else:
-            for leds in members:
-                for led in leds:
-                    self.staged.pop(led, None)
-        return self._outcome(ok, [bool(leds) for leds in members])
-
-    @staticmethod
-    def _outcome(ok: bytes, applied: list) -> bytes:
-        mask = sum(1 << i for i, done in enumerate(applied) if done)
-        return (ok + bytes([sum(applied), len(applied) - sum(applied)]) + struct.pack('<I', mask)).ljust(
-            hl.REPORT_SIZE, b'\x00')
-
-    @staticmethod
-    def _invalid(ok: bytes, offset: int) -> bytes:
-        return ok[:2] + bytes([hl.STATUS_INVALID, offset]) + bytes(60)
 
     def _apply_flags(self, command: int, flags: int) -> None:
         if flags & hl.FLAG_COMMIT_AFTER:
@@ -930,7 +985,7 @@ class ModelBoard(FakeBoard):
 
     def _unsaved(self) -> bool:
         """Say whether the brightness step shown differs from the saved step."""
-        return self.state[0][6] != self.saved_step
+        return bool(self.state[0][6] != self.saved_step)
 
     def _tick(self) -> None:
         timeout = self.keepalive_ms / 1000
@@ -980,12 +1035,12 @@ class ModelBoard(FakeBoard):
 class _FakeHid:
     """A stand-in for the hidapi module that enumerates and opens fake boards, for attach()."""
 
-    def __init__(self, boards: tuple, other_majors: tuple):
+    def __init__(self, boards: tuple['FakeBoard', ...], other_majors: tuple[int, ...]) -> None:
         """Hold the boards on the fake bus and the usages of interfaces that speak another major."""
         self.boards = boards
         self.other_majors = other_majors
 
-    def enumerate(self) -> list:         # noqa: A003 hidapi's name
+    def enumerate(self) -> list[dict[str, Any]]:         # noqa: A003 hidapi's name
         """List the Host Lighting interfaces present, as hidapi enumeration dicts."""
         infos = [{'path': b'board-%d' % index, 'usage_page': hl.USAGE_PAGE, 'usage': hl.USAGE}
                  for index, board in enumerate(self.boards) if not board.departed]
@@ -1021,18 +1076,20 @@ class _FakeHidDevice:
 
     def write(self, data: bytes) -> int:
         """Write one report to the board."""
-        return self.handle.write(data)
+        written: int = self.handle.write(data)
+        return written
 
-    def read(self, size: int, timeout_ms: int = 0) -> list:
+    def read(self, size: int, timeout_ms: int = 0) -> list[int]:
         """Read one report from the board."""
-        return self.handle.read(size, timeout_ms)
+        report: list[int] = self.handle.read(size, timeout_ms)
+        return report
 
     def close(self) -> None:
         """Close the handle."""
         self.handle.close()
 
 
-def attach(monkeypatch, *boards: FakeBoard, other_majors: tuple = ()) -> None:
+def attach(monkeypatch: Any, *boards: FakeBoard, other_majors: tuple[int, ...] = ()) -> None:
     """Put fake boards on a fake bus, so find_devices(), open_device(), find_board() and the rest find them.
 
     Each board needs its own board_id. The bus lists a board while it is plugged in.

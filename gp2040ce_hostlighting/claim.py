@@ -17,12 +17,12 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional, Union
 
 from gp2040ce_hostlighting.protocol import (CLAIM_GIVE_UP, CLAIM_TAKE, CLAIM_TAKE_OVER, EVENT_STATE_CHANGED,
                                             FLAG_KEEPALIVE, STATUS_CLAIMED, HostLightingClaimedError,
                                             HostLightingDevice, HostLightingError, HostLightingRejectedError,
-                                            _check_claim_name, decode_state_changed, is_event)
+                                            HostLightingTimeoutError, _check_claim_name, decode_state_changed, is_event)
 from gp2040ce_hostlighting.records import Controller, Settings, StateChanged, StateRecord
 
 __all__ = ['ClaimChange', 'ClaimChangeKind', 'ClaimState', 'LightsClaim']
@@ -113,48 +113,67 @@ class LightsClaim:
         self._interval = _timeout(settings.keepalive_ms) / 3
         self._due = 0.0
         self._pending: Optional[ClaimChange] = None    # a change configure() found, for the next call to return
+        self._unsure = False            # a renewal went unanswered since the last answer, so it may hold the claim
 
     def __enter__(self) -> 'LightsClaim':
         """Use the claim in a with block, which gives it up."""
         return self
 
-    def __exit__(self, *exception) -> None:
+    def __exit__(self, *exception: object) -> None:
         """Give the claim up when held."""
         self.give_up()
 
     def take(self, exclusive: bool = False, force: bool = False, wait: bool = False) -> 'LightsClaim':
         """Claim the lights, then send the settings.
 
-        A failure after the claim is taken gives it up before the error is raised.
+        A failure after the claim is taken gives it up before the error is raised, as does a CLAIM without a reply,
+        which may have taken it. The events received until the claim's reply are older than it, so they are
+        dropped. Under a token that already holds the claim, the claim and the staged frame are kept, so a host
+        that starts again under a fixed token clears first.
 
         :param exclusive: claim exclusively: until the claim ends, the board refuses other applications'
             changes
         :param force: take the claim over from an application that holds it
-        :param wait: where another application holds the claim now, leave the state WAITING, so that each renewal
-            asks for the claim and takes it once the board is unclaimed. A claim taken over later follows
-            wait_when_taken_over
+        :param wait: where another application holds the claim now, or takes it over before the settings are
+            applied, leave the state WAITING, so that each renewal asks for the claim and takes it once the board
+            is unclaimed. A claim taken over later follows wait_when_taken_over
         :return: the claim, for a with block
         :raises HostLightingClaimedError: when another application holds the claim, and it was neither to be
             taken over nor waited for
+        :raises HostLightingTimeoutError: when CLAIM or CONFIGURE is not answered
+        :raises HostLightingRejectedError: when the board refuses a request with a status other than 4
+        :raises HostLightingDisconnectedError: when the board has left the bus
         """
-        self.exclusive = exclusive
-        holder = self.device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, self.token, self.name.encode(),
-                                   exclusive=exclusive)
+        self.exclusive, self._unsure = exclusive, False
+        try:
+            holder = self.device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, self.token, self.name.encode(),
+                                       exclusive=exclusive)
+        except HostLightingTimeoutError:
+            self.state, self._unsure = ClaimState.WAITING, True
+            self.give_up()                  # a CLAIM with its reply lost may hold the claim
+            raise
+        self.device.events.clear()      # received by the claim's reply, so older than it
         self.holder = holder
         self._schedule()
-        if not holder.held_by(self.token):
-            if not wait:
-                self.state = ClaimState.ENDED
-                raise HostLightingClaimedError(holder)
-            self.state = ClaimState.WAITING
-            logger.info("'%s' holds the lights. Waiting for it to give them up", holder.application_name)
-            return self
-        self.state, self._generation, self._configured = ClaimState.HELD, holder.claim_generation, False
-        try:
-            self._configure()
-        finally:
-            if not self._configured:
-                self.give_up()
+        if holder.held_by(self.token):
+            self.state, self._generation, self._configured = ClaimState.HELD, holder.claim_generation, False
+            try:
+                self._send_settings()
+            except HostLightingError:
+                if self.state is ClaimState.WAITING:
+                    self.give_up()              # a renewal with its reply lost may hold the claim
+                raise
+            finally:
+                if not self._configured and self.state is ClaimState.HELD:
+                    self.give_up()
+            if self.state is ClaimState.HELD:
+                return self
+        holder = self.holder or holder
+        if not wait:
+            self.state = ClaimState.ENDED
+            raise HostLightingClaimedError(holder)
+        self.state = ClaimState.WAITING
+        logger.info("'%s' holds the lights. Waiting for it to give them up", holder.application_name)
         return self
 
     def configure(self, settings: Settings) -> Optional[Settings]:
@@ -162,22 +181,30 @@ class LightsClaim:
 
         While held, the claim is renewed first, since a shorter timeout applies at once to the lease, then
         CONFIGURE is sent and the renewals are paced by the timeout applied. A change that renewal found is
-        returned by the next call that returns one.
+        returned by the next call that returns one. When the renewal goes unanswered, the next renewal is due at
+        once and sends the settings.
 
         :param settings: the new settings
-        :return: the settings the board applied, or None when the claim is not held
+        :return: the settings the board applied, or None when the claim is not held or they were refused
         """
         self.settings = settings
         if self.state is not ClaimState.HELD:
             self._interval = _timeout(settings.keepalive_ms) / 3
             return None
-        change = self._renew()
+        try:
+            change = self._renew()
+        except HostLightingTimeoutError:
+            self._configured, self._due = False, self.clock()     # the next renewal sends the settings
+            raise
+        if change.kind is not ClaimChangeKind.RETAKEN and self.state is ClaimState.HELD:
+            change = self._send_settings() or change
         self._pending = change if change.kind is not ClaimChangeKind.UNCHANGED else self._pending
-        if self.state is not ClaimState.HELD:
-            return None
-        if change.kind is ClaimChangeKind.RETAKEN:
-            return self.applied         # the renewal sent the new settings
-        return self._configure()
+        return self.applied if self.state is ClaimState.HELD and self._configured else None
+
+    @property
+    def generation(self) -> int:
+        """The claim generation this application last held the claim under, 0 before it first held it."""
+        return self._generation
 
     @property
     def seconds_to_renewal(self) -> Optional[float]:
@@ -208,7 +235,7 @@ class LightsClaim:
             return self._result(_UNCHANGED)
         return self._result(self._renew())
 
-    def observe(self, events: Iterable) -> ClaimChange:
+    def observe(self, events: Iterable[Union[bytes, StateChanged, StateRecord]]) -> ClaimChange:
         """Apply the holders that STATE_CHANGED events show, every event and not only the newest.
 
         Held, an event that shows another holder, none, or another generation means the claim changed holder
@@ -237,32 +264,35 @@ class LightsClaim:
         """Apply the rest of the status 4 table to a refusal the device has already acted on.
 
         A refusal that shows this application's token under a new generation means a renewal took the claim
-        again after a lapse: the settings are sent again and the frame is staged again. One that shows token 0
-        has the claim renewed at once, and one that shows another holder leaves the claim lost, or waited for.
-        Any other error changes nothing.
+        again after a lapse. The settings are sent again and the frame is staged again. One that shows token 0
+        has the claim renewed at once, held or waited for, and so does one that shows this application's token
+        while waiting, since a CLAIM with its reply lost took it. One that shows another holder leaves the claim
+        lost, or waited for. Any other error changes nothing.
 
         :param error: the refusal, with the holder the device has already applied to its generation and HOLDER
         """
         holder = error.holder
-        if error.status != STATUS_CLAIMED or holder is None or self.state is not ClaimState.HELD:
+        if error.status != STATUS_CLAIMED or holder is None:
             return self._result(_UNCHANGED)
-        if holder.held_by(self.token) and holder.claim_generation == self._generation:
-            return self._result(ClaimChange(kind=ClaimChangeKind.UNCHANGED, holder=holder))
-        if not holder.holder_token:
-            self.holder = holder
-            return self._result(self._renew(reconfigure=True))
-        return self._result(self._shown(holder))
+        if self.state is ClaimState.WAITING and (not holder.holder_token or holder.held_by(self.token)):
+            return self._result(self._renew())
+        if self.state is not ClaimState.HELD:
+            return self._result(_UNCHANGED)
+        return self._result(self._refusal(holder))
 
-    def keep(self, seconds: float) -> bool:
+    def keep(self, seconds: float, restage: Optional[Callable[[], object]] = None) -> bool:
         """Hold the lights for a while, sleeping between renewals, as a simple script does.
 
         :param seconds: how long to hold them
+        :param restage: called when a renewal took the claim again, which cleared the staged frame and ended an
+            unsaved brightness step, so that the script stages them again
         :return: whether the claim is still held
         :raises HostLightingTimeoutError: when a renewal is not answered
         """
         end = self.clock() + seconds
         while self.state is ClaimState.HELD:
-            self.maintain()
+            if self.maintain().restage and restage is not None and self.state is ClaimState.HELD:
+                restage()
             left = end - self.clock()
             if left <= 0 or self.state is not ClaimState.HELD:
                 break
@@ -273,25 +303,33 @@ class LightsClaim:
         """Give the claim up when held, which ends the takeover and restores the on-board animations.
 
         Giving up also ends an unsaved brightness step and puts the CONFIGURE settings back to their defaults.
-        Nothing changes when another application holds the claim, and nothing is sent unless the claim is held.
-        A board that has gone, or does not answer, restores its animations itself at the keepalive timeout.
+        Nothing changes when another application holds the claim. The give up is sent while the claim is held, and
+        while it is waited for after a CLAIM went unanswered, which may have taken it. Otherwise nothing is sent. A
+        board that has gone, or does not answer, restores its animations itself at the keepalive timeout.
 
-        :return: whether the claim was given up
+        :return: whether the claim was given up. False after an unanswered CLAIM, since the reply does not say
+            whether that CLAIM took the claim
         """
-        if self.state is not ClaimState.HELD:
+        if self.state is not ClaimState.HELD and not (self.state is ClaimState.WAITING and self._unsure):
             self.state = ClaimState.ENDED
             return False
+        waiting = self.state is ClaimState.WAITING
         self.state = ClaimState.ENDED
         try:
             holder = self.device.claim(CLAIM_GIVE_UP, self.token)
         except HostLightingError as error:
+            # the claim ends at the keepalive timeout, so the requests carry no generation and no HOLDER from now on
+            self.device.generation, self.device.holding_exclusive = 0, False
             logger.warning(     # noqa: G200 the cause is what the warning tells
                 "could not give the claim up, %s. The keepalive timeout restores the animations", str(error))
             logger.debug("the give up failed", exc_info=True)
             return False
         self.holder = holder
         if holder.holder_token:
-            logger.info("'%s' took the lights over", holder.application_name)
+            if not waiting:
+                logger.info("'%s' took the lights over", holder.application_name)
+            return False
+        if waiting:
             return False
         logger.info("claim given up, on-board animations restored")
         return True
@@ -300,7 +338,7 @@ class LightsClaim:
         """Stop holding without giving up, for the keepalive timeout to end the takeover and the claim.
 
         The device's requests then carry neither the claim generation nor FLAG_HOLDER, as an application's that
-        holds no claim: once the claim has lapsed, its generation would be refused.
+        holds no claim. Once the claim has lapsed, its generation would be refused.
         """
         if self.state is ClaimState.HELD:
             self.device.generation, self.device.holding_exclusive = 0, False
@@ -313,12 +351,50 @@ class LightsClaim:
     def _configure(self) -> Settings:
         """Send CONFIGURE, and pace the renewals by the timeout the board applied."""
         self._configured = False
-        self.applied = self.device.configure(self.settings.takeover, self.settings.keepalive_ms,
-                                             self.settings.brightness_applied)
+        try:
+            self.applied = self.device.configure(self.settings.takeover, self.settings.keepalive_ms,
+                                                 self.settings.brightness_applied)
+        except HostLightingTimeoutError:
+            # whether it landed is unknown, and the board's timeout may be the default, the new one or the old, so
+            # the next renewal goes at once, sends CONFIGURE again, and the pace is the shortest of them meanwhile
+            self._interval = min(self._interval, _timeout(0) / 3, _timeout(self.settings.keepalive_ms) / 3)
+            self._due = self.clock()
+            raise
         self._configured = True
         self._interval = _timeout(self.applied.keepalive_ms) / 3
         self._schedule()
         return self.applied
+
+    def _send_settings(self) -> Optional[ClaimChange]:
+        """Send CONFIGURE while held, applying a status 4 refusal.
+
+        Another application can take the claim over between a renewal and its CONFIGURE.
+
+        :return: what the refusal changed, or None when the board applied the settings
+        """
+        try:
+            self._configure()
+        except HostLightingRejectedError as error:
+            if error.status != STATUS_CLAIMED or error.holder is None:
+                raise
+            return self._refusal(error.holder)
+        return None
+
+    def _refusal(self, holder: Controller) -> ClaimChange:
+        """Apply the holder a status 4 refusal showed while the claim was held, as the specification's table says."""
+        if holder.held_by(self.token) and holder.claim_generation == self._generation:
+            return ClaimChange(kind=ClaimChangeKind.UNCHANGED, holder=holder)
+        if not holder.holder_token:
+            self.holder = holder
+            try:
+                return self._renew(reconfigure=True)
+            except HostLightingError:
+                # a renewal unanswered leaves the device sending no generation, so nothing is held until one is
+                # answered. One that showed this token holds the claim, though its CONFIGURE went unanswered
+                if self.state is ClaimState.HELD and not (self.holder is not None and self.holder.held_by(self.token)):
+                    self.state = ClaimState.WAITING
+                raise
+        return self._shown(holder)
 
     def _renew(self, reconfigure: bool = False) -> ClaimChange:
         """Send the renewal and apply the holder it shows.
@@ -327,8 +403,13 @@ class LightsClaim:
         """
         held = self.state is ClaimState.HELD
         self._schedule()
-        holder = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(),
-                                   FLAG_KEEPALIVE if held and self.keepalive else 0, self.exclusive)
+        try:
+            holder = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(),
+                                       FLAG_KEEPALIVE if held and self.keepalive else 0, self.exclusive)
+        except HostLightingTimeoutError:
+            self._unsure = True
+            raise
+        self._unsure = False
         return self._shown(holder, reconfigure)
 
     def _shown(self, holder: Controller, reconfigure: bool = False) -> ClaimChange:
@@ -340,7 +421,9 @@ class LightsClaim:
             self.state, self._generation = ClaimState.HELD, holder.claim_generation
             if was is ClaimState.HELD and not retaken:
                 return ClaimChange(kind=ClaimChangeKind.UNCHANGED, holder=holder)
-            self._configure()
+            refusal = self._send_settings()
+            if refusal is not None:
+                return refusal
             if was is ClaimState.HELD:
                 logger.info("claim taken again under generation %d. The settings were sent again, and the frame "
                             "has to be staged again", holder.claim_generation)
@@ -360,7 +443,7 @@ class LightsClaim:
         return pending if pending is not None and change.kind is ClaimChangeKind.UNCHANGED else change
 
 
-def _controllers(events: Iterable) -> Iterator[Controller]:
+def _controllers(events: Iterable[Union[bytes, StateChanged, StateRecord]]) -> Iterator[Controller]:
     """Pick the holder out of each STATE_CHANGED event, decoded or not, or page 1 record, oldest first."""
     for item in events:
         if isinstance(item, StateChanged):
@@ -368,7 +451,8 @@ def _controllers(events: Iterable) -> Iterator[Controller]:
         if isinstance(item, StateRecord):
             if item.has('controller'):
                 yield item.controller
-        elif is_event(item) and len(item) > 1 and item[1] == EVENT_STATE_CHANGED:
+        elif (isinstance(item, (bytes, bytearray)) and is_event(item) and len(item) > 1
+              and item[1] == EVENT_STATE_CHANGED):
             try:
                 record = decode_state_changed(item).record
             except HostLightingError:

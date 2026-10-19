@@ -261,3 +261,52 @@ def test_light_records_reach_the_fakes_through_attach(monkeypatch):
     attach(monkeypatch, board)
     with hl.open_device() as device:
         assert [light.leds.led_count for light in device.read_table(hl.PAGE_LIGHTS).records] == [1, 2]
+
+
+def test_a_closed_device_and_a_closed_hidapi_handle_are_disconnected(hlp_fake_board):
+    """Test that a closed device raises HostLightingDisconnectedError, as does hidapi's ValueError when not open."""
+    from types import SimpleNamespace
+    device = fake_device(hlp_fake_board)
+    device.close()
+    with pytest.raises(hl.HostLightingDisconnectedError, match='the device is closed'):
+        device.request(hl.CMD_HELLO)
+    with pytest.raises(hl.HostLightingDisconnectedError, match='the device is closed'):
+        device.send(hl.CMD_HELLO)
+
+    def not_open(*arguments):
+        raise ValueError('not open')
+    device = hl.HostLightingDevice(handle=SimpleNamespace(write=not_open, read=not_open, close=lambda: None))
+    with pytest.raises(hl.HostLightingDisconnectedError, match='sending command 0x01 failed with not open'):
+        device.send(hl.CMD_HELLO)
+    with pytest.raises(hl.HostLightingDisconnectedError, match='reading failed with not open'):
+        device.drain()
+
+
+def test_a_device_keeps_the_newest_events_up_to_its_limit(hlp_fake_board):
+    """Test that a host that never takes events keeps the newest EVENTS_KEPT of them, the oldest dropped."""
+    device = fake_device(hlp_fake_board)
+    hlp_fake_board.outbox.extend(state_event(token) for token in range(1, hl.EVENTS_KEPT + 6))
+    device.drain()
+    assert len(device.events) == hl.EVENTS_KEPT
+    assert [hl.decode_state_changed(event).token for event in device.events[::hl.EVENTS_KEPT - 1]] == [
+        6, hl.EVENTS_KEPT + 5]
+
+
+def test_get_page_takes_only_its_own_reply(hlp_fake_board):
+    """Test that a reply echoing fewer groups, or a stale one to a request that named no token, is another's."""
+    from gp2040ce_hostlighting.testing import page_reply
+    device = fake_device(hlp_fake_board)
+    lights = hlp_fake_board.lights
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, lights, mask=0b10, sequence=1)]
+    assert hl.decode_page_header(device.get_page(hl.PAGE_LIGHTS, 0, 0b11)).groups == 0b11
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_STATE, [], sequence=2, status=hl.STATUS_STALE_TOKEN)]
+    assert len(device.read_record(hl.PAGE_STATE).records) == 1
+    token = hlp_fake_board.token
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, lights, token=token ^ 1, sequence=3)]
+    reply = device.get_page(hl.PAGE_LIGHTS, 0, 0, token)
+    assert reply[2] == hl.STATUS_OK and hl.decode_page_header(reply).token == token
+
+
+def test_a_mask_naming_no_defined_group_reads_no_records(hlp_fake_device):
+    """Test that a mask naming only a later group reads the total and no records, not a stalled walk."""
+    assert hlp_fake_device.read_table(hl.PAGE_LIGHTS, 1 << 6).records == ()

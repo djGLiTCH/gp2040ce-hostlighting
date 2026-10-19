@@ -4,6 +4,7 @@ SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import struct
+import sys
 from dataclasses import fields
 from types import SimpleNamespace
 
@@ -270,8 +271,16 @@ def test_replies_read_early_are_kept_for_their_requests(hlp_fake_device, hlp_fak
 def test_claim_takes_an_invalid_argument_reply_without_an_echo(hlp_fake_device):
     """Test that CLAIM's invalid argument reply, which carries no echo, is taken as its reply."""
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
-        hlp_fake_device.claim(hl.CLAIM_TAKE, 0)
-    assert (rejected.value.status, rejected.value.offset) == (hl.STATUS_INVALID, 4)
+        hlp_fake_device.claim(3, 0xAAAA)                  # no such action
+    assert (rejected.value.status, rejected.value.offset) == (hl.STATUS_INVALID, 3)
+
+
+def test_claim_refuses_a_token_it_cannot_send(hlp_fake_device, hlp_fake_board):
+    """Test that CLAIM refuses token 0 and one over 32 bits before sending, keeping the claim token."""
+    for token in (0, 1 << 32):
+        with pytest.raises(ValueError, match='token'):
+            hlp_fake_device.claim(hl.CLAIM_TAKE, token)
+    assert hlp_fake_device.claim_token == 0 and not hlp_fake_board.sent(hl.CMD_CLAIM)
 
 
 def test_exclusive_claim_sends_the_flag_and_holder(hlp_fake_device, hlp_fake_board):
@@ -322,6 +331,7 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
     assert str(rejected.value) == ("command 0x21 (RELEASE) rejected: CLAIMED by 'MESH' (claim 0x000000B2, "
                                    "generation 3)")
     holder = bytes(20) + bytes([0, 4])                    # the claim lapsed: no holder, the generation now
+    hlp_fake_device.generation = 3                        # sent under the generation that lapsed
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
     assert rejected.value.holder == hl.Controller(holder_token=0, application_name='', exclusive=False,
@@ -578,11 +588,38 @@ def test_open_device_skips_interfaces_that_fail(monkeypatch):
 
     def open_path(path):
         if path == b'locked':
-            raise OSError('open failed')
+            raise hl.HostLightingError('the interface will not open (open failed)')
         return fake_device(good if path == b'good' else silent)
     monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': path} for path in (b'locked', b'silent', b'good')])
     monkeypatch.setattr(hl, 'HostLightingDevice', open_path)
     assert hl.open_device().handle is good
+
+
+def test_an_interface_that_will_not_open_is_a_host_lighting_error(monkeypatch):
+    """Test that hidapi's OSError when the device does not open becomes a HostLightingError naming the udev rule."""
+    def refuse(path):
+        raise OSError('open failed')
+    monkeypatch.setattr(hl, '_import_hid', lambda: SimpleNamespace(device=lambda: SimpleNamespace(open_path=refuse)))
+    with pytest.raises(hl.HostLightingError, match=r'will not open \(open failed\)\. On Linux, check its udev rule'):
+        hl.HostLightingDevice(b'locked')
+
+
+def test_open_device_names_interfaces_that_did_not_answer(monkeypatch):
+    """Test that interfaces that will not open or answer are told apart from a prefix no board matches."""
+    silent = FakeBoard()
+    silent.answer = lambda *_: None
+
+    def open_path(path):
+        if path == b'locked':
+            raise hl.HostLightingError('the interface will not open (open failed)')
+        return fake_device(silent)
+    monkeypatch.setattr(hl, 'find_devices', lambda: [{'path': b'locked'}, {'path': b'silent'}])
+    monkeypatch.setattr(hl, 'HostLightingDevice', open_path)
+    with pytest.raises(hl.HostLightingBoardSelectionError,
+                       match=r"^2 Host Lighting interface\(s\) found, but none opened and answered as a protocol 2 "
+                             r"board\. On Linux, check the udev rule$") as error:
+        hl.open_device('43')
+    assert error.value.boards == () and error.value.board_id_prefix == '43'
 
 
 def test_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fake_board):
@@ -716,6 +753,7 @@ def test_a_claimed_page_read_names_the_holder(hlp_fake_device, hlp_fake_board):
             return bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)
         return answer(command, sequence, request)
     hlp_fake_board.answer = claimed
+    hlp_fake_device.generation = 4                        # a read under a generation no longer current
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.get_page(hl.PAGE_STATE)
     assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == hl.Controller(
@@ -759,6 +797,13 @@ def test_a_short_reply_is_an_error_naming_what_was_short():
         hl.decode_controller(bytes(4))
     with pytest.raises(hl.HostLightingError, match='the page 0 reply is 8 bytes'):
         hl.decode_identity(bytes(8))
+
+
+def test_the_claim_generation_is_its_bytes_low_three_bits():
+    """Test that the Controller group's generation ignores the byte's other bits, which a later 2.x board may use."""
+    group = (0xA1).to_bytes(4, 'little') + b'Alpha'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 0xF3])
+    holder = hl.decode_controller(group)
+    assert (holder.holder_token, holder.exclusive, holder.claim_generation) == (0xA1, True, 3)
 
 
 def test_records_that_do_not_fit_their_reply_are_refused():
@@ -812,3 +857,113 @@ def test_a_device_closes_once():
     device.close()
     device.close()
     assert handle.closes == 1 and device.closed
+
+
+def test_the_builders_refuse_wrong_arguments_with_value_error():
+    """Test ValueError for entries by a run's addressing, an unknown format, a run past index 65535 and a range."""
+    with pytest.raises(ValueError, match='does not take entries'):
+        hl.stage_entry_payloads(hl.ADDRESSING_LED_RUN, [(0, (1, 2, 3))])
+    with pytest.raises(ValueError, match='does not take entries'):
+        hl.stage_entry_payloads(hl.ADDRESSING_LED_RUN, [])
+    with pytest.raises(ValueError, match='does not take entries'):
+        hl.unstage_entry_payloads(hl.ADDRESSING_LIGHT_RUN, [0])
+    with pytest.raises(ValueError, match='unknown pixel format 7'):
+        hl.stage_run_payloads(hl.ADDRESSING_LED_RUN, 0, [(1, 2, 3)], 7)
+    with pytest.raises(ValueError, match='unknown addressing mode 9'):
+        hl.stage_capacity(9, None)
+    with pytest.raises(ValueError, match='passes index 65535'):
+        hl.stage_run_payloads(hl.ADDRESSING_LED_RUN, 0xFFF0, [(1, 2, 3)] * 40)
+    with pytest.raises(ValueError, match='passes index 65535'):
+        hl.unstage_run_payloads(hl.ADDRESSING_LIGHT_RUN, 0xFFFF, 2)
+    with pytest.raises(ValueError, match='outside 0-255'):
+        hl.encode_pixel((0, 300, 0), hl.PIXEL_RGB565)
+    with pytest.raises(ValueError, match='pin address 256 is outside 0 to 255'):
+        hl.encode_address(hl.ADDRESSING_PIN, 256)
+    assert hl.stage_run_payloads(hl.ADDRESSING_LED_RUN, 0xFFFF, [(1, 2, 3)])[0][1:3] == bytes([0xFF, 0xFF])
+
+
+def test_records_copy_and_pickle(hlp_fake_device):
+    """Test that a page record survives copy, deepcopy and pickle, the groups not read included."""
+    import copy
+    import pickle
+    record = hlp_fake_device.read_table(hl.PAGE_LIGHTS, 0b11).records[0]
+    for again in (copy.copy(record), copy.deepcopy(record), pickle.loads(pickle.dumps(record))):
+        assert again == record and again.groups == {'leds', 'kind'}
+
+
+def test_page_10_instances_are_plain_numbers(hlp_fake_device):
+    """Test that a control's instance and instances decode as numbers, which page 10 never sends as none."""
+    control = hlp_fake_device.read_table(hl.PAGE_CONTROLS).records[0]
+    assert control.instances == records.ControlInstances(instance=1, instances=1)
+
+
+def test_a_state_changed_event_must_carry_one_page_1_record():
+    """Test that an event without a record, or with another page's, raises HostLightingError and is passed over."""
+    good = state_event()
+    for offset, value in ((8, 0), (3, hl.PAGE_CONTROLS)):
+        bad = bytearray(good)
+        bad[offset] = value
+        with pytest.raises(hl.HostLightingError, match='STATE_CHANGED event carries'):
+            hl.decode_state_changed(bytes(bad))
+        assert hl.latest_state([good, bytes(bad)]) == hl.decode_state_changed(good)
+
+
+def test_a_status_4_reply_is_taken_only_when_the_holder_shown_refuses_the_request(hlp_fake_device, hlp_fake_board):
+    """Test the firmware's rule: generation 0 is refused under an exclusive claim alone, and HELLO not even then."""
+    answer = hlp_fake_board.answer
+
+    def refused_first(holder):
+        def respond(command, sequence, request):
+            refusal = bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)
+            hlp_fake_board.outbox.append(refusal)       # another application's, or this request's
+            return answer(command, sequence, request)
+        return respond
+    name = struct.pack('<I', 0xA1) + b'Alpha'.ljust(16, b'\x00')
+    hlp_fake_board.answer = refused_first(name + bytes([0, 2]))
+    hlp_fake_device.set_brightness(3)                   # a shared claim refuses no generation 0 request
+    assert hlp_fake_board.state[0][6] == 3
+    hlp_fake_board.answer = refused_first(name + bytes([hl.CLAIM_EXCLUSIVE, 2]))
+    with pytest.raises(hl.HostLightingRejectedError, match="CLAIMED by 'Alpha'"):
+        hlp_fake_device.set_brightness(4)
+    assert hlp_fake_device.hello().magic == hl.MAGIC     # HELLO is open under an exclusive claim
+
+
+def test_device_calls_refuse_values_their_fields_cannot_hold(hlp_fake_device, hlp_fake_board):
+    """Test ValueError, not struct.error, for an argument out of its field's range, before anything is sent."""
+    device = hlp_fake_device
+    calls = [lambda: device.get_page(256), lambda: device.get_page(1, start=0x10000),
+             lambda: device.get_page(1, mask=-1), lambda: device.get_page(1, token=1 << 32),
+             lambda: device.read_table(hl.PAGE_LIGHTS, mask=0x10000), lambda: device.configure(256),
+             lambda: device.configure(keepalive_ms=70000), lambda: device.subscribe([16]),
+             lambda: device.set_animation(0x10000), lambda: device.set_animation_speed(0x10000),
+             lambda: device.set_animation_speed(0, idle=300), lambda: device.claim(256, 1),
+             lambda: hl.encode_pixel((1, 2), hl.PIXEL_RGB)]
+    for call in calls:
+        with pytest.raises(ValueError, match='outside|fewer than three'):
+            call()
+    assert not hlp_fake_board.requests and device.claim_token == 0
+
+
+def test_staging_no_entries_with_commit_sends_commit(hlp_fake_device, hlp_fake_board):
+    """Test that no entries with commit publish with COMMIT, and without commit send nothing."""
+    assert hlp_fake_device.stage_entries(hl.ADDRESSING_LIGHT, [], commit=True) == []
+    assert hlp_fake_device.unstage_entries(hl.ADDRESSING_LIGHT, [], commit=True) == []
+    hlp_fake_device.stage_entries(hl.ADDRESSING_LIGHT, [])
+    assert [request[0] for request in hlp_fake_board.requests] == [hl.CMD_COMMIT, hl.CMD_COMMIT]
+
+
+@pytest.mark.parametrize('platform, expected', [('linux', 'hidraw'), ('win32', 'hid'), ('darwin', 'hid')])
+def test_linux_uses_hidapi_s_hidraw_backend(monkeypatch, platform, expected):
+    """Test that on Linux the hidraw backend is imported, which reads usage pages and shares the interface."""
+    monkeypatch.setattr(hl.sys, 'platform', platform)
+    monkeypatch.setitem(sys.modules, 'hidraw', SimpleNamespace(name='hidraw'))
+    monkeypatch.setitem(sys.modules, 'hid', SimpleNamespace(name='hid'))
+    assert hl._import_hid().name == expected
+
+
+def test_linux_without_the_hidraw_module_falls_back_to_hid(monkeypatch):
+    """Test that a hidapi built without the hidraw module still gives its hid module on Linux."""
+    monkeypatch.setattr(hl.sys, 'platform', 'linux')
+    monkeypatch.setitem(sys.modules, 'hidraw', None)
+    monkeypatch.setitem(sys.modules, 'hid', SimpleNamespace(name='hid'))
+    assert hl._import_hid().name == 'hid'

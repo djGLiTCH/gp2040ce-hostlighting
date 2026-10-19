@@ -12,12 +12,14 @@ the board and lists its capabilities. GET_PAGE reads the pages:
 
 * page 0 (identity): board label, board config, platform and build strings
 * page 1 (state): input mode, profile, player, animation, the brightness step
-  shown and the saved one, takeover, the application holding CLAIM, whether
-  exclusively and the claim generation, and the CONFIGURE settings
+  shown and the saved one, takeover, whether the animations are idle, the
+  application holding CLAIM, whether exclusively and the claim generation, and
+  the CONFIGURE settings
 * page 2 (input modes): every mode SET_INPUT_MODE accepts, named by the firmware
-* page 8 (summary): LED extent and limit, render rate, colour format,
-  brightness and speed steps, grid size, each configuration page's total,
-  the display's button layouts, and a change counter per configuration page
+* page 8 (summary): LED extent and limit, render rate, colour format and white
+  channel, brightness and speed steps, the display's button layouts and their
+  orientation, grid size, each configuration page's total, and a change
+  counter per configuration page
 * page 9 (profiles), page 10 (controls: every input with an action, lit or
   not, keyed by GPIO pin, Hall-effect trigger or expander pin), page 11
   (lights: every light's LEDs, kind, owner and grid cell) and page 12 (the
@@ -26,26 +28,28 @@ the board and lists its capabilities. GET_PAGE reads the pages:
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
 
-gp2040ce_hostlighting.claim keeps a claim on the lights: it renews the claim,
+gp2040ce_hostlighting.claim keeps a claim on the lights. It renews the claim,
 sends CONFIGURE again after a lapse and gives the claim up.
 
 See docs/host-lighting.md for the full protocol reference. The hlp-*
 commands are in gp2040ce_hostlighting.tools.commands, and hlp-conformance
-and hlp-bench in gp2040ce_hostlighting.tools.conformance. Requires the `hidapi` package
-(`pip install hidapi`).
+and hlp-bench in gp2040ce_hostlighting.tools.conformance. Requires the
+`hidapi` package (`pip install hidapi`).
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import logging
+import operator
 import secrets
 import struct
+import sys
 import time
 from dataclasses import fields
-from typing import Iterable, Optional
+from typing import Any, Callable, Final, Iterable, Literal, Optional, Protocol, Sequence, overload
 
-from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, Controller,
-                                           ControlLights, ControlRecord, Effects, GridCell, Hello, Identity,
+from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, ControlInstances,
+                                           Controller, ControlLights, ControlRecord, Effects, GridCell, Hello, Identity,
                                            InputModeFlags, InputModeRecord, Instances, LedRange, LightKind, LightRecord,
                                            Owner, PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
                                            Requirements, Settings, Speeds, StageOutcome, State, StateChanged,
@@ -86,7 +90,7 @@ __all__ = [
     'HostLightingDisconnectedError', 'HostLightingUnansweredError', 'HostLightingIncompatibleError',
     'HostLightingGroupNotReadError', 'HostLightingBoardSelectionError', 'HostLightingClaimedError',
     # the device, discovery and capabilities
-    'HostLightingDevice', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
+    'HidHandle', 'HostLightingDevice', 'EVENTS_KEPT', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
     'list_boards', 'missing_capabilities', 'require_capabilities',
     # the records, from gp2040ce_hostlighting.records
     'BoardListing', 'Controller', 'Hello', 'Identity', 'PageHeader', 'PageRead', 'Requirements', 'Settings',
@@ -95,7 +99,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# discovery: match the interface by these, never by VID:PID (which varies by input mode)
+# discovery matches the interface by these, never by VID:PID (which varies by input mode)
 USAGE_PAGE = 0xFF47
 USAGE = 0x0002
 USAGE_PROTOCOL_1 = 0x004C       # the usage pre-release protocol 1.x firmware presented on the same usage page
@@ -152,15 +156,15 @@ STATUS_NAMES = {STATUS_OK: 'OK', STATUS_UNSUPPORTED: 'UNSUPPORTED', STATUS_INVAL
                 STATUS_STALE_TOKEN: 'STALE_TOKEN', STATUS_CLAIMED: 'CLAIMED'}
 EVENT_STATE_CHANGED = 0
 
-# pages
-PAGE_IDENTITY = 0
-PAGE_STATE = 1
-PAGE_INPUT_MODES = 2
-PAGE_SUMMARY = 8
-PAGE_PROFILES = 9
-PAGE_CONTROLS = 10
-PAGE_LIGHTS = 11
-PAGE_ANIMATIONS = 12
+# pages. Final, so that a type checker reads each as its value and knows the records read_table() returns
+PAGE_IDENTITY: Final = 0
+PAGE_STATE: Final = 1
+PAGE_INPUT_MODES: Final = 2
+PAGE_SUMMARY: Final = 8
+PAGE_PROFILES: Final = 9
+PAGE_CONTROLS: Final = 10
+PAGE_LIGHTS: Final = 11
+PAGE_ANIMATIONS: Final = 12
 PAGE_RANGES = ((0, 7), (8, 15), (16, 23), (24, 31))     # board, configuration, diagnostics, reserved
 
 # every page reply's header. The records area is [12..59] and the state token [60..63]
@@ -195,7 +199,7 @@ KEY_TRIGGER = KEY_SOURCES[1][1]
 KEY_EXPANDER = KEY_SOURCES[2][1]
 KEY_PREFIXES = {'gpio': 'GP', 'hall_effect': 'HE', 'expander': 'PCF'}
 
-# the none values: they never equal a key
+# the none values, which never equal a key
 PIN_NONE = 0xFF
 SLOT_NONE = 0xFF
 INDEX_NONE = 0xFFFF
@@ -251,23 +255,26 @@ REBOOT_BOOTSEL = 2
 
 
 def _u16(data: bytes, offset: int) -> int:
-    return struct.unpack_from('<H', data, offset)[0]
+    value: int = struct.unpack_from('<H', data, offset)[0]
+    return value
 
 
 def _s16(data: bytes, offset: int) -> int:
-    return struct.unpack_from('<h', data, offset)[0]
+    value: int = struct.unpack_from('<h', data, offset)[0]
+    return value
 
 
 def _u32(data: bytes, offset: int) -> int:
-    return struct.unpack_from('<I', data, offset)[0]
+    value: int = struct.unpack_from('<I', data, offset)[0]
+    return value
 
 
 def _string(data: bytes) -> str:
-    """Decode a NUL-padded string leniently: a cut string can end in a partial character."""
+    """Decode a NUL-padded string leniently, since a cut string can end in a partial character."""
     return data.split(b'\x00')[0].decode('utf-8', 'replace')
 
 
-def _bits(value: int) -> list:
+def _bits(value: int) -> list[int]:
     """List the set bit numbers of a bitmap, lowest first."""
     return [bit for bit in range(value.bit_length()) if value & (1 << bit)]
 
@@ -302,36 +309,83 @@ def is_event(report: bytes) -> bool:
     return len(report) >= 3 and report[0] == EVENT_MARKER
 
 
+_RUNS = (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN)
+_INDEX_MAX = 0xFFFF                 # LED indexes and light ordinals are 16-bit
+
+
+def _check_entries(addressing: int) -> None:
+    """Refuse an addressing mode that takes no entries.
+
+    :raises ValueError: for a run's addressing or an unknown one
+    """
+    if addressing not in ADDRESS_SIZES:
+        raise ValueError(f"addressing {addressing} does not take entries")
+
+
+def _check_run(addressing: int, first: int, count: int) -> None:
+    """Refuse a run that is not LED or light addressing, is empty, or passes the last 16-bit index.
+
+    :raises ValueError: naming what is wrong
+    """
+    if addressing not in _RUNS or count < 1:
+        raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and at least one member")
+    if first < 0 or first + count - 1 > _INDEX_MAX:
+        raise ValueError(f"a run of {count} from {first} passes index {_INDEX_MAX}")
+
+
 def stage_capacity(addressing: int, pixel_format: Optional[int]) -> int:
     """How many run members or entries one STAGE (or, with no format, UNSTAGE) report carries.
 
     :param addressing: ADDRESSING_* mode
     :param pixel_format: PIXEL_*, or None for UNSTAGE
     :return: the per-report capacity
+    :raises ValueError: for an unknown addressing mode or pixel format
     """
+    if pixel_format is not None and pixel_format not in PIXEL_SIZES:
+        raise ValueError(f"unknown pixel format {pixel_format}")
+    if addressing not in _RUNS and addressing not in ADDRESS_SIZES:
+        raise ValueError(f"unknown addressing mode {addressing}")
     pixel = PIXEL_SIZES[pixel_format] if pixel_format is not None else 0
-    if addressing in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN):
+    if addressing in _RUNS:
         capacity = (REPORT_SIZE - 7) // pixel if pixel else OUTCOME_BITS
     else:
         capacity = (REPORT_SIZE - 5) // (ADDRESS_SIZES[addressing] + pixel)
     return min(capacity, OUTCOME_BITS)
 
 
-def encode_pixel(colour: tuple, pixel_format: int) -> bytes:
+def encode_pixel(colour: tuple[int, ...], pixel_format: int) -> bytes:
     """Encode one colour in a pixel format.
 
     :param colour: (red, green, blue) or (red, green, blue, white), 0-255 each
     :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
     :return: the pixel's bytes as STAGE and FILL send them
+    :raises ValueError: for fewer than three channels, a channel outside 0-255 or an unknown pixel format
     """
+    if len(colour) < 3:
+        raise ValueError(f"colour {colour} has fewer than three channels")
     red, green, blue = colour[:3]
     if pixel_format == PIXEL_RGB:
         return bytes([red, green, blue])
     if pixel_format == PIXEL_RGBW:
         return bytes([red, green, blue, colour[3] if len(colour) > 3 else 0])
     if pixel_format == PIXEL_RGB565:
+        if not (0 <= red <= 255 and 0 <= green <= 255 and 0 <= blue <= 255):
+            raise ValueError(f"colour {colour} has a channel outside 0-255")
         return struct.pack('<H', ((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3))
     raise ValueError(f"unknown pixel format {pixel_format}")
+
+
+def _check_colour(colour: tuple[int, ...]) -> None:
+    """Refuse a colour that is not three or four integer channels of 0-255.
+
+    :raises ValueError: naming the colour
+    """
+    try:
+        channels = [operator.index(channel) for channel in colour]
+    except TypeError:
+        channels = []
+    if len(colour) not in (3, 4) or len(channels) != len(colour) or not all(0 <= value <= 255 for value in channels):
+        raise ValueError(f"colour {colour} is not three or four integer channels of 0-255")
 
 
 def encode_address(addressing: int, address: int) -> bytes:
@@ -340,7 +394,12 @@ def encode_address(addressing: int, address: int) -> bytes:
     :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
     :param address: the light ordinal, pin, action (signed) or kind
     :return: the address bytes
+    :raises ValueError: for an addressing mode without entries, or an address outside its range
     """
+    _check_entries(addressing)
+    low, high = ADDRESS_RANGES[addressing]
+    if not low <= address <= high:
+        raise ValueError(f"{ADDRESSING_NAMES[addressing]} address {address} is outside {low} to {high}")
     if addressing == ADDRESSING_ACTION:
         return struct.pack('<h', address)
     if ADDRESS_SIZES[addressing] == 2:
@@ -348,7 +407,8 @@ def encode_address(addressing: int, address: int) -> bytes:
     return bytes([address])
 
 
-def stage_entry_payloads(addressing: int, entries: list, pixel_format: int = PIXEL_RGB) -> list:
+def stage_entry_payloads(addressing: int, entries: Sequence[tuple[int, tuple[int, ...]]],
+                         pixel_format: int = PIXEL_RGB) -> list[bytes]:
     """Build the STAGE payloads for entries addressed by light, pin, action or kind, chunked to the report capacity.
 
     Nothing is sent. A host with its own transport sends each payload as a STAGE request, with COMMIT_AFTER on the
@@ -358,7 +418,9 @@ def stage_entry_payloads(addressing: int, entries: list, pixel_format: int = PIX
     :param entries: (address, colour) pairs, each colour as for encode_pixel
     :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
     :return: one payload per report, in order, and none for no entries
+    :raises ValueError: for a run's addressing, an unknown pixel format, or an address or colour out of range
     """
+    _check_entries(addressing)
     capacity = stage_capacity(addressing, pixel_format)
     payloads = []
     for start in range(0, len(entries), capacity):
@@ -368,7 +430,8 @@ def stage_entry_payloads(addressing: int, entries: list, pixel_format: int = PIX
     return payloads
 
 
-def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format: int = PIXEL_RGB) -> list:
+def stage_run_payloads(addressing: int, first: int, colours: Sequence[tuple[int, ...]],
+                       pixel_format: int = PIXEL_RGB) -> list[bytes]:
     """Build the STAGE payloads for consecutive LEDs or lights from a first index, chunked to the report capacity.
 
     Nothing is sent. A streaming host sends every payload but the last with NO_REPLY, and the last with
@@ -379,9 +442,10 @@ def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format:
     :param colours: one colour per LED or light, as for encode_pixel
     :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
     :return: one payload per report, in order
+    :raises ValueError: for an entry addressing, no colours, a run past index 65535, an unknown pixel format or a
+        colour out of range
     """
-    if addressing not in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN) or not colours:
-        raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and at least one colour")
+    _check_run(addressing, first, len(colours))
     capacity = stage_capacity(addressing, pixel_format)
     payloads = []
     for start in range(0, len(colours), capacity):
@@ -391,35 +455,37 @@ def stage_run_payloads(addressing: int, first: int, colours: list, pixel_format:
     return payloads
 
 
-def unstage_entry_payloads(addressing: int, addresses: list) -> list:
+def unstage_entry_payloads(addressing: int, addresses: Sequence[int]) -> list[bytes]:
     """Build the UNSTAGE payloads for addresses by light, pin, action or kind, chunked to the report capacity.
 
     :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
     :param addresses: the light ordinals, pins, actions or kinds to unstage
     :return: one payload per report, in order, and none for no addresses
+    :raises ValueError: for a run's addressing or an address out of range
     """
+    _check_entries(addressing)
     capacity = stage_capacity(addressing, None)
     return [bytes([addressing, len(addresses[start:start + capacity])]) +
             b''.join(encode_address(addressing, address) for address in addresses[start:start + capacity])
             for start in range(0, len(addresses), capacity)]
 
 
-def unstage_run_payloads(addressing: int, first: int, count: int) -> list:
+def unstage_run_payloads(addressing: int, first: int, count: int) -> list[bytes]:
     """Build the UNSTAGE payloads for consecutive LEDs or lights from a first index, chunked to the capacity.
 
     :param addressing: ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN
     :param first: the first LED index or light ordinal
     :param count: how many to unstage, at least one
     :return: one payload per report, in order
+    :raises ValueError: for an entry addressing, a count under one, or a run past index 65535
     """
-    if addressing not in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN) or count < 1:
-        raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and a count of at least one")
+    _check_run(addressing, first, count)
     capacity = stage_capacity(addressing, None)
     return [bytes([addressing]) + struct.pack('<HB', first + start, min(capacity, count - start))
             for start in range(0, count, capacity)]
 
 
-def subtractive_white(colour: tuple) -> tuple:
+def subtractive_white(colour: tuple[int, ...]) -> tuple[int, int, int, int]:
     """Give the RGBW pixel the specification's subtractive conversion makes of a colour.
 
     W takes min(R, G, B) and each colour channel loses it, so the white part of the colour lands on the white
@@ -482,13 +548,16 @@ def _state(data: bytes) -> State:
 def decode_controller(data: bytes) -> Controller:
     """Decode page 1's Controller group, which the CLAIM reply ([8..29]) and a status 4 reply ([3..24]) carry too.
 
+    The claim generation is the low three bits of its byte, as the specification's field widths give it.
+
     :param data: the group's 22 bytes
     :return: the claim's holder
     :raises HostLightingError: if the group is too short
     """
     _require_length(data, CONTROLLER_SIZE, 'the Controller group')
     return Controller(holder_token=_u32(data, 0), application_name=_string(data[4:20]),
-                      exclusive=bool(data[20] & CLAIM_EXCLUSIVE), claim_generation=data[21])
+                      exclusive=bool(data[20] & CLAIM_EXCLUSIVE),
+                      claim_generation=data[21] & (FLAG_GENERATION >> FLAG_GENERATION_SHIFT))
 
 
 def _settings(data: bytes) -> Settings:
@@ -521,7 +590,7 @@ def _profile(data: bytes) -> Profile:
     return Profile(number=data[0], enabled=bool(data[1] & 0x01), label=_string(data[2:18]))
 
 
-def decode_key(key: int) -> tuple:
+def decode_key(key: int) -> tuple[str, int]:
     """Decode a page 10 key as (source, index).
 
     :return: ('gpio', pin), ('hall_effect', trigger) or ('expander', pin), or ('unknown', key) for a key protocol
@@ -545,6 +614,10 @@ def _control_input(data: bytes) -> ControlInput:
                         duplicated=bool(data[3] & 0x01), lit=bool(data[3] & 0x02))
 
 
+def _control_instances(data: bytes) -> ControlInstances:
+    return ControlInstances(instance=_u16(data, 0), instances=_u16(data, 2))
+
+
 def _instances(data: bytes) -> Instances:
     return Instances(instance=_u16(data, 0) or None, instances=_u16(data, 2) or None)
 
@@ -552,7 +625,7 @@ def _instances(data: bytes) -> Instances:
 def _position(data: bytes) -> Position:
     first = _u16(data, 0)
     return Position(first_led=None if first == INDEX_NONE else first,
-                    grid_rectangle=None if first == INDEX_NONE else tuple(data[2:6]))
+                    grid_rectangle=None if first == INDEX_NONE else (data[2], data[3], data[4], data[5]))
 
 
 def _control_lights(data: bytes) -> ControlLights:
@@ -590,20 +663,20 @@ def _speeds(data: bytes) -> Speeds:
 
 
 # each table page's record type, and the attribute and decoder of each field group in mask bit order
-_PAGE_RECORDS: dict = {
+_PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], ...]]] = {
     PAGE_STATE: (StateRecord, (('state', _state), ('controller', decode_controller), ('settings', _settings))),
     PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name))),
     PAGE_SUMMARY: (SummaryRecord, (('summary', _summary), ('changes', _changes))),
     PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
-    PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _instances), ('position', _position),
-                                    ('lights', _control_lights))),
+    PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _control_instances),
+                                    ('position', _position), ('lights', _control_lights))),
     PAGE_LIGHTS: (LightRecord, (('leds', _led_range), ('kind', _light_kind), ('owner', _owner),
                                 ('owner_instances', _instances), ('grid', _grid_cell), ('palette', _palette_slot))),
     PAGE_ANIMATIONS: (AnimationRecord, (('effects', _effects), ('speeds', _speeds))),
 }
 
 
-def decode_records(reply: bytes) -> tuple:
+def decode_records(reply: bytes) -> tuple[Any, ...]:
     """Decode the records of a GET_PAGE reply, field group by field group.
 
     Each record holds the groups the reply echoes, with `ordinal`, the record's position in the page (the
@@ -631,7 +704,7 @@ def decode_records(reply: bytes) -> tuple:
     records = []
     for index in range(header.count):
         offset = HEADER_RECORDS + index * header.stride
-        values: dict = {'ordinal': header.start + index}
+        values: dict[str, Any] = {'ordinal': header.start + index}
         for group, (width, (name, decode)) in enumerate(zip(widths, groups)):
             if header.groups & (1 << group):
                 values[name] = decode(bytes(reply[offset:offset + width]))
@@ -645,22 +718,31 @@ def decode_state_changed(event: bytes) -> StateChanged:
 
     :param event: the event report ([1] is the event number)
     :return: the page 1 record and the state token
-    :raises HostLightingError: for any other event
+    :raises HostLightingError: for any other event, or one that does not carry one page 1 record
     """
     if event[1] != EVENT_STATE_CHANGED:
         raise HostLightingError(f"event {event[1]} is not STATE_CHANGED")
+    header = decode_page_header(event)
+    if header.page != PAGE_STATE or header.count != 1:
+        raise HostLightingError(f"the STATE_CHANGED event carries {header.count} page {header.page} records, "
+                                f"not one page {PAGE_STATE} record")
     return StateChanged(record=decode_records(event)[0], token=_u32(event, HEADER_TOKEN))
 
 
-def latest_state(events: list) -> Optional[StateChanged]:
+def latest_state(events: list[bytes]) -> Optional[StateChanged]:
     """Pick the newest STATE_CHANGED among the events received, which carries page 1 as it stood when sent.
+
+    An event that does not decode is passed over.
 
     :param events: event reports, oldest first, as take_events() gives them
     :return: the newest STATE_CHANGED decoded, or None when there is none
     """
     for event in reversed(events):
         if len(event) > 1 and event[1] == EVENT_STATE_CHANGED:
-            return decode_state_changed(event)
+            try:
+                return decode_state_changed(event)
+            except HostLightingError:
+                logger.debug("passed over a STATE_CHANGED event that does not decode", exc_info=True)
     return None
 
 
@@ -688,6 +770,15 @@ def decode_identity(reply: bytes) -> Identity:
             strings[_IDENTITY_NAMES[group]] = raw.decode('utf-8', 'replace')
             used += len(raw) + 1 if len(raw) < IDENTITY_STRING_MAX else IDENTITY_STRING_MAX
     return Identity(**strings)
+
+
+def _check_range(name: str, value: int, high: int, low: int = 0) -> None:
+    """Refuse a value outside the range its request field holds.
+
+    :raises ValueError: naming the field and its range
+    """
+    if not low <= value <= high:
+        raise ValueError(f"{name} {value} is outside {low} to {high}")
 
 
 def _check_claim_name(name: bytes) -> None:
@@ -730,7 +821,7 @@ class HostLightingTimeoutError(HostLightingError):
 
 
 class HostLightingStaleTokenError(HostLightingError):
-    """The board's state changed: the state token a read named is out of date."""
+    """The board's state changed, so the state token a read named is out of date."""
 
     def __init__(self, page: int, token: int, current: int = 0):
         """Record the page, the state token that no longer matches the board, and the board's current token."""
@@ -741,7 +832,7 @@ class HostLightingStaleTokenError(HostLightingError):
 
 
 class HostLightingDisconnectedError(HostLightingError):
-    """A read or a write on the HID device failed: the board has left the bus."""
+    """A read or a write on the HID device failed, since the board has left the bus."""
 
 
 class HostLightingUnansweredError(HostLightingDisconnectedError):
@@ -773,7 +864,8 @@ class HostLightingBoardSelectionError(HostLightingError):
     to choose between.
     """
 
-    def __init__(self, message: str, board_id_prefix: str, boards: tuple, matched: tuple, other_majors: tuple):
+    def __init__(self, message: str, board_id_prefix: str, boards: tuple[BoardListing, ...],
+                 matched: tuple[BoardListing, ...], other_majors: tuple[int, ...]) -> None:
         """Record what was found.
 
         :param message: the library's message
@@ -802,33 +894,61 @@ class HostLightingClaimedError(HostLightingError):
                          f"generation {holder.claim_generation})")
 
 
+def _sending(report: bytes) -> str:
+    """Name what a failed write was sending, for its error. [0] is hidapi's report ID."""
+    return f"sending command 0x{report[1]:02X}" if len(report) > 1 else "writing"
+
+
+# the events a device keeps until take_events() or next_event() hands them over. Past it the oldest is dropped,
+# since the subscription is shared and a host that never takes events would keep every one
+EVENTS_KEPT = 64
+
+
+class HidHandle(Protocol):
+    """The calls the device makes on an open hidapi device, which the fake boards answer too."""
+
+    def write(self, data: bytes) -> int:
+        """Write one report, its report ID first, returning the bytes written or -1."""
+
+    def read(self, size: int, timeout_ms: int = 0) -> Sequence[int]:
+        """Read one report, or nothing when none arrives within the timeout."""
+
+    def close(self) -> None:
+        """Close the device."""
+
+
 class HostLightingDevice:
     """One GP2040-CE board's Host Lighting interface."""
 
-    def __init__(self, path: Optional[bytes] = None, handle=None):
+    def __init__(self, path: Optional[bytes] = None, handle: Optional[HidHandle] = None) -> None:
         """Open the HID device at the given hidapi path, or use a handle already open.
 
         :param path: platform-specific hidapi device path from enumeration
-        :param handle: instead of a path, an open hidapi device set non-blocking, or an object with its write,
-            read and close methods, such as gp2040ce_hostlighting.testing's fake boards
+        :param handle: instead of a path, an open hidapi device set non-blocking, or another HidHandle, an
+            object with its write, read and close methods, such as gp2040ce_hostlighting.testing's fake boards
         :raises ValueError: when neither a path nor a handle is given
+        :raises HostLightingError: when the device does not open, as on Linux without the udev rule
         """
         if handle is None:
             if path is None:
                 raise ValueError("give the device's path or an open handle")
-            hid = _import_hid()
-            handle = hid.device()
-            handle.open_path(path)
+            device = _import_hid().device()
+            try:
+                device.open_path(path)
+            except OSError as error:
+                raise HostLightingError(f"the interface will not open ({error}). On Linux, check its udev "
+                                        "rule") from error
             # a read with no timeout returns at once, so request() can drop the reports already received
-            handle.set_nonblocking(True)
-        self.handle = handle
+            device.set_nonblocking(True)
+            handle = device
+        self.handle: HidHandle = handle
         # the first sequence number is random, so two applications seldom send the same one
         self.sequence = secrets.randbelow(255)
-        self.events: list = []
+        self.events: list[bytes] = []
         # the requests sent with replies awaited, with the flags each was sent with, and those replies when
         # read while waiting for another
-        self._awaited: dict = {}
-        self._pending: list = []
+        self._awaited: dict[tuple[int, int], int] = {}
+        self._pending: list[bytes] = []
         # this application's claim token, from its last claim(), and the generation it holds the claim under,
         # 0 when it holds none. Its requests carry the generation, and FLAG_HOLDER while the claim is exclusive,
         # which that claim requires
@@ -836,12 +956,14 @@ class HostLightingDevice:
         self.generation = 0
         self.holding_exclusive = False
         self.closed = False
+        # the conformance checks take every status 4 reply with a request's numbers as its reply, to judge it
+        self._every_refusal = False
 
     def __enter__(self) -> 'HostLightingDevice':
         """Use the device in a with block, which closes it."""
         return self
 
-    def __exit__(self, *exception) -> None:
+    def __exit__(self, *exception: object) -> None:
         """Close the device."""
         self.close()
 
@@ -854,28 +976,31 @@ class HostLightingDevice:
     def _write(self, report: bytes) -> None:
         """Write one report.
 
-        hidapi reports a failed write by a negative result, and does not raise.
+        hidapi reports a failed write by a negative result, and a closed device by ValueError.
 
-        :raises HostLightingDisconnectedError: if the device does not take the report
+        :raises HostLightingDisconnectedError: if the device is closed or does not take the report
         """
-        sending = f"sending command 0x{report[1]:02X}" if len(report) > 1 else "writing"
+        if self.closed:
+            raise HostLightingDisconnectedError("the device is closed")
         try:
             written = self.handle.write(report)
-        except OSError as error:
-            raise HostLightingDisconnectedError(f"the board is no longer connected ({sending} failed with "
+        except (OSError, ValueError) as error:
+            raise HostLightingDisconnectedError(f"the board is no longer connected ({_sending(report)} failed with "
                                                 f"{error})") from error
         if isinstance(written, int) and written < 0:
-            raise HostLightingDisconnectedError(f"the board is no longer connected ({sending} failed)")
+            raise HostLightingDisconnectedError(f"the board is no longer connected ({_sending(report)} failed)")
 
     def _read(self, timeout_ms: int) -> bytes:
         """Read one report, or nothing within the timeout.
 
         :param timeout_ms: how long to wait, where 0 returns at once
-        :raises HostLightingDisconnectedError: if the device cannot be read
+        :raises HostLightingDisconnectedError: if the device is closed or cannot be read
         """
+        if self.closed:
+            raise HostLightingDisconnectedError("the device is closed")
         try:
             return bytes(self.handle.read(REPORT_SIZE, timeout_ms))
-        except OSError as error:
+        except (OSError, ValueError) as error:
             raise HostLightingDisconnectedError(f"the board is no longer connected (reading failed with "
                                                 f"{error})") from error
 
@@ -905,13 +1030,13 @@ class HostLightingDevice:
             raise
         return sequence
 
-    def collect(self, seconds: float) -> list:
+    def collect(self, seconds: float) -> list[bytes]:
         """Read every report that arrives within a time: replies, other applications' replies and events.
 
         :param seconds: how long to read
         :return: the reports, in arrival order
         """
-        reports: list = []
+        reports: list[bytes] = []
         deadline = time.monotonic() + seconds
         while True:
             left = deadline - time.monotonic()
@@ -921,18 +1046,21 @@ class HostLightingDevice:
             if report:
                 reports.append(report)
 
-    def wait_reply(self, command: int, sequence: int, timeout: float = 0.5, accept=None) -> bytes:
+    def wait_reply(self, command: int, sequence: int, timeout: float = 0.5,
+                   accept: Optional[Callable[[bytes], bool]] = None) -> bytes:
         """Wait for the reply to one request.
 
         Replies reach every application with the interface open, so a report that answers none of this
-        application's requests is another application's and is dropped. Events are kept in `events`, and the
-        replies to other requests still awaited in `pending`, where a later wait finds them: each reply is
+        application's requests is another application's and is dropped. Events are kept in `events`, up to
+        EVENTS_KEPT, and the replies to other requests still awaited, where a later wait finds them. Each reply is
         matched by its command echo and sequence number, not by order.
 
-        A status 4 reply shows the claim's holder, and the specification's table says what it means. One
-        showing this application's token and the generation the request carried answers another application's
-        request, so it is passed over, unless the claim it shows is exclusive and the request lacked
-        FLAG_HOLDER. Any other status 4 reply updates the generation and FLAG_HOLDER the device sends from then on.
+        A status 4 reply shows the claim's holder, and the specification's table says what it means. It answers
+        this request only when that holder would refuse it, which it does when the request carried another
+        non-zero generation, or when the claim shown is exclusive, the request lacked FLAG_HOLDER and that
+        generation, and the claim leaves it no opening (CLAIM, and HELLO, GET_PAGE and SUBSCRIBE without
+        COMMIT_AFTER or KEEPALIVE). Any other status 4 reply answers another application's request and is passed
+        over. The one taken updates the generation and FLAG_HOLDER the device sends from then on.
 
         :param command: the request's command byte
         :param sequence: the request's sequence number
@@ -949,7 +1077,7 @@ class HostLightingDevice:
             left = deadline - time.monotonic()
             if left <= 0:
                 break
-            # a read that blocks until a report or the timeout: no polling sleep, which is ~16 ms on Windows
+            # a read that blocks until a report or the timeout, with no polling sleep, which is ~16 ms on Windows
             # before Python 3.11
             report = self._read(max(1, int(left * 1000)))
             if not report:
@@ -962,20 +1090,25 @@ class HostLightingDevice:
         self._awaited.pop((command, sequence), None)
         raise HostLightingTimeoutError(f"no reply to command 0x{command:02X} within {timeout} s")
 
-    def _ours(self, report: bytes, command: int, sequence: int, accept) -> bool:
+    def _ours(self, report: bytes, command: int, sequence: int, accept: Optional[Callable[[bytes], bool]]) -> bool:
         """Say whether a report with this request's numbers is this application's reply."""
         if accept is not None and not accept(report):
             return False
-        if report[2] != STATUS_CLAIMED or len(report) < 3 + CONTROLLER_SIZE or not self.claim_token:
+        if report[2] != STATUS_CLAIMED or len(report) < 3 + CONTROLLER_SIZE or self._every_refusal:
             return True
+        # status 4 is this request's only when the holder shown would refuse it, as the firmware decides
         holder = decode_controller(bytes(report[3:3 + CONTROLLER_SIZE]))
         flags = self._awaited.get((command, sequence), 0)
         sent_generation = (flags & FLAG_GENERATION) >> FLAG_GENERATION_SHIFT
-        if not holder.held_by(self.claim_token) or holder.claim_generation != sent_generation:
-            return True
-        # its own token and generation: another application's refusal, but for an exclusive claim this request
-        # did not send FLAG_HOLDER for
-        return holder.exclusive and not flags & FLAG_HOLDER
+        if command == CMD_CLAIM:
+            return False        # CLAIM is never refused with status 4
+        if sent_generation and sent_generation != holder.claim_generation:
+            return True         # sent under a generation no longer current
+        guarded = holder.holder_token and holder.exclusive and not (
+            flags & FLAG_HOLDER and sent_generation == holder.claim_generation)
+        open_unflagged = command in (CMD_HELLO, CMD_GET_PAGE, CMD_SUBSCRIBE) and not flags & (
+            FLAG_COMMIT_AFTER | FLAG_KEEPALIVE)
+        return bool(guarded) and not open_unflagged
 
     def _answered(self, report: bytes, command: int, sequence: int) -> bytes:
         """Take a reply as this request's, acting on the holder a status 4 reply shows."""
@@ -995,8 +1128,10 @@ class HostLightingDevice:
             self._awaited[(command, sequence)] = flags
 
     def _keep(self, report: bytes) -> None:
-        """Keep an event, or the reply to a request still awaited, and drop another application's reply."""
+        """Keep an event, the oldest dropped past EVENTS_KEPT, or the reply to a request still awaited."""
         if is_event(report):
+            if len(self.events) >= EVENTS_KEPT:
+                del self.events[0]
             self.events.append(report)
         elif len(report) >= 3 and (report[0] & ~REPLY_FLAG, report[1]) in self._awaited:
             self._pending.append(report)
@@ -1013,7 +1148,7 @@ class HostLightingDevice:
                 return
             self._keep(report)
 
-    def take_events(self) -> list:
+    def take_events(self) -> list[bytes]:
         """Hand over the events received so far, oldest first, draining first.
 
         :return: the event reports, which are then forgotten here
@@ -1023,11 +1158,11 @@ class HostLightingDevice:
         return events
 
     def request(self, command: int, payload: bytes = b'', flags: int = 0, timeout: float = 0.5,
-                accept=None) -> bytes:
+                accept: Optional[Callable[[bytes], bool]] = None) -> bytes:
         """Send one request and wait for its reply.
 
         Every application's replies reach this one and wait until read, so the reports already received are
-        read first and dropped, but for events and the replies to earlier send() calls still awaited: another
+        read first and dropped, but for events and the replies to earlier send() calls still awaited. Another
         application's earlier reply with the same command and sequence is not taken for this one's.
 
         :param command: HLP command byte
@@ -1043,7 +1178,7 @@ class HostLightingDevice:
         return self.wait_reply(command, self.send(command, payload, flags), timeout, accept)
 
     def request_ok(self, command: int, payload: bytes = b'', flags: int = 0, timeout: float = 0.5,
-                   accept=None) -> bytes:
+                   accept: Optional[Callable[[bytes], bool]] = None) -> bytes:
         """Send one request and require status 0 in the reply.
 
         :param command: HLP command byte
@@ -1092,8 +1227,9 @@ class HostLightingDevice:
     def get_page(self, page: int, start: int = 0, mask: int = 0, token: int = 0) -> bytes:
         """Read one GET_PAGE reply.
 
-        A reply to another application's identical request is told apart by its echoed page, start and
-        field groups.
+        A reply to another application's request with this one's numbers is told apart by its echoed page, start
+        and field groups, and by the state token. A request that names none is never stale, and one that does
+        is answered under that token or shown another.
 
         :param page: page number
         :param start: first record
@@ -1101,7 +1237,13 @@ class HostLightingDevice:
         :param token: expected state token, 0 for no check
         :return: the reply report, with status 0 or 3 (STALE_TOKEN)
         :raises HostLightingRejectedError: on any other status
+        :raises ValueError: for a value its field cannot hold
         """
+        _check_range('page', page, 0xFF)
+        _check_range('start', start, 0xFFFF)
+        _check_range('mask', mask, 0xFFFF)
+        _check_range('token', token, 0xFFFFFFFF)
+
         def echoes(reply: bytes) -> bool:
             if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
                 return True
@@ -1109,31 +1251,65 @@ class HostLightingDevice:
             if header.page != page or header.start != start:
                 return False
             if reply[2] == STATUS_STALE_TOKEN:
-                return True
-            if mask:
-                return not header.groups & ~mask
-            # mask 0: a table page returns every group it defines (only page 0's strings can fail to fit)
-            known = (1 << len(PAGE_GROUPS[page])) - 1 if page in PAGE_GROUPS else 0
-            return header.groups & known == known
+                return bool(token) and header.token != token
+            if token and header.token != token:
+                return False
+            if page not in PAGE_GROUPS:
+                return not mask or not header.groups & ~mask        # page 0: the strings that fit
+            # a table page returns every group asked for that it defines, and with mask 0 a later 2.x board's too
+            known = (1 << len(PAGE_GROUPS[page])) - 1
+            return header.groups & known == (mask or known) & known and not (mask and header.groups & ~mask)
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
         if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
             raise self.rejected(CMD_GET_PAGE, reply)
         return reply
 
-    def read_table(self, page: int, mask: int = 0, token: int = 0, attempts: int = 5) -> PageRead:
+    @overload
+    def read_table(self, page: Literal[1], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[StateRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[2], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[InputModeRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[8], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[SummaryRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[9], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[ProfileRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[10], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[ControlRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[11], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[LightRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[12], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[AnimationRecord]: ...
+
+    @overload
+    def read_table(self, page: int, mask: int = 0, token: int = 0, attempts: int = 5) -> PageRead[Any]: ...
+
+    def read_table(self, page: int, mask: int = 0, token: int = 0, attempts: int = 5) -> PageRead[Any]:
         """Read every record of a table page as one coherent snapshot.
 
         Without a token, the walk names the state token of its first reply in every later read. If the board's
         state changes mid-walk, the board answers STALE_TOKEN and the walk starts again, so the records never mix
         two states. With a token, a host that read page 1 or 8 under it reads under the same token, so
-        everything it holds describes one state, and a change raises HostLightingStaleTokenError instead.
+        everything it holds describes one state, and a change raises HostLightingStaleTokenError instead. A mask
+        that names no group the board defines reads no records.
 
         :param page: page number
         :param mask: field groups to return, or 0 for every group
         :param token: the state token to read under, or 0 to adopt the first reply's
         :param attempts: without a token, how many times to start the walk before giving up
-        :return: the decoded records and the state token they carry
+        :return: the decoded records, of the page's record type, and the state token they carry
         :raises HostLightingStaleTokenError: with a token, if the board's state no longer matches it
         :raises HostLightingError: if the state keeps changing or the board stops making progress
         """
@@ -1148,13 +1324,13 @@ class HostLightingDevice:
                 return walked
         raise HostLightingError(f"page {page} kept changing during {attempts} walks")
 
-    def _walk_table(self, page: int, mask: int, token: int) -> PageRead | int:
+    def _walk_table(self, page: int, mask: int, token: int) -> PageRead[Any] | int:
         """Walk a table page from its first record, adopting the first reply's token when token is 0.
 
         :return: the decoded records and their state token, or the board's current token when it answers
             STALE_TOKEN
         """
-        records: list = []
+        records: list[Any] = []
         while True:
             reply = self.get_page(page, len(records), mask, token)
             header = decode_page_header(reply)
@@ -1162,19 +1338,29 @@ class HostLightingDevice:
                 return header.token
             token = header.token
             if header.count == 0:
-                if len(records) < header.total:
+                # a mask naming no group the board defines returns the total, no records and no groups
+                if len(records) < header.total and header.groups:
                     raise HostLightingError(f"page {page} stalled at {len(records)} of {header.total} records")
                 return PageRead(records=tuple(records), token=token)
             records.extend(decode_records(reply))
             if len(records) >= header.total:
                 return PageRead(records=tuple(records), token=token)
 
-    def read_record(self, page: int, mask: int = 0) -> PageRead:
+    @overload
+    def read_record(self, page: Literal[1], mask: int = 0) -> PageRead[StateRecord]: ...
+
+    @overload
+    def read_record(self, page: Literal[8], mask: int = 0) -> PageRead[SummaryRecord]: ...
+
+    @overload
+    def read_record(self, page: int, mask: int = 0) -> PageRead[Any]: ...
+
+    def read_record(self, page: int, mask: int = 0) -> PageRead[Any]:
         """Read a one-record page (1 or 8).
 
         :param page: page number
         :param mask: field groups to return, or 0 for every group
-        :return: the one record and the state token
+        :return: the one record, of the page's record type, and the state token
         """
         reply = self.get_page(page, 0, mask)
         return PageRead(records=decode_records(reply), token=decode_page_header(reply).token)
@@ -1185,7 +1371,7 @@ class HostLightingDevice:
         :param mask: the groups wanted, bit n for Identity's nth field, or 0 for all eight
         :return: the strings read, None for the others
         """
-        strings: dict = {}
+        strings: dict[str, str] = {}
         missing = mask or (1 << IDENTITY_GROUPS) - 1
         while missing:
             identity = decode_identity(self.get_page(PAGE_IDENTITY, 0, missing))
@@ -1217,9 +1403,11 @@ class HostLightingDevice:
             requests without FLAG_HOLDER and the generation but CLAIM, and HELLO, GET_PAGE and SUBSCRIBE
             without COMMIT_AFTER or KEEPALIVE
         :return: the holder now, as decode_controller gives it, with holder_token 0 when unclaimed
-        :raises ValueError: for a name over 16 bytes
+        :raises ValueError: for a name over 16 bytes, an action over 255 or a token outside 1 to 0xFFFFFFFF
         """
         _check_claim_name(name)
+        _check_range('action', action, 0xFF)
+        _check_range('token', token, 0xFFFFFFFF, 1)
         self.claim_token = token
         payload = bytes([action]) + struct.pack('<I', token) + name.ljust(CLAIM_NAME_SIZE, b'\x00')
         payload += bytes([CLAIM_EXCLUSIVE if exclusive else 0])
@@ -1243,17 +1431,24 @@ class HostLightingDevice:
         :param keepalive_ms: keepalive timeout in ms, 0 for the default 2000, clamped to 100-10000
         :param brightness_applied: scale host pixels by the board's brightness
         :return: the settings the board applied
+        :raises ValueError: for a takeover mode over 255 or a timeout over 65535
         """
+        _check_range('takeover', takeover, 0xFF)
+        _check_range('keepalive_ms', keepalive_ms, 0xFFFF)
         reply = self.request_ok(CMD_CONFIGURE, struct.pack('<BHB', takeover, keepalive_ms, int(brightness_applied)))
         return _settings(bytes(reply[3:7]))
 
-    def subscribe(self, events: Iterable[int]) -> frozenset:
+    def subscribe(self, events: Iterable[int]) -> frozenset[int]:
         """Enable events. The subscription is shared by every application on the board, so this only adds.
 
         :param events: the event numbers to enable, EVENT_STATE_CHANGED among them
         :return: the events now enabled
+        :raises ValueError: for an event number outside 0-15
         """
-        mask = sum(1 << event for event in set(events))
+        wanted = set(events)
+        for event in wanted:
+            _check_range('event', event, 15)
+        mask = sum(1 << event for event in wanted)
         return frozenset(_bits(_u16(self.request_ok(CMD_SUBSCRIBE, struct.pack('<H', mask)), 3)))
 
     def next_event(self, timeout: float) -> Optional[bytes]:
@@ -1278,8 +1473,9 @@ class HostLightingDevice:
                 return report
             self._keep(report)
 
-    def stage_entries(self, addressing: int, entries: list, pixel_format: int = PIXEL_RGB,
-                      commit: bool = False) -> list:
+    def stage_entries(self, addressing: int, entries: Sequence[tuple[int, tuple[int, ...]]],
+                      pixel_format: int = PIXEL_RGB,
+                      commit: bool = False) -> list[StageOutcome]:
         """Stage entries addressed by light, pin, action or kind, chunked to the report capacity.
 
         Each report is answered, for its outcome mask.
@@ -1287,12 +1483,14 @@ class HostLightingDevice:
         :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
         :param entries: (address, colour) pairs, each colour as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
-        :param commit: publish the staged frame with the last report (COMMIT_AFTER)
+        :param commit: publish the staged frame with the last report (COMMIT_AFTER), or with COMMIT when there
+            are no entries
         :return: a StageOutcome per report sent
         """
         return self._entries(CMD_STAGE, stage_entry_payloads(addressing, entries, pixel_format), commit)
 
-    def stage_run(self, addressing: int, first: int, colours: list, pixel_format: int = PIXEL_RGB,
+    def stage_run(self, addressing: int, first: int, colours: Sequence[tuple[int, ...]],
+                  pixel_format: int = PIXEL_RGB,
                   commit: bool = False) -> StageOutcome:
         """Stage consecutive LEDs or lights from a first index, as a streaming host does.
 
@@ -1309,14 +1507,16 @@ class HostLightingDevice:
         """
         return self._run(CMD_STAGE, stage_run_payloads(addressing, first, colours, pixel_format), commit)
 
-    def unstage_entries(self, addressing: int, addresses: list, commit: bool = False) -> list:
+    def unstage_entries(self, addressing: int, addresses: Sequence[int],
+                        commit: bool = False) -> list[StageOutcome]:
         """Unstage the lights addressed by light, pin, action or kind, chunked to the report capacity.
 
         Each LED reached becomes as after CLEAR, unstaged and off. Each report is answered, for its outcome mask.
 
         :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
         :param addresses: the light ordinals, pins, actions or kinds
-        :param commit: publish the staged frame with the last report (COMMIT_AFTER)
+        :param commit: publish the staged frame with the last report (COMMIT_AFTER), or with COMMIT when there
+            are no addresses
         :return: a StageOutcome per report sent
         """
         return self._entries(CMD_UNSTAGE, unstage_entry_payloads(addressing, addresses), commit)
@@ -1332,8 +1532,13 @@ class HostLightingDevice:
         """
         return self._run(CMD_UNSTAGE, unstage_run_payloads(addressing, first, count), commit)
 
-    def _entries(self, command: int, payloads: list, commit: bool) -> list:
-        """Send STAGE or UNSTAGE entry reports, each answered, COMMIT_AFTER on the last when committing."""
+    def _entries(self, command: int, payloads: list[bytes], commit: bool) -> list[StageOutcome]:
+        """Send STAGE or UNSTAGE entry reports, each answered, COMMIT_AFTER on the last when committing.
+
+        With no entries nothing is staged, and committing sends COMMIT.
+        """
+        if not payloads and commit:
+            self.commit()
         outcomes = []
         for index, payload in enumerate(payloads):
             last = index == len(payloads) - 1
@@ -1341,14 +1546,14 @@ class HostLightingDevice:
             outcomes.append(StageOutcome(applied=reply[3], skipped=reply[4], outcome=_u32(reply, 5)))
         return outcomes
 
-    def _run(self, command: int, payloads: list, commit: bool) -> StageOutcome:
+    def _run(self, command: int, payloads: list[bytes], commit: bool) -> StageOutcome:
         """Send STAGE or UNSTAGE run reports, all but the last with NO_REPLY, COMMIT_AFTER on the last."""
         for payload in payloads[:-1]:
             self.send(command, payload, FLAG_NO_REPLY)
         reply = self.request_ok(command, payloads[-1], FLAG_COMMIT_AFTER if commit else 0)
         return StageOutcome(applied=reply[3], skipped=reply[4], outcome=_u32(reply, 5))
 
-    def fill(self, colour: tuple, pixel_format: int = PIXEL_RGB, commit: bool = False) -> None:
+    def fill(self, colour: tuple[int, ...], pixel_format: int = PIXEL_RGB, commit: bool = False) -> None:
         """Stage one colour on every LED below the addressable LED limit.
 
         :param colour: as for encode_pixel
@@ -1386,7 +1591,10 @@ class HostLightingDevice:
         """Select the on-board animation, applied live and saved about a second later.
 
         :param index: a page 12 ordinal, or None or ANIMATION_OFF for off
+        :raises ValueError: for an index over 0xFFFF
         """
+        if index is not None:
+            _check_range('animation', index, 0xFFFF)
         self.request_ok(CMD_SET_ANIMATION, struct.pack('<H', ANIMATION_OFF if index is None else index))
 
     def set_animation_speed(self, index: int, idle: Optional[int] = None, pressed: Optional[int] = None,
@@ -1397,8 +1605,12 @@ class HostLightingDevice:
         :param idle: the idle speed, or None to leave it
         :param pressed: the pressed speed, or None to leave it
         :param case: the case speed, or None to leave it
+        :raises ValueError: for an index over 0xFFFF or a speed over 255
         """
+        _check_range('animation', index, 0xFFFF)
         speeds = [SPEED_UNCHANGED if speed is None else speed for speed in (idle, pressed, case)]
+        for speed in speeds:
+            _check_range('speed', speed, 0xFF)
         self.request_ok(CMD_SET_ANIMATION_SPEED, struct.pack('<HBBB', index, *speeds))
 
     def set_brightness(self, step: int, save: bool = False) -> None:
@@ -1441,7 +1653,7 @@ class HostLightingDevice:
     def _reboot(self, command: int, payload: bytes) -> bool:
         """Send SET_INPUT_MODE or REBOOT, tolerating the board leaving the bus.
 
-        The reply is sent before the reboot, but the board may leave before it is read: a vanished device or a
+        The reply is sent before the reboot, but the board may leave before it is read. A vanished device or a
         missing reply means the reboot is under way. A refusal still raises. A host confirms the reboot by the
         board enumerating again.
         """
@@ -1455,16 +1667,26 @@ class HostLightingDevice:
             return False
 
 
-def _import_hid():
-    """Import the hidapi module, with a helpful error if it is missing."""
+def _import_hid() -> Any:
+    """Import the hidapi module, with a helpful error if it is missing.
+
+    On Linux it is hidapi's hidraw backend. The hid module of hidapi 0.15.0's Linux wheel uses libusb (measured),
+    which reports no usage page, so it finds no board, and claims the interface for one application.
+    """
     try:
+        if sys.platform.startswith('linux'):
+            try:
+                import hidraw
+                return hidraw
+            except ImportError:
+                pass            # a hidapi built without the hidraw module
         import hid
     except ImportError as error:
         raise HostLightingError("the hidapi package is needed. Install it with pip install hidapi") from error
     return hid
 
 
-def find_devices() -> list:
+def find_devices() -> list[dict[str, Any]]:
     """Enumerate the Host Lighting interfaces of protocol 2 on the system.
 
     :return: list of hidapi enumeration dicts for matching interfaces
@@ -1474,7 +1696,7 @@ def find_devices() -> list:
             if info.get('usage_page') == USAGE_PAGE and info.get('usage') == USAGE]
 
 
-def find_other_majors() -> list:
+def find_other_majors() -> list[int]:
     """Find the Host Lighting interfaces that speak another protocol major, without opening them.
 
     The usage is the protocol major, so the usage page alone finds them. Pre-release protocol 1.x firmware
@@ -1487,7 +1709,13 @@ def find_other_majors() -> list:
             if info.get('usage_page') == USAGE_PAGE and info.get('usage') != USAGE]
 
 
-def _no_interface(usages: tuple) -> str:
+def _none_answered(count: int) -> str:
+    """Say that interfaces were found, but none opened and answered HELLO as a protocol 2 board."""
+    return (f"{count} Host Lighting interface(s) found, but none opened and answered as a protocol "
+            f"{PROTOCOL_MAJOR} board. On Linux, check the udev rule")
+
+
+def _no_interface(usages: tuple[int, ...]) -> str:
     """Say that no protocol 2 interface was found, naming the boards of another major there are."""
     note = ''
     if usages:
@@ -1497,7 +1725,7 @@ def _no_interface(usages: tuple) -> str:
             "enabled")
 
 
-def _probe(info: dict) -> Optional[tuple[Hello, HostLightingDevice]]:
+def _probe(info: dict[str, Any]) -> Optional[tuple[Hello, HostLightingDevice]]:
     """Open one interface and keep it when it answers HELLO as a protocol 2 board.
 
     :param info: a hidapi enumeration dict
@@ -1505,7 +1733,7 @@ def _probe(info: dict) -> Optional[tuple[Hello, HostLightingDevice]]:
     """
     try:
         device = HostLightingDevice(info['path'])
-    except OSError:
+    except HostLightingError:
         logger.warning("skipping an interface that will not open. On Linux, check its udev rule")
         logger.debug("opening %s failed", info['path'], exc_info=True)
         return None
@@ -1559,6 +1787,8 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
         usages = tuple(find_other_majors())
         raise HostLightingBoardSelectionError(_no_interface(usages), board_id_prefix, (), (), usages)
     found = [probe for probe in (_probe(info) for info in infos) if probe]
+    if not found:
+        raise HostLightingBoardSelectionError(_none_answered(len(infos)), board_id_prefix, (), (), ())
     matching = [hello.board_id for hello, _ in found if hello.board_id.startswith(board_id_prefix.upper())]
     if len(matching) == 1:
         for hello, device in found:
@@ -1581,14 +1811,12 @@ def find_board(board_id: str) -> Optional[HostLightingDevice]:
 
     :param board_id: the HELLO factory board ID, 16 hex digits in either case
     :return: an opened HostLightingDevice, or None when no connected protocol 2 board has that ID
+    :raises ValueError: for an ID that is not 16 digits
     """
     if len(board_id) != 16:
         raise ValueError("find_board needs the whole 16-digit board ID. open_device takes a prefix")
     for info in find_devices():
-        try:
-            found = _probe(info)
-        except OSError:
-            continue            # the interface left between the enumeration and the open
+        found = _probe(info)
         if found and found[0].board_id == board_id.upper():
             return found[1]
         if found:
@@ -1596,7 +1824,7 @@ def find_board(board_id: str) -> Optional[HostLightingDevice]:
     return None
 
 
-def list_boards() -> list:
+def list_boards() -> list[BoardListing]:
     """Identify every connected protocol 2 board from HELLO and page 0, claiming none of them.
 
     :return: a BoardListing per board, with None for a label or firmware version the board did not give
@@ -1627,7 +1855,7 @@ def _capability(bitmap: str, member: int) -> str:
     return label.format(member) + (f" ({names[member]})" if member in names else '')
 
 
-def missing_capabilities(hello: Hello, requirements: Requirements) -> list:
+def missing_capabilities(hello: Hello, requirements: Requirements) -> list[str]:
     """Name each capability a host requires that a board's HELLO does not list.
 
     A host gates on HELLO's bitmaps and never on the minor version.

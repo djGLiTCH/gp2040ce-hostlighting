@@ -21,13 +21,13 @@ _PROTO_ENUM = re.compile(r'\benum\s+(\w+)\s*\{(.*?)\}', re.S)
 _PROTO_VALUE = re.compile(r'^\s*(\w+)\s*=\s*(-?(?:0[xX][0-9a-fA-F]+|\d+))\s*(?:\[[^\]]*\])?\s*;', re.M)
 
 
-def parse_enum_names(text: str) -> dict:
+def parse_enum_names(text: str) -> dict[str, dict[int, str]]:
     """Read the enum blocks of a .proto file.
 
     :param text: the file's contents
     :return: {enum name: {value: value name}}, with the first name where values share a number
     """
-    names: dict = {}
+    names: dict[str, dict[int, str]] = {}
     for enum in _PROTO_ENUM.finditer(_PROTO_COMMENT.sub('', text)):
         values = names.setdefault(enum.group(1), {})
         for value in _PROTO_VALUE.finditer(enum.group(2)):
@@ -35,7 +35,7 @@ def parse_enum_names(text: str) -> dict:
     return names
 
 
-def read_enum_names(paths: Iterable[Union[str, pathlib.Path]]) -> dict:
+def read_enum_names(paths: Iterable[Union[str, pathlib.Path]]) -> dict[str, dict[int, str]]:
     """Read the enum names of GP2040-CE's enums.proto.
 
     Each path is the file, or the directory that holds it, such as GP2040-CE's proto directory. A directory
@@ -44,7 +44,7 @@ def read_enum_names(paths: Iterable[Union[str, pathlib.Path]]) -> dict:
     :param paths: the files or directories, later ones overriding earlier ones for an enum they share
     :return: {enum name: {value: value name}}, such as names['GpioAction'][1] == 'BUTTON_PRESS_UP'
     """
-    names: dict = {}
+    names: dict[str, dict[int, str]] = {}
     for path in paths:
         file = pathlib.Path(path).expanduser()
         if file.is_dir():

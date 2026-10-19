@@ -4,7 +4,7 @@ SPDX-PackageSupplier = "Jacob Simpson <28767380+djGLiTCH@users.noreply.github.co
 SPDX-PackageDownloadLocation = "https://github.com/djGLiTCH/gp2040ce-hostlighting"
 
 [[annotations]]
-path = [".gitattributes", ".gitignore", "pyproject.toml", "REUSE.toml", "*.md", "docs/*.md",
+path = [".gitattributes", ".git_archival.txt", ".gitignore", "pyproject.toml", "REUSE.toml", "*.md", "docs/*.md",
         "gp2040ce_hostlighting/py.typed"]
 SPDX-FileCopyrightText = "© 2026 Jacob Simpson"
 SPDX-License-Identifier = "GPL-3.0-or-later"

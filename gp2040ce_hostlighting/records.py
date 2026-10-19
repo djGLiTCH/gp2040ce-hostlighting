@@ -5,7 +5,7 @@ mask bit order, each a frozen dataclass. Reading a group the reply did not retur
 HostLightingGroupNotReadError, which is an AttributeError too, so hasattr() says whether it was read, as do
 `has()` and `groups`. Inside a group, None is the value the specification marks none, such as an unlit control's
 first LED. A record's `merged()` takes the groups a later read returned, as a host does after reading some
-groups again. Records are immutable and compare equal when their page, ordinal and groups are.
+groups again. Records are immutable, compare equal when their page, ordinal and groups are, and copy and pickle.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -13,11 +13,11 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from dataclasses import dataclass, field, fields
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
-__all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlLights', 'ControlRecord',
-           'Controller', 'Effects', 'GridCell', 'Hello', 'Identity', 'InputModeFlags', 'InputModeRecord',
-           'Instances', 'LedRange', 'LightKind', 'LightRecord', 'Owner', 'PageHeader', 'PageRead', 'PaletteSlot',
-           'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds', 'StageOutcome', 'State',
-           'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord']
+__all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
+           'ControlRecord', 'Controller', 'Effects', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
+           'InputModeRecord', 'Instances', 'LedRange', 'LightKind', 'LightRecord', 'Owner', 'PageHeader', 'PageRead',
+           'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
+           'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord']
 
 # the configuration pages, with change counters in the Summary's Changes group in page order
 _FIRST_CONFIGURATION_PAGE = 8
@@ -47,7 +47,7 @@ class _Group(Generic[GroupType]):
             return self
         value = getattr(record, self.slot)
         if value is None:
-            # imported here: records imports nothing from the package when it loads
+            # imported here, since records imports nothing from the package when it loads
             from gp2040ce_hostlighting.protocol import HostLightingGroupNotReadError
             raise HostLightingGroupNotReadError(record.PAGE, self.name, record.ordinal)
         return value
@@ -61,7 +61,7 @@ class _Record:
     PAGE: ClassVar[int]
     GROUPS: ClassVar[tuple[str, ...]]
 
-    def __init__(self, ordinal: int, groups: dict) -> None:
+    def __init__(self, ordinal: int, groups: dict[str, Any]) -> None:
         unknown = set(groups) - set(self.GROUPS)
         if unknown:
             raise TypeError(f"page {self.PAGE} has no field group {sorted(unknown)[0]!r}")
@@ -75,11 +75,11 @@ class _Record:
     def __delattr__(self, name: str) -> None:
         raise AttributeError(f"{type(self).__name__} is immutable")
 
-    def _values(self) -> tuple:
+    def _values(self) -> tuple[Any, ...]:
         return (self.ordinal,) + tuple(getattr(self, '_' + name) for name in self.GROUPS)
 
     def __eq__(self, other: object) -> bool:
-        return type(other) is type(self) and other._values() == self._values()     # type: ignore[attr-defined]
+        return type(other) is type(self) and other._values() == self._values()
 
     def __hash__(self) -> int:
         return hash((type(self),) + self._values())
@@ -88,8 +88,12 @@ class _Record:
         groups = ', '.join(f"{name}={getattr(self, '_' + name)!r}" for name in self.GROUPS)
         return f"{type(self).__name__}(ordinal={self.ordinal}, {groups})"
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Rebuild the record through its constructor, for copy and pickle."""
+        return _rebuild, (type(self), self.ordinal, {name: getattr(self, '_' + name) for name in self.GROUPS})
+
     @property
-    def groups(self) -> frozenset:
+    def groups(self) -> frozenset[str]:
         """The names of the field groups the read returned."""
         return frozenset(name for name in self.GROUPS if getattr(self, '_' + name) is not None)
 
@@ -117,6 +121,11 @@ class _Record:
             newest = getattr(newer, '_' + name)
             object.__setattr__(record, '_' + name, newest if newest is not None else getattr(self, '_' + name))
         return record
+
+
+def _rebuild(record_type: type, ordinal: int, groups: dict[str, Any]) -> Any:
+    """Make a record again from its ordinal and groups, as copy and pickle do through __reduce__."""
+    return record_type(ordinal=ordinal, **groups)
 
 
 # page 1, State
@@ -232,7 +241,7 @@ class Summary:
 class Changes:
     """Page 8's Changes group: one change counter for each configuration page, 8 to 15."""
 
-    counters: tuple
+    counters: tuple[int, ...]
 
     def counter(self, page: int) -> int:
         """Give one configuration page's change counter.
@@ -297,8 +306,16 @@ class ControlInput:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ControlInstances:
+    """Page 10's second group: the control's place among the controls with its action, from 1."""
+
+    instance: int
+    instances: int                          # 1 when the action is not duplicated
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Instances:
-    """A control's place among the controls with its action, on page 10 and for a light's owner on page 11.
+    """Page 11's owner instances: the owning control's place among the controls with its action.
 
     Both are None for a light with an owner pin that is none or not a control, which the board sends as 0.
     """
@@ -312,7 +329,7 @@ class Position:
     """Page 10's Position group, both None for an unlit control."""
 
     first_led: Optional[int]
-    grid_rectangle: Optional[tuple]         # (min x, min y, max x, max y)
+    grid_rectangle: Optional[tuple[int, int, int, int]]         # (min x, min y, max x, max y)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -330,12 +347,12 @@ class ControlRecord(_Record):
     GROUPS = ('input', 'instances', 'position', 'lights')
     __slots__ = ('_input', '_instances', '_position', '_lights')
     input = _Group[ControlInput]()             # noqa: A003 the specification's word for a control's input
-    instances = _Group[Instances]()
+    instances = _Group[ControlInstances]()
     position = _Group[Position]()
     lights = _Group[ControlLights]()
 
     def __init__(self, *, ordinal: int, input: Optional[ControlInput] = None,       # noqa: A002 the group's name
-                 instances: Optional[Instances] = None, position: Optional[Position] = None,
+                 instances: Optional[ControlInstances] = None, position: Optional[Position] = None,
                  lights: Optional[ControlLights] = None) -> None:
         """Hold the groups a read returned, None for the others."""
         super().__init__(ordinal, {'input': input, 'instances': instances, 'position': position, 'lights': lights})
@@ -449,13 +466,13 @@ class Hello:
     minor: int
     board_id: str
     reply_queue_limit: int
-    request_flags: frozenset
-    commands: frozenset
-    pages: frozenset
-    addressing_modes: frozenset
-    pixel_formats: frozenset
-    events: frozenset
-    events_enabled: frozenset
+    request_flags: frozenset[int]
+    commands: frozenset[int]
+    pages: frozenset[int]
+    addressing_modes: frozenset[int]
+    pixel_formats: frozenset[int]
+    events: frozenset[int]
+    events_enabled: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -487,10 +504,10 @@ class PageHeader:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class PageRead:
-    """The records a read returned, and the state token they carry."""
+class PageRead(Generic[RecordType]):
+    """The records a read returned, of the page's record type, and the state token they carry."""
 
-    records: tuple
+    records: tuple[RecordType, ...]
     token: int
 
 
@@ -526,12 +543,12 @@ class BoardListing:
 class Requirements:
     """The capabilities a host uses, named by the HELLO bitmap each belongs to."""
 
-    commands: frozenset = field(default_factory=frozenset)
-    request_flags: frozenset = field(default_factory=frozenset)
-    pages: frozenset = field(default_factory=frozenset)
-    addressing_modes: frozenset = field(default_factory=frozenset)
-    pixel_formats: frozenset = field(default_factory=frozenset)
-    events: frozenset = field(default_factory=frozenset)
+    commands: frozenset[int] = field(default_factory=frozenset)
+    request_flags: frozenset[int] = field(default_factory=frozenset)
+    pages: frozenset[int] = field(default_factory=frozenset)
+    addressing_modes: frozenset[int] = field(default_factory=frozenset)
+    pixel_formats: frozenset[int] = field(default_factory=frozenset)
+    events: frozenset[int] = field(default_factory=frozenset)
 
     def union(self, other: 'Requirements') -> 'Requirements':
         """Combine two hosts' or layers' requirements."""

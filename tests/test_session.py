@@ -57,6 +57,16 @@ def test_start_runs_the_host_flow_and_close_gives_up(board):
     assert board.holder_token == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
 
+def test_a_with_block_with_a_failed_start_closes_the_device(board):
+    """Test that a with block closes the device when the start fails, here at a claim another application holds."""
+    board.take_over()
+    session = session_on(board)
+    with pytest.raises(hl.HostLightingClaimedError):
+        with session:
+            pass
+    assert session.device.closed
+
+
 def test_start_checks_what_the_session_and_the_host_need(board):
     """Test that a capability missing from HELLO refuses the start before anything is claimed."""
     session = session_on(board, require=Requirements(addressing_modes=frozenset({9})))
@@ -112,6 +122,35 @@ def test_a_takeover_that_ended_asks_for_a_restage(board):
     assert commands(board, sent) == [hl.CMD_CLEAR, hl.CMD_STAGE]
 
 
+def test_events_older_than_a_frame_ask_for_no_restage(board):
+    """Test that an event that arrives before a frame's acknowledgement is applied before the frame counts as shown."""
+    session = session_on(board).start()
+    board.before[hl.CMD_STAGE] = [testing.state_event(board.token, holder_token=session.claim.token,
+                                                      claim_generation=board.generation)]
+    assert session.show(frame_of(0))
+    update = session.poll()
+    assert not update.restage and update.board_state.state.takeover_live
+    sent = len(board.requests)
+    session.show(frame_of(0))
+    assert commands(board, sent) == [hl.CMD_STAGE]
+
+
+def test_configure_changes_the_settings_for_the_session(board):
+    """Test configure() before the start, through the claim, and for a host that does not claim."""
+    session = session_on(board)
+    assert session.configure(Settings(keepalive_ms=600)) is None
+    session.start()
+    assert board.keepalive_ms == 600
+    overlay = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=900)
+    assert session.configure(overlay) == overlay and board.overlay == 1 and session.settings == overlay
+    session.close()
+    plain = session_on(board, None).start()
+    assert plain.configure(Settings(keepalive_ms=700)) == Settings(keepalive_ms=700) and board.keepalive_ms == 700
+    # the defaults go in place of its own settings, once
+    assert plain.configure(Settings()) == Settings(keepalive_ms=2000) and board.keepalive_ms == 2000
+    assert plain.configure(Settings()) is None and plain.settings == Settings()
+
+
 def test_a_claim_taken_over_and_given_back_is_taken_again(board):
     """Test RETAKEN after events show another holder, with the settings sent again and a restage."""
     session = session_on(board, settings=Settings(keepalive_ms=600)).start()
@@ -147,7 +186,8 @@ def test_a_refused_frame_goes_to_the_claim(board, monkeypatch):
     assert session.claim.state is ClaimState.WAITING
     assert session.poll().claim.kind is ClaimChangeKind.LOST
     board.disconnect_on = {hl.CMD_STAGE}
-    session.claim.state = ClaimState.HELD
+    session.claim.state = ClaimState.HELD                   # held again, as the device sees it too
+    session.device.generation = session.claim.generation
     with pytest.raises(hl.HostLightingDisconnectedError):
         session.show(frame_of(0))
 
@@ -453,3 +493,909 @@ def test_the_readme_session_example_runs(board, monkeypatch):
     exec(compile(example, 'README.md', 'exec'), {})     # the repository's own README
     assert board.frames[-1] == {1: (0, 0, 255), 2: (0, 0, 255), 3: (0, 0, 255)} and board.holder_token == 0
     assert board.now >= 3.0
+
+
+def test_a_reconnect_that_finds_no_board_leaves_nothing_to_send(board):
+    """Test that after a reconnect that found no board, poll() reports the board gone and close() sends nothing."""
+    session = session_on(board, reopen=lambda board_id: None).start()
+    board.unplug()
+    assert session.reconnect() is False and session.claim.state is ClaimState.ENDED
+    with pytest.raises(hl.HostLightingDisconnectedError):
+        session.poll()
+    sent = len(board.requests)
+    session.close()
+    assert len(board.requests) == sent
+
+
+def test_another_application_taking_over_between_a_retake_and_its_configure(board):
+    """Test that the refused CONFIGURE goes to the claim, poll() says so, and no frame goes to the new holder."""
+    session = session_on(board).start()
+    board.let_go()
+    write = board.write
+
+    def take_over_after_the_claim(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM:
+            board.write = write
+            board.take_over()
+        return written
+    board.write = take_over_after_the_claim
+    assert session.poll().claim.kind is ClaimChangeKind.LOST and session.claim.state is ClaimState.WAITING
+    stages = len(board.sent(hl.CMD_STAGE))
+    assert session.show(frame_of(0)) is None and len(board.sent(hl.CMD_STAGE)) == stages
+
+
+def test_a_status_4_the_claim_did_not_see_is_learned_before_the_next_frame(board, monkeypatch):
+    """Test that a refusal outside the claim's calls has the next show() renew first, and send no frame."""
+    session = session_on(board).start()
+    monkeypatch.setattr(session.device, 'take_events', lambda: [])     # the change not yet seen
+    board.take_over()
+    assert session.device.request(hl.CMD_HELLO)[2] == hl.STATUS_CLAIMED
+    assert session.device.generation == 0 and session.claim.state is ClaimState.HELD
+    stages = len(board.sent(hl.CMD_STAGE))
+    assert session.show(frame_of(0)) is None and len(board.sent(hl.CMD_STAGE)) == stages
+    assert session.claim.state is ClaimState.WAITING
+
+
+def test_a_hello_refused_after_a_missed_frame_goes_to_the_claim(board, monkeypatch):
+    """Test that the HELLO after a missed frame resets the count, and a status 4 reply to it reaches the claim."""
+    from gp2040ce_hostlighting import session as session_module
+    session = session_on(board).start()
+    monkeypatch.setattr(session_module, 'publish_frame', lambda *arguments, **options: FrameResult(
+        acknowledged=False, resent=True))
+    monkeypatch.setattr(session.device, 'take_events', lambda: [])
+    session._unanswered = 2
+    board.take_over()
+    assert session.show(frame_of(0)) == FrameResult(acknowledged=False, resent=True)
+    assert session.claim.state is ClaimState.WAITING and session._unanswered == 0
+
+
+def test_an_acknowledged_frame_resets_the_unanswered_count(board):
+    """Test that the board acknowledging a frame is an answer, which resets the count of requests unanswered."""
+    session = session_on(board).start()
+    session._unanswered = 2
+    assert session.show(frame_of(0)).acknowledged and session._unanswered == 0
+
+
+def test_a_host_that_does_not_claim_restages_once_the_board_is_unclaimed(board):
+    """Test no KEEPALIVE while another application holds the claim, then a restage once it gives the claim up."""
+    session = session_on(board, None).start()
+    assert session.show(frame_of(0)).acknowledged
+    board.take_over()
+    start = len(board.requests)
+    for _ in range(3):                      # inside the other application's 2 s lease
+        board.sleep(0.5)
+        assert not session.poll().restage
+    assert not [request for request in board.requests[start:]
+                if request[0] == hl.CMD_HELLO and request[2] & hl.FLAG_KEEPALIVE]
+    board.let_go()
+    assert session.poll().restage
+
+
+def test_a_cache_without_controls_or_lights_still_restages_when_they_change(board):
+    """Test that a moved Lights counter asks for a restage although the cache keeps no Lights page."""
+    session = session_on(board, pages=()).start()
+    board.reconfigure(lights=[light_record(0, pin=2, action=9, duplicated=1, instance=1, instances=2, x=1, y=0),
+                              board.lights[1]])
+    update = session.poll()
+    assert update.pages_read == frozenset() and update.restage
+
+
+def test_events_older_than_a_renewals_reply_retake_once(board):
+    """Test that a lapse event read while a renewal's reply is awaited does not have the claim retake again."""
+    session = session_on(board).start()
+    board.let_go()
+    board.pending = False                   # the lapse's event arrives with the renewal's reply instead
+    board.before[hl.CMD_CLAIM] = [testing.state_event(board.token, holder_token=0,
+                                                      claim_generation=board.generation)]
+    board.sleep(1.0)                        # a renewal is due
+    assert session.poll().claim.kind is ClaimChangeKind.RETAKEN
+    claims = len(board.sent(hl.CMD_CLAIM))
+    assert session.poll().claim.kind is ClaimChangeKind.UNCHANGED and len(board.sent(hl.CMD_CLAIM)) == claims
+
+
+def test_two_hosts_that_do_not_claim_leave_each_other_s_settings_alone(board):
+    """Test that a host that does not claim sends its settings again only after a change of holder."""
+    first = session_on(board, None, settings=Settings(keepalive_ms=3000)).start()
+    second = session_on(board, None, settings=Settings(keepalive_ms=5000)).start()
+    sent = len(board.sent(hl.CMD_CONFIGURE))
+    for _ in range(10):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert len(board.sent(hl.CMD_CONFIGURE)) == sent
+    board.take_over()
+    board.let_go()                          # a change of holder returns the defaults
+    for _ in range(3):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert len(board.sent(hl.CMD_CONFIGURE)) == sent + 2
+
+
+def test_a_start_under_the_same_token_clears_the_frame_it_kept(board):
+    """Test that the first frame of a start clears first: a start under the token holding the claim keeps the frame."""
+    session = session_on(board).start()
+    session.show(frame_of(0, 1))
+    session.start()
+    session.show(frame_of(0))
+    assert board.frames[-1] == {0: (255, 0, 0)}
+
+
+def test_a_waiting_host_sends_no_configure_before_its_claim(board, monkeypatch):
+    """Test that a claiming host that waits sends no CONFIGURE when the holder gives up before page 1 is read."""
+    board.take_over()
+    write, gone = board.write, []
+
+    def let_go_after_the_claim(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM and not gone:
+            gone.append(True)
+            board.let_go()
+        return written
+    monkeypatch.setattr(board, 'write', let_go_after_the_claim)
+    session = session_on(board, settings=Settings(keepalive_ms=600), wait=True).start()
+    assert session.claim.state is ClaimState.WAITING and hl.CMD_CONFIGURE not in commands(board)
+
+
+def test_a_host_that_does_not_claim_puts_its_settings_back_at_close(board):
+    """Test close() without a frame: its own settings back to the defaults, and no RELEASE or SET_BRIGHTNESS."""
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)).start()
+    assert board.overlay == 1
+    mark = len(board.requests)
+    session.close()
+    sent = commands(board, mark)
+    assert board.overlay == 0 and session.settings == Settings(takeover=hl.TAKEOVER_OVERLAY)
+    assert hl.CMD_CONFIGURE in sent and hl.CMD_RELEASE not in sent and hl.CMD_SET_BRIGHTNESS not in sent
+
+
+def test_a_host_that_does_not_claim_leaves_others_settings_at_close(board):
+    """Test that close() leaves settings another host sent after its own, and releases after a frame."""
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)).start()
+    session.show(frame_of(0))
+    board.take_over()
+    board.let_go()                  # a change of holder returns the defaults, and the session sends its own again
+    session.poll()
+    fake_device(board).configure(hl.TAKEOVER_OVERLAY, 900)     # another host that does not claim, after it
+    mark = len(board.requests)
+    session.close()
+    sent = commands(board, mark)
+    assert board.keepalive_ms == 900 and hl.CMD_RELEASE in sent and hl.CMD_SET_BRIGHTNESS in sent
+
+
+def test_a_session_refuses_to_run_before_start(board):
+    """Test that poll() and show() before start() raise and send nothing."""
+    session = session_on(board)
+    for call in (session.poll, lambda: session.show(frame_of(0))):
+        with pytest.raises(hl.HostLightingError, match='has not started'):
+            call()
+    assert not board.requests
+
+
+def test_page_1_is_read_within_a_third_of_a_short_timeout(board, monkeypatch):
+    """Test that a host without events reads page 1 within a third of the timeout it applied, below 1 s."""
+    answer = board.answer
+
+    def no_events(command, sequence, request):
+        reply = answer(command, sequence, request)
+        return reply[:43] + bytes(2) + reply[45:] if command == hl.CMD_HELLO and reply else reply
+    monkeypatch.setattr(board, 'answer', no_events)
+    session = session_on(board, None, settings=Settings(keepalive_ms=300)).start()
+    mark = len(board.requests)
+    board.sleep(0.15)
+    session.poll()
+    assert hl.CMD_GET_PAGE in commands(board, mark)
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_configure_of_a_host_that_does_not_claim_sees_a_holder_first(board, monkeypatch, events):
+    """Test that configure() takes the events, or reads page 1, and sends nothing under another holder's claim."""
+    if not events:
+        answer = board.answer
+
+        def no_events(command, sequence, request):
+            reply = answer(command, sequence, request)
+            return reply[:43] + bytes(2) + reply[45:] if command == hl.CMD_HELLO and reply else reply
+        monkeypatch.setattr(board, 'answer', no_events)
+    session = session_on(board, None).start()
+    board.take_over()
+    assert session.configure(Settings(keepalive_ms=900)) is None
+    assert hl.CMD_CONFIGURE not in commands(board) and board.keepalive_ms == 2000
+
+
+def test_configure_after_an_unseen_change_of_holder_is_put_back_at_close(board):
+    """Test that configure() acts under the generation page 1 shows now, so close() puts the defaults back."""
+    session = session_on(board, None).start()
+    board.take_over()
+    board.let_go()                  # two changes of holder the session has not seen
+    assert session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY)) is not None and board.overlay == 1
+    session.close()
+    assert board.overlay == 0
+
+
+@pytest.mark.parametrize('events', [True, False])
+@pytest.mark.parametrize('waits', [True, False])
+def test_a_take_over_during_start_is_waited_for_or_raised(board, monkeypatch, waits, events):
+    """Test a take over between CONFIGURE and the end of start(): WAITING, or HostLightingClaimedError.
+
+    With events SUBSCRIBE is refused, and without them the page 1 read.
+    """
+    if not events:
+        without_events(board, monkeypatch)
+    write = board.write
+
+    def take_over_after_configure(data):
+        written = write(data)
+        if data[1] == hl.CMD_CONFIGURE and not board.holder_token == 0xB2:
+            board.take_over()
+        return written
+    monkeypatch.setattr(board, 'write', take_over_after_configure)
+    session = session_on(board, wait=True, wait_when_taken_over=waits)
+    if waits:
+        assert session.start().claim.state is ClaimState.WAITING
+    else:
+        with pytest.raises(hl.HostLightingClaimedError, match="'Other' holds the lights"):
+            session.start()
+    assert [request[3] for request in board.sent(hl.CMD_CLAIM)] == [hl.CLAIM_TAKE]     # no give up
+    assert board.holder_token == 0xB2
+
+
+def test_a_frame_that_fails_has_the_next_clear_first(board):
+    """Test that a frame refused with another status leaves the next to clear what it staged."""
+    session = session_on(board).start()
+    session.show(frame_of(0))
+    bad = frame_of(1)
+    bad.run(hl.ADDRESSING_LED_RUN, board.led_limit() - 1, [(0, 255, 0)] * 2)
+    with pytest.raises(hl.HostLightingRejectedError, match='INVALID_ARG'):
+        session.show(bad)
+    session.show(frame_of(0))
+    assert board.frames[-1] == {0: (255, 0, 0)}
+
+
+def test_a_frame_that_sends_nothing_does_not_count_as_driven(board, monkeypatch):
+    """Test that a host that does not claim, with its only show() failed before sending, releases nothing at close."""
+    session = session_on(board, None).start()
+    frame = frame_of(0)
+
+    def unbuildable():
+        raise ValueError("no payloads")
+    monkeypatch.setattr(frame, 'payloads', unbuildable)
+    with pytest.raises(ValueError, match='no payloads'):
+        session.show(frame)
+    mark = len(board.requests)
+    session.close()
+    assert hl.CMD_RELEASE not in commands(board, mark)
+
+
+def test_settings_sent_after_a_page_1_reply_older_than_the_board_are_put_back(board, monkeypatch):
+    """Test that the generation is read after CONFIGURE, so close() restores the defaults after such a race."""
+    answer, write, raced = board.answer, board.write, []
+
+    def no_events(command, sequence, request):
+        reply = answer(command, sequence, request)
+        return reply[:43] + bytes(2) + reply[45:] if command == hl.CMD_HELLO and reply else reply
+
+    def race_the_page_1_reply(data):
+        written = write(data)
+        if data[1] == hl.CMD_GET_PAGE and data[4] == hl.PAGE_STATE and armed and not raced:
+            raced.append(True)          # the reply on its way shows the board before these two changes
+            board.take_over()
+            board.let_go()
+        return written
+    monkeypatch.setattr(board, 'answer', no_events)
+    monkeypatch.setattr(board, 'write', race_the_page_1_reply)
+    armed = False
+    session = session_on(board, None).start()
+    armed = True
+    assert session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY)) is not None and raced and board.overlay == 1
+    session.close()
+    assert board.overlay == 0
+
+
+def hook_after(board, monkeypatch, when, then):
+    """Run then() once, just after the board takes the first request when() picks."""
+    write, done = board.write, []
+
+    def hooked(data):
+        written = write(data)
+        if not done and when(data):
+            done.append(True)
+            then()
+        return written
+    monkeypatch.setattr(board, 'write', hooked)
+    return done
+
+
+def test_settings_with_the_page_1_read_after_lost_are_still_put_back(board, monkeypatch):
+    """Test that the settings count as sent once CONFIGURE is answered, though the read after it goes unanswered."""
+    session = session_on(board, None).start()
+    write, lost = board.write, []
+
+    def lose_the_read_after_configure(data):
+        if data[1] == hl.CMD_GET_PAGE and data[4] == hl.PAGE_STATE and armed and not lost:
+            lost.append(True)
+            board.requests.append(bytes(data[1:]))
+            return len(data)
+        written = write(data)
+        return written
+    armed = False
+    monkeypatch.setattr(board, 'write', lose_the_read_after_configure)
+    session.poll()
+    original = session.device.configure
+
+    def configure_then_arm(*arguments):
+        nonlocal armed
+        applied = original(*arguments)
+        armed = True
+        return applied
+    monkeypatch.setattr(session.device, 'configure', configure_then_arm)
+    assert session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY)) is not None and lost and board.overlay == 1
+    session.close()
+    assert board.overlay == 0
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_a_take_over_before_the_start_configure_is_waited_for(board, monkeypatch, events):
+    """Test that a host that does not claim, refused CONFIGURE in start() by a new exclusive claim, starts and waits.
+
+    Without events, page 1 is read at the next poll, since the refusal showed a holder.
+    """
+    if not events:
+        answer = board.answer
+
+        def no_events(command, sequence, request):
+            reply = answer(command, sequence, request)
+            return reply[:43] + bytes(2) + reply[45:] if command == hl.CMD_HELLO and reply else reply
+        monkeypatch.setattr(board, 'answer', no_events)
+    done = hook_after(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE and data[4] == hl.PAGE_STATE,
+                      lambda: board.take_over(exclusive=True))
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)).start()
+    assert done and board.holder_token == 0xB2 and board.overlay == 0
+    session.poll()
+    assert session.board_state.controller.holder_token == 0xB2
+
+
+def test_close_sends_no_release_once_another_application_holds_the_claim(board, monkeypatch):
+    """Test that close() reads page 1 after its last CONFIGURE and sends no RELEASE under a claim taken since."""
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)).start()
+    session.show(frame_of(0))
+    hook_after(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE, board.take_over)
+    mark = len(board.requests)
+    session.close()
+    assert hl.CMD_CONFIGURE in commands(board, mark) and hl.CMD_RELEASE not in commands(board, mark)
+
+
+def without_events(board, monkeypatch):
+    """Have the board's HELLO list no events."""
+    answer = board.answer
+
+    def no_events(command, sequence, request):
+        reply = answer(command, sequence, request)
+        return reply[:43] + bytes(2) + reply[45:] if command == hl.CMD_HELLO and reply else reply
+    monkeypatch.setattr(board, 'answer', no_events)
+
+
+def lose_replies(board, monkeypatch, picks, count=1):
+    """Have the board carry out the next requests picks() chooses but lose their replies."""
+    write, lost = board.write, []
+
+    def losing(data):
+        written = write(data)
+        if len(lost) < count and picks(data):
+            lost.append(True)
+            board.queue[:] = [report for report in board.queue
+                              if not (report[0] == data[1] | hl.REPLY_FLAG and report[1] == data[2])]
+        return written
+    monkeypatch.setattr(board, 'write', losing)
+    return lost
+
+
+def test_a_configure_with_its_reply_lost_is_put_back_at_close(board, monkeypatch):
+    """Test that a host that does not claim takes a CONFIGURE without a reply as maybe applied, as page 1 shows."""
+    session = session_on(board, None).start()
+    lost = lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY))
+    assert lost and board.overlay == 1
+    session.close()
+    assert board.overlay == 0
+
+
+def test_a_with_block_start_losing_the_configure_reply_puts_the_defaults_back(board, monkeypatch):
+    """Test that a start that fails ends as close() does, putting back the settings it may have applied."""
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        with session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)):
+            pass
+    assert board.overlay == 0
+
+
+@pytest.mark.parametrize('lost', ['CONFIGURE', 'page 1'])
+def test_a_poll_reads_page_1_before_sending_configure_again(board, monkeypatch, lost):
+    """Test that after an unanswered request, a poll sends no CONFIGURE under a claim it has not seen."""
+    without_events(board, monkeypatch)
+    session = session_on(board, None).start()
+    if lost == 'CONFIGURE':
+        picks = lambda data: data[1] == hl.CMD_CONFIGURE                            # noqa: E731
+    else:
+        picks = lambda data: data[1] == hl.CMD_GET_PAGE and data[4] == hl.PAGE_STATE  # noqa: E731
+    lose_replies(board, monkeypatch, picks)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY))
+    board.take_over()
+    mark = len(board.requests)
+    session.poll()
+    assert hl.CMD_CONFIGURE not in commands(board, mark) and board.holder_token == 0xB2
+
+
+def test_start_again_after_an_unseen_lapse_sends_no_old_generation(board):
+    """Test that start() again on the same device sends nothing under a generation that lapsed unseen."""
+    session = session_on(board).start()
+    board.sleep(2.5)
+    assert session.start().claim.state is ClaimState.HELD
+
+
+def test_configure_of_a_claiming_host_drops_the_events_older_than_its_renewal(board):
+    """Test that the events read while configure()'s renewal was awaited do not have the next poll claim again."""
+    session = session_on(board, settings=Settings(keepalive_ms=900)).start()
+    session.show(frame_of(0))
+    board.sleep(1.2)                # the lease lapses, and its event waits unread
+    session.configure(Settings(keepalive_ms=1500))
+    mark = len(board.requests)
+    session.poll()
+    assert hl.CMD_CLAIM not in commands(board, mark) and hl.CMD_CONFIGURE not in commands(board, mark)
+
+
+def test_a_host_that_does_not_claim_reads_page_1_even_with_events(board):
+    """Test that a host that does not claim learns of a holder with an event it never received, and shows nothing."""
+    session = session_on(board, None).start()
+    board.subscribed = 0            # the event of the take over is lost
+    board.take_over()
+    board.sleep(1.1)
+    session.poll()
+    assert session.board_state.controller.holder_token == 0xB2 and session.show(frame_of(0)) is None
+
+
+def test_a_reconnect_with_a_failed_start_puts_back_the_settings_it_sent(board, monkeypatch):
+    """Test that a reconnect() with a start that loses the CONFIGURE reply ends the session as close() does."""
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY),
+                         reopen=lambda board_id: fake_device(board)).start()
+    board.overlay = 0                       # as after a power cycle
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE)
+    assert session.reconnect() is False
+    assert board.overlay == 0 and session.device.closed
+
+
+def test_a_zero_timeout_counts_as_the_defaults(board):
+    """Test that a host that does not claim with keepalive_ms 0, the board's default, leaves another's settings."""
+    fake_device(board).configure(hl.TAKEOVER_OVERLAY, 2000)
+    session = session_on(board, None, settings=Settings(keepalive_ms=0)).start()
+    assert hl.CMD_CONFIGURE not in commands(board)[1:] and board.overlay == 1
+    session.close()
+    assert board.overlay == 1
+
+
+@pytest.mark.parametrize('started', [Settings(), Settings(keepalive_ms=5000)])
+def test_a_configure_with_its_request_lost_is_sent_again(board, monkeypatch, started):
+    """Test that a host that does not claim sends again a CONFIGURE that page 1 shows did not land."""
+    session = session_on(board, None, settings=started).start()
+    write, lost = board.write, []
+
+    def lose_one_request(data):
+        if data[1] == hl.CMD_CONFIGURE and not lost:
+            lost.append(True)
+            board.requests.append(bytes(data[1:]))
+            return len(data)
+        return write(data)
+    monkeypatch.setattr(board, 'write', lose_one_request)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(Settings(keepalive_ms=900))
+    assert board.keepalive_ms == started.keepalive_ms
+    session.poll()
+    assert board.keepalive_ms == 900
+
+
+def test_a_claiming_host_with_events_reads_page_1_too(board):
+    """Test that a change of the state token with a lost event is learned from page 1 within a second."""
+    session = session_on(board).start()
+    board.subscribed = 0                    # the event of the change is lost
+    board.reconfigure(lights=board.lights[:1])
+    board.sleep(1.1)
+    update = session.poll()
+    assert hl.PAGE_LIGHTS in update.pages_read and update.restage
+
+
+def test_a_start_with_its_claim_reply_lost_gives_the_claim_up(board, monkeypatch):
+    """Test that a with block with its CLAIM reply lost leaves the board unclaimed for another application."""
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CLAIM)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        with session_on(board):
+            pass
+    assert board.holder_token == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
+
+
+@pytest.mark.parametrize('started', [Settings(), Settings(keepalive_ms=5000)])
+def test_a_configure_with_its_reply_lost_leaves_a_later_host_s_settings(board, monkeypatch, started):
+    """Test that settings another host sends after a CONFIGURE without a reply stay, as after a reply."""
+    first = session_on(board, None, settings=started).start()
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        first.configure(Settings(keepalive_ms=1200))
+    second = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)).start()
+    for _ in range(15):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+    first.close()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+
+
+def test_page_1_is_read_at_the_next_poll_after_a_refusal(board, monkeypatch):
+    """Test that a page 1 read refused with status 4 has the next poll() read it again, without waiting."""
+    session = session_on(board, settings=Settings(keepalive_ms=9000)).start()   # no renewal due before page 1
+    monkeypatch.setattr(session.device, 'take_events', lambda: [])     # the change not yet seen
+    board.take_over()
+    board.sleep(1.05)
+    assert session.poll().claim.kind is ClaimChangeKind.LOST            # page 1 refused, then the renewal
+    mark = len(board.requests)
+    session.poll()
+    assert [request[3] for request in board.requests[mark:] if request[0] == hl.CMD_GET_PAGE] == [hl.PAGE_STATE]
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_a_configure_with_its_page_1_read_lost_leaves_a_later_host_s_settings(board, monkeypatch, events):
+    """Test that a configure() with an unanswered page 1 read sends nothing over settings another host sent since."""
+    if not events:
+        without_events(board, monkeypatch)
+    first = session_on(board, None).start()
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        first.configure(Settings(keepalive_ms=1200))
+    assert board.keepalive_ms == 2000
+    second = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)).start()
+    for _ in range(15):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+    first.close()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+
+
+def test_settings_seen_replaced_are_not_taken_back_for_the_same_values(board):
+    """Test that close() leaves another host's settings of the same values once page 1 showed its own replaced."""
+    first = session_on(board, None, settings=Settings(keepalive_ms=900)).start()
+    session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)).start()
+    board.sleep(1.1)
+    first.poll()                            # page 1 shows the other host's settings
+    fake_device(board).configure(hl.TAKEOVER_WHOLE_FRAME, 900)     # a third host sends the same values
+    first.close()
+    assert (board.overlay, board.keepalive_ms) == (0, 900)
+
+
+def test_page_1_is_read_at_the_next_poll_after_a_lost_read(board, monkeypatch):
+    """Test that a page 1 read without a reply has the next poll() read page 1 again, without waiting."""
+    session = session_on(board, settings=Settings(keepalive_ms=9000)).start()
+    board.sleep(1.05)
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE)
+    session.poll()
+    mark = len(board.requests)
+    session.poll()
+    assert [request[3] for request in board.requests[mark:] if request[0] == hl.CMD_GET_PAGE] == [hl.PAGE_STATE]
+
+
+def test_a_change_of_holder_learned_from_events_reads_page_1_before_configure(board):
+    """Test that a poll sends CONFIGURE only after reading page 1, though events showed the board unclaimed."""
+    session = session_on(board, None, settings=Settings(keepalive_ms=900)).start()
+    board.take_over()
+    board.let_go()                          # the events show a change of holder, the settings back to the defaults
+    session.device.drain()                  # received now, so they carry that state
+    board.subscribed = 0
+    board.take_over()                       # a claim with its event lost
+    mark = len(board.requests)
+    session.poll()
+    assert hl.CMD_CONFIGURE not in commands(board, mark) and board.keepalive_ms == 2000
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_a_configure_with_its_page_1_read_lost_is_sent_after_a_change_of_holder(board, monkeypatch, events):
+    """Test that settings kept after a lost page 1 read go out once a claim held at the call has ended."""
+    if not events:
+        without_events(board, monkeypatch)
+    session = session_on(board, None).start()
+    board.take_over()
+    board.sleep(1.1)
+    session.poll()                          # page 1 shows the holder
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(Settings(keepalive_ms=1200))
+    board.let_go()
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert board.keepalive_ms == 1200
+
+
+def test_the_same_values_after_a_change_of_holder_are_not_taken_for_its_own(board):
+    """Test that a host leaves another's later change when both sent the same values after a change of holder."""
+    same = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)
+    first = session_on(board, None, settings=same).start()
+    second = session_on(board, None, settings=same).start()
+    board.take_over()
+    board.let_go()                          # the settings back to the defaults
+    board.sleep(1.1)
+    first.poll()                            # sends the same values first
+    board.sleep(0.1)
+    second.poll()                           # sees them under the new generation, and sends nothing
+    first.configure(Settings(keepalive_ms=900))
+    for _ in range(15):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert (board.overlay, board.keepalive_ms) == (0, 900)
+
+
+def test_settings_sent_again_after_being_replaced_are_put_back_at_close(board):
+    """Test that settings replaced, then sent again after a change of holder, are its own again for close()."""
+    first = session_on(board, None, settings=Settings(keepalive_ms=900)).start()
+    session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)).start()
+    board.sleep(1.1)
+    first.poll()                            # page 1 shows the other host's settings
+    board.take_over()
+    board.let_go()
+    for _ in range(15):
+        board.sleep(0.1)
+        first.poll()                        # sends its own again after the change of holder
+    assert (board.overlay, board.keepalive_ms) == (0, 900)
+    first.close()
+    assert (board.overlay, board.keepalive_ms) == (0, 2000)
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_a_claim_that_ends_under_the_generation_of_its_settings_has_them_sent(board, monkeypatch, events):
+    """Test that settings go out again when a claim ends under the generation they were sent under, seen held."""
+    if not events:
+        without_events(board, monkeypatch)
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200)).start()
+    sent_under = board.generation
+    for token in range(0xB2, 0xB8):
+        board.take_over(token, b'Other')    # six changes of holder, each seen held
+        board.sleep(1.1)
+        session.poll()
+    board.let_go()
+    assert board.generation == sent_under
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 1200)
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_settings_configured_after_the_defaults_are_sent_when_the_claim_ends(board, monkeypatch, events):
+    """Test that settings configured while a claim is held go out after it, though the defaults were in force."""
+    if not events:
+        without_events(board, monkeypatch)
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200)).start()
+    sent_under = board.generation
+    board.take_over()
+    board.sleep(1.1)
+    session.poll()
+    session.configure(Settings())
+    for _ in range(2):
+        board.let_go()
+        board.sleep(1.1)
+        session.poll()
+        board.take_over()
+        board.sleep(1.1)
+        session.poll()
+    board.take_over(0xB3, b'Third')
+    board.sleep(1.1)
+    session.poll()
+    session.configure(Settings(keepalive_ms=900))
+    board.let_go()
+    assert board.generation == sent_under
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert (board.overlay, board.keepalive_ms) == (0, 900)
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_defaults_seen_under_another_generation_leave_a_later_host_s_same_values(board, monkeypatch, events):
+    """Test that a host with defaults page 1 showed under a new generation leaves its old values another host sent."""
+    if not events:
+        without_events(board, monkeypatch)
+    same = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)
+    first = session_on(board, None, settings=same).start()
+    board.take_over()
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        first.configure(Settings())
+    board.let_go()
+    board.sleep(1.1)
+    first.poll()                            # the defaults, under a new generation
+    for token in range(0xB2, 0xB6):
+        board.take_over(token, b'Other')    # the claim changes hands unseen, back to the generation of its values
+    board.let_go()
+    session_on(board, None, settings=same).start()
+    for _ in range(15):
+        board.sleep(0.1)
+        first.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+
+
+def test_the_same_values_learned_from_an_event_are_not_taken_for_its_own(board):
+    """Test that a host leaves another's later change when an event showed its values under a new generation."""
+    same = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)
+    first = session_on(board, None, settings=same).start()
+    second = session_on(board, None, settings=same).start()
+    board.sleep(0.1)
+    board.take_over()
+    board.sleep(0.1)
+    board.let_go()                          # the settings back to the defaults
+    board.sleep(0.05)
+    first.poll()                            # sends the same values first
+    board.sleep(0.05)
+    second.poll()                           # learns of them from the event, before its page 1 read is due
+    first.configure(Settings(keepalive_ms=900))
+    for _ in range(20):
+        board.sleep(0.1)
+        first.poll()
+        second.poll()
+    assert (board.overlay, board.keepalive_ms) == (0, 900)
+
+
+def test_the_same_values_after_a_change_of_holder_stay_at_close(board):
+    """Test that close() leaves another host's settings of its values, sent after a change of holder."""
+    same = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=3000)
+    first = session_on(board, None, settings=same).start()
+    second = session_on(board, None, settings=same).start()
+    board.take_over()
+    board.let_go()
+    board.sleep(1.1)
+    first.poll()                            # sends the same values first
+    board.sleep(0.1)
+    second.poll()                           # sees them under the new generation
+    second.close()
+    assert (board.overlay, board.keepalive_ms) == (1, 3000)
+
+
+@pytest.mark.parametrize('events', [True, False])
+def test_settings_landed_after_an_unseen_change_of_holder_are_put_back_at_close(board, monkeypatch, events):
+    """Test that close() puts back settings that landed after two changes of holder, the read after them lost."""
+    if not events:
+        without_events(board, monkeypatch)
+    session = session_on(board, None).start()
+    write, sent = board.write, []
+
+    def claimed_between(data):
+        if data[1] == hl.CMD_CONFIGURE and not sent:
+            sent.append(True)
+            board.take_over()
+            board.let_go()                  # the CONFIGURE lands two generations on
+        return write(data)
+    monkeypatch.setattr(board, 'write', claimed_between)
+    lose_replies(board, monkeypatch, lambda data: bool(sent) and data[1] == hl.CMD_GET_PAGE)
+    session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 1200)
+    session.close()
+    assert (board.overlay, board.keepalive_ms) == (0, 2000)
+
+
+def test_an_event_older_than_its_configure_leaves_its_settings_its_own(board):
+    """Test that a page 1 event from before a host's CONFIGURE, taken after it, does not make the settings another's."""
+    session = session_on(board, None).start()
+    board.take_over()
+    held = board._event()                   # page 1 while the claim is held
+    board.let_go()
+    board.sleep(1.1)
+    session.poll()
+    session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))
+    session.device.events.append(held)      # taken late, as if the CONFIGURE's own event was lost
+    session.poll()
+    board.sleep(1.1)
+    session.poll()
+    session.close()
+    assert (board.overlay, board.keepalive_ms) == (0, 2000)
+
+
+def test_its_own_settings_shown_are_not_read_again_at_every_poll(board):
+    """Test that a host that does not claim, its settings shown, reads page 1 no more often than due."""
+    session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200)).start()
+    mark = len(board.requests)
+    for _ in range(20):
+        board.sleep(0.1)
+        session.poll()
+    assert commands(board, mark).count(hl.CMD_GET_PAGE) <= 5     # due every third of the timeout
+
+
+def test_a_configure_without_a_reply_is_sent_again_after_a_change_of_holder(board, monkeypatch):
+    """Test that a CONFIGURE with its reply lost is sent again once a change of holder has put the defaults back."""
+    session = session_on(board, None).start()
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_CONFIGURE)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))
+    board.take_over()
+    board.let_go()
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 1200)
+
+
+def test_settings_landed_unseen_are_its_own_until_the_next_read_only(board, monkeypatch):
+    """Test that a host takes its settings landed unseen as its own at the next read only, not at later ones."""
+    same = Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200)
+    first = session_on(board, None).start()
+    sent = []
+    lose_replies(board, monkeypatch, lambda data: bool(sent) and data[1] == hl.CMD_GET_PAGE)
+    write = board.write
+
+    def configure_seen(data):
+        if data[1] == hl.CMD_CONFIGURE:
+            sent.append(True)
+        return write(data)
+    monkeypatch.setattr(board, 'write', configure_seen)
+    first.configure(same)                   # answered, the read after it lost
+    board.sleep(1.1)
+    first.poll()                            # the next read shows them under the same generation
+    board.take_over()
+    board.let_go()
+    session_on(board, None, settings=same).start()      # another host sends the same values first
+    board.sleep(1.1)
+    first.poll()
+    first.close()
+    assert (board.overlay, board.keepalive_ms) == (1, 1200)
+
+
+@pytest.mark.parametrize('second', [Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200),
+                                    Settings(keepalive_ms=900)])
+def test_settings_landed_unseen_are_put_back_after_a_configure_with_its_read_lost(board, monkeypatch, second):
+    """Test that close() puts back settings that landed unseen, though the next configure() lost its page 1 read."""
+    session = session_on(board, None).start()
+    write, reads, sent = board.write, [], []
+
+    def counted(data):
+        if data[1] == hl.CMD_CONFIGURE and not sent:
+            sent.append(True)
+            board.take_over()
+            board.let_go()                  # the CONFIGURE lands two generations on
+        if data[1] == hl.CMD_GET_PAGE and data[4] == hl.PAGE_STATE:
+            reads.append(True)
+        return write(data)
+    monkeypatch.setattr(board, 'write', counted)
+    # the read after the CONFIGURE, then the read of the next configure()
+    lose_replies(board, monkeypatch, lambda data: data[1] == hl.CMD_GET_PAGE and len(reads) in (2, 3), count=2)
+    session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))
+    with pytest.raises(hl.HostLightingTimeoutError):
+        session.configure(second)
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    session.close()
+    assert (board.overlay, board.keepalive_ms) == (0, 2000)
+
+
+def test_settings_landed_unseen_are_sent_again_after_a_change_of_holder(board, monkeypatch):
+    """Test that settings with the read after CONFIGURE lost go out again once a change of holder replaced them."""
+    session = session_on(board, None).start()
+    sent = []
+    lose_replies(board, monkeypatch, lambda data: bool(sent) and data[1] == hl.CMD_GET_PAGE)
+    write = board.write
+
+    def configure_seen(data):
+        if data[1] == hl.CMD_CONFIGURE:
+            sent.append(True)
+        return write(data)
+    monkeypatch.setattr(board, 'write', configure_seen)
+    session.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))   # the read after it lost
+    board.take_over()
+    board.let_go()                          # the defaults back, under a new generation
+    for _ in range(15):
+        board.sleep(0.1)
+        session.poll()
+    assert (board.overlay, board.keepalive_ms) == (1, 1200)

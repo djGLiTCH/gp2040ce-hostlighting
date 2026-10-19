@@ -111,3 +111,37 @@ def test_publish_frame_raises_a_refusal_and_refuses_a_short_timeout(hlp_model_bo
     with pytest.raises(ValueError, match="under the specification's 250 ms"):
         publish_frame(device, frame, timeout=0.2)
     assert len(hlp_model_board.requests) == sent
+
+
+def test_a_frame_refuses_an_address_when_it_is_added():
+    """Test that entries() and run() check addresses as they are added, not at publish."""
+    frame = Frame()
+    with pytest.raises(ValueError, match='light address 70000 is outside'):
+        frame.entries(hl.ADDRESSING_LIGHT, [(0, (1, 2, 3)), (70000, (1, 2, 3))])
+    with pytest.raises(ValueError, match='passes index'):
+        frame.run(hl.ADDRESSING_LED_RUN, 0xFFFF, [(1, 2, 3)] * 2)
+    assert frame == Frame()
+
+
+def test_a_frame_refuses_a_colour_when_it_is_added():
+    """Test that entries() and run() take only colours of three or four integer channels of 0-255."""
+    frame = Frame()
+    for colour in ((300, 0, 0), (1, 2), (1, 2, 3, 4, 5), (-1, 0, 0), (51.0, 255.0, 0.0)):
+        with pytest.raises(ValueError, match='not three or four integer channels of 0-255'):
+            frame.entries(hl.ADDRESSING_LIGHT, [(0, colour)])
+        with pytest.raises(ValueError, match='not three or four integer channels of 0-255'):
+            frame.run(hl.ADDRESSING_LED_RUN, 0, [(1, 2, 3), colour])
+    assert frame == Frame()
+
+
+def test_a_frame_takes_integer_channels_of_any_integer_type():
+    """Test that channels such as IntEnum values, which operator.index() takes, are accepted, and floats are not."""
+    import enum
+
+    class Level(enum.IntEnum):
+        FULL = 255
+    frame = Frame()
+    frame.entries(hl.ADDRESSING_LIGHT, [(0, (Level.FULL, 0, True))])
+    with pytest.raises(ValueError, match='integer channels'):
+        frame.run(hl.ADDRESSING_LED_RUN, 0, [(1.0, 2, 3)])
+    assert frame.payloads()

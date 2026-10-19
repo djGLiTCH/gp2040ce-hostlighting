@@ -10,12 +10,12 @@ SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
-from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, CMD_CLEAR,
-                                            CMD_STAGE, FLAG_COMMIT_AFTER, FLAG_NO_REPLY, PIXEL_RGB, PIXEL_RGBW,
-                                            PIXEL_SIZES, STATUS_OK, Controller, HostLightingDevice,
-                                            HostLightingTimeoutError, stage_entry_payloads, stage_run_payloads)
+from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, CMD_CLEAR, CMD_STAGE, FLAG_COMMIT_AFTER, FLAG_NO_REPLY,
+                                            PIXEL_RGB, PIXEL_RGBW, PIXEL_SIZES, STATUS_OK, Controller,
+                                            HostLightingDevice, HostLightingTimeoutError, _check_colour, _check_run,
+                                            encode_address, stage_entry_payloads, stage_run_payloads)
 
 __all__ = ['ACKNOWLEDGEMENT_TIMEOUT', 'Frame', 'FrameResult', 'publish_frame']
 
@@ -46,18 +46,18 @@ class _Part:
 
     __slots__ = ('addressing', 'pixel_format', 'first', 'items')
 
-    def __init__(self, addressing: int, pixel_format: int, first: Optional[int], items: list):
+    def __init__(self, addressing: int, pixel_format: int, first: Optional[int], items: list[Any]):
         self.addressing = addressing
         self.pixel_format = pixel_format
         self.first = first              # a run's first index, None for entries
         self.items = items              # a run's colours, or (address, colour) entries
 
-    def key(self) -> tuple:
+    def key(self) -> tuple[Any, ...]:
         """Return what the part stages, for comparing frames."""
         return self.addressing, self.pixel_format, self.first, tuple(self.items)
 
 
-def _pixel_format(colours: Iterable[tuple], pixel_format: Optional[int]) -> int:
+def _pixel_format(colours: Iterable[tuple[int, ...]], pixel_format: Optional[int]) -> int:
     """Return the pixel format given, or RGBW when a colour has a white byte and RGB otherwise."""
     if pixel_format is None:
         return PIXEL_RGBW if any(len(colour) > 3 for colour in colours) else PIXEL_RGB
@@ -89,20 +89,25 @@ class Frame:
         """Show the frame's parts."""
         return f"Frame({[part.key() for part in self._parts]!r})"
 
-    def entries(self, addressing: int, entries: Iterable[tuple], pixel_format: Optional[int] = None) -> None:
+    def entries(self, addressing: int, entries: Iterable[tuple[int, tuple[int, ...]]],
+                pixel_format: Optional[int] = None) -> None:
         """Add entries.
 
         :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
         :param entries: (address, colour) pairs, each colour as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565, by default RGBW when a colour has a white
             byte and RGB otherwise
-        :raises ValueError: for a run's addressing, or an unknown pixel format
+        :raises ValueError: for a run's addressing, an address outside its range, a colour that is not three or
+            four integer channels of 0-255, or an unknown pixel format
         """
         if addressing not in ADDRESS_SIZES:
             raise ValueError(f"addressing {addressing} does not take entries")
         entries = list(entries)
         if not entries:
             return
+        for address, colour in entries:
+            encode_address(addressing, address)
+            _check_colour(colour)
         pixel_format = _pixel_format((colour for _, colour in entries), pixel_format)
         last = self._parts[-1] if self._parts else None
         if last and last.first is None and (last.addressing, last.pixel_format) == (addressing, pixel_format):
@@ -110,18 +115,21 @@ class Frame:
         else:
             self._parts.append(_Part(addressing, pixel_format, None, entries))
 
-    def run(self, addressing: int, first: int, colours: Iterable[tuple], pixel_format: Optional[int] = None) -> None:
+    def run(self, addressing: int, first: int, colours: Iterable[tuple[int, ...]],
+            pixel_format: Optional[int] = None) -> None:
         """Add a run of consecutive LEDs or lights.
 
         :param addressing: ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN
         :param first: the first LED index or light ordinal
         :param colours: one colour per LED or light, as for encode_pixel
         :param pixel_format: as for entries()
-        :raises ValueError: for an entry addressing, no colours, or an unknown pixel format
+        :raises ValueError: for an entry addressing, no colours, a run past index 0xFFFF, a colour that is not three
+            or four integer channels of 0-255, or an unknown pixel format
         """
         colours = list(colours)
-        if addressing not in (ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN) or not colours:
-            raise ValueError("a run needs ADDRESSING_LED_RUN or ADDRESSING_LIGHT_RUN and at least one colour")
+        _check_run(addressing, first, len(colours))
+        for colour in colours:
+            _check_colour(colour)
         pixel_format = _pixel_format(colours, pixel_format)
         last = self._parts[-1] if self._parts else None
         if (last and last.first is not None and (last.addressing, last.pixel_format) == (addressing, pixel_format)
@@ -131,7 +139,7 @@ class Frame:
             self._parts.append(_Part(addressing, pixel_format, first, colours))
 
     @property
-    def addresses(self) -> frozenset:
+    def addresses(self) -> frozenset[tuple[int, int]]:
         """Every (addressing, address) the frame names, a run naming each of its indexes."""
         named: set[tuple[int, int]] = set()
         for part in self._parts:
@@ -141,7 +149,7 @@ class Frame:
                 named.update((part.addressing, part.first + index) for index in range(len(part.items)))
         return frozenset(named)
 
-    def payloads(self) -> list:
+    def payloads(self) -> list[bytes]:
         """Build the frame's STAGE payloads, in order, and none for an empty frame."""
         payloads = []
         for part in self._parts:

@@ -17,19 +17,23 @@ from gp2040ce_hostlighting.tools import commands as tools
 def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
     """Test hlp-caps' output, with enum names when the .proto files supply them."""
     monkeypatch.setattr(tools, 'enum_names', lambda: {'GpioAction': {1: 'BUTTON_PRESS_UP'},
-                                                      'LightType': {1: 'Case'}})
+                                                      'LightType': {1: 'Case'},
+                                                      'InputMode': {0: 'INPUT_MODE_XINPUT'},
+                                                      'AnimationNonPressedEffects': {2: 'EFFECT_RAINBOW_ROTATE'},
+                                                      'AnimationPressedEffects': {1: 'PRESSEDEFFECT_RANDOM'}})
     hlp_run_on_fake_board(tools.caps)
     out = capsys.readouterr().out
     assert 'protocol 2.0, board ID 433030343237362E, reply queue limit 16' in out
     assert 'firmware version: v0.7.12-88-ga83f820' in out
-    assert 'input mode 0, profile 1, player 1, animation 0, brightness step 5' in out
-    assert '0 XINPUT - lighting once a PC is detected' in out and '4 PS4\n' in out
+    assert 'input mode 0 (INPUT_MODE_XINPUT), profile 1, player 1, animation 0, brightness step 5' in out
+    assert '0 XINPUT (lighting once a PC is detected)' in out and '4 PS4\n' in out
     assert 'LED extent 19, limit 100, render rate 40 Hz, colour format 0, no white channel\n' in out
     assert 'button layouts 0 and 0, orientation 0\n' in out and 'changes counted on pages 8: 0, 9: 0' in out
     assert 'GP2 action 1 (BUTTON_PRESS_UP) LED 0 at (1,0), 1 light(s) from ordinal 0' in out
     assert 'GP12 action 13 unlit' in out and 'PCF3 action 5 unlit' in out
     assert '1 LED 1 x3 kind 1 (Case) at (0,0) palette slot 0' in out
-    assert 'effects idle/pressed/case 2/1/2, speeds 5/5/5' in out
+    assert ('effects idle 2 (EFFECT_RAINBOW_ROTATE), pressed 1 (PRESSEDEFFECT_RANDOM), case 2 '
+            '(EFFECT_RAINBOW_ROTATE), speeds 5/5/5') in out
 
 
 def test_fill_scopes(hlp_run_on_fake_board, hlp_fake_board, capsys):
@@ -158,7 +162,7 @@ def test_hold_gives_up_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, capsy
     def sleep(seconds):
         raise KeyboardInterrupt
     monkeypatch.setattr(tools.time, 'sleep', sleep)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(SystemExit, match='^130$'):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
     assert hlp_fake_board.holder_token == 0
@@ -171,7 +175,7 @@ def test_give_up_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board
         hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xC3, b'MESH'.ljust(16, b'\x00')
         raise KeyboardInterrupt
     monkeypatch.setattr(tools.time, 'sleep', sleep)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(SystemExit, match='^130$'):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     out = capsys.readouterr().out
     assert "'MESH' took the lights over" in out and 'given up' not in out
@@ -214,7 +218,7 @@ def test_another_applications_claim_reply_is_passed_over(hlp_run_on_fake_board, 
 
 
 def test_set_light_addressing_and_ranges(hlp_run_on_fake_board, hlp_fake_board, capsys):
-    """Test --by pin and --by kind encodings, the address ranges, and a dropped negative address."""
+    """Test --by pin and --by kind encodings, the address ranges, and a negative address without --."""
     hlp_run_on_fake_board(tools.set_light, '--by', 'pin', '2:010203', '9:040506')
     stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
     assert stage[3:5] == bytes([hl.ADDRESSING_PIN, 2]) and stage[5:13] == bytes([2, 1, 2, 3, 9, 4, 5, 6])
@@ -222,12 +226,16 @@ def test_set_light_addressing_and_ranges(hlp_run_on_fake_board, hlp_fake_board, 
     assert hlp_fake_board.sent(hl.CMD_STAGE)[-1][3:9] == bytes([hl.ADDRESSING_KIND, 1, 1, 0xFF, 0xFF, 0xFF])
     for arguments, message in ((('--by', 'pin', '256:FF0000'), 'pin address is 0 to 255'),
                                (('70000:FF0000',), 'light address is 0 to 65535'),
-                               (('--by', 'action', '--', '-40000:FF0000'), 'action address is -32768 to 32767'),
+                               (('--by', 'action', '-40000:FF0000'), 'action address is -32768 to 32767'),
                                (('abc:FF0000',), 'must be a number'),
-                               (('3:FF00',), 'six or eight hex digits'),
-                               (('--by', 'action', '1:FF0000', '-x:FF0000'), 'put -- before the entries')):
+                               (('3:FF00',), 'six or eight hex digits')):
         with pytest.raises(SystemExit, match=message):
             hlp_run_on_fake_board(tools.set_light, *arguments)
+    hlp_run_on_fake_board(tools.set_light, '--by', 'action', '1:FF0000', '-10:00FF00')
+    assert hlp_fake_board.sent(hl.CMD_STAGE)[-1][3:5] == bytes([hl.ADDRESSING_ACTION, 2])
+    with pytest.raises(SystemExit, match='^2$'):
+        hlp_run_on_fake_board(tools.set_light, '--by', 'action', '1:FF0000', '-x:FF0000')
+    assert 'unrecognized arguments: -x:FF0000' in capsys.readouterr().err
 
 
 def test_input_mode_notes_detection(hlp_run_on_fake_board, hlp_fake_board, capsys):
@@ -413,7 +421,7 @@ def test_stream_timeout_test_times_the_keepalive(hlp_run_on_model_board, hlp_mod
     """Test hlp-stream --timeout-test: one renewal, then silence until the 2 s keepalive and lease lapse."""
     hlp_run_on_model_board(tools.stream, '--seconds', '0.5', '--timeout-test')
     out = capsys.readouterr().out
-    assert 'silent: waiting for the keepalive timeout' in out and 'takeover ended after 2.0' in out
+    assert 'silent, waiting for the keepalive timeout' in out and 'takeover ended after 2.0' in out
     requests = hlp_model_board.requests
     renewal = max(index for index, request in enumerate(requests) if request[0] == hl.CMD_CLAIM)
     assert requests[renewal][2:4] == bytes([hl.FLAG_KEEPALIVE | 2 << hl.FLAG_GENERATION_SHIFT, hl.CLAIM_TAKE])
@@ -512,7 +520,7 @@ def test_streaming_tools_give_up_on_interrupt(hlp_run_on_model_board, hlp_model_
             raise KeyboardInterrupt
         sleep(seconds)
     monkeypatch.setattr(hlp_model_board, 'sleep', interrupt)
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(SystemExit, match='^130$'):
         hlp_run_on_model_board(getattr(tools, command), '--seconds', '1')
     assert 'claim given up, on-board animations restored' in capsys.readouterr().out
     assert hlp_model_board.holder_token == 0 and not hlp_model_board.live
@@ -537,3 +545,66 @@ def test_a_closed_output_pipe_ends_quietly(monkeypatch, capsys):
     with pytest.raises(SystemExit) as stopped:
         closed()
     assert stopped.value.code == 1 and redirected == [(7, 1)]
+
+
+def test_a_mistyped_option_is_refused(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test that an option no command defines ends the command before anything is sent."""
+    with pytest.raises(SystemExit) as exit_info:
+        hlp_run_on_fake_board(tools.reboot, 'gamepad', '--board-ID', 'FFFF')
+    assert exit_info.value.code == 2 and not hlp_fake_board.requests
+    assert 'unrecognized arguments: --board-ID FFFF' in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exit_info:
+        hlp_run_on_fake_board(tools.set_light, '0:FF0000', '--colour', 'red')
+    assert exit_info.value.code == 2
+
+
+def test_ping_and_caps_skip_the_pages_a_board_does_not_list(hlp_run_on_fake_board, capsys, monkeypatch):
+    """Test that a board without page 0 or page 2 is still pinged and decoded, without those pages."""
+    from gp2040ce_hostlighting import testing
+
+    def without_pages(*arguments, **options):
+        reply = bytearray(hello(*arguments, **options))
+        reply[35] &= ~0b101                 # pages 0 and 2 not listed
+        return bytes(reply)
+    hello = testing.hello_reply
+    monkeypatch.setattr(testing, 'hello_reply', without_pages)
+    hlp_run_on_fake_board(tools.ping)
+    hlp_run_on_fake_board(tools.caps)
+    out = capsys.readouterr().out
+    assert out.startswith('? (?), board ID') and 'page 0' not in out and 'page 2' not in out and 'page 11' in out
+
+
+def test_debug_logging_prints_each_claim_line_once(hlp_run_on_fake_board, capsys, monkeypatch):
+    """Test that with -d the claim's INFO lines are printed on stdout and left out of the log on stderr."""
+    import logging
+    monkeypatch.setattr(logging.root, 'handlers', [])
+    monkeypatch.setattr(logging.root, 'level', logging.root.level)
+    hlp_run_on_fake_board(tools.fill, '-d', '--seconds', '0', '00FF00')
+    captured = capsys.readouterr()
+    assert 'claim given up' in captured.out and 'claim given up' not in captured.err
+
+
+def test_buttons_stops_when_the_overlay_finds_the_claim_lost(hlp_run_on_model_board, hlp_model_board, monkeypatch,
+                                                             capsys):
+    """Test that hlp-buttons stages nothing in phase 3 once configure() found another application holding."""
+    write = hlp_model_board.write
+
+    def take_over_after_phase_3_clear(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLEAR and len(hlp_model_board.sent(hl.CMD_CLEAR)) == 2:
+            hlp_model_board.take_over()
+        return written
+    monkeypatch.setattr(hlp_model_board, 'write', take_over_after_phase_3_clear)
+    hlp_run_on_model_board(tools.buttons, '--seconds', '1')
+    assert 'phase 3' not in capsys.readouterr().out and len(hlp_model_board.sent(hl.CMD_STAGE)) == 2
+
+
+def test_a_stream_hello_refused_goes_to_the_claim(hlp_model_board):
+    """Test that hlp-stream passes a status 4 reply to its HELLO after a missed frame to the claim."""
+    from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
+    from gp2040ce_hostlighting.testing import fake_device
+    claim = LightsClaim(fake_device(hlp_model_board), 'hlp-stream', wait_when_taken_over=False,
+                        clock=hlp_model_board.time).take()
+    hlp_model_board.take_over()
+    tools._answers_hello(claim)
+    assert claim.state is ClaimState.LOST and claim.device.generation == 0

@@ -108,3 +108,16 @@ def test_a_page_added_to_those_kept_is_read_at_the_next_refresh(hlp_fake_device,
     assert cache.refresh(hlp_fake_device) == {10}
     hlp_fake_board.controls = [control_record(2, 1)]
     assert cache.refresh(hlp_fake_device) == frozenset()       # no counter moved: the board said nothing changed
+
+
+def test_a_mask_of_0_is_every_group_and_an_undecoded_page_is_refused(hlp_fake_device, hlp_fake_board):
+    """Test that masks of 0 read every group, Lights again by groups 1-3, and that page 13 cannot be kept."""
+    cache = ConfigurationCache(hlp_fake_device.hello(), {hl.PAGE_SUMMARY: 0, hl.PAGE_LIGHTS: 0})
+    cache.refresh(hlp_fake_device)
+    assert cache.summary is not None and cache.masks[hl.PAGE_LIGHTS] == 0b111111
+    hlp_fake_board.reconfigure(lights=hlp_fake_board.lights)
+    cache.refresh(hlp_fake_device)
+    assert reads(hlp_fake_board)[-1][2] == 0b1110 and cache.moved == {hl.PAGE_LIGHTS}
+    cache.pages = cache.pages | {13}
+    with pytest.raises(ValueError, match='not 13'):
+        cache.refresh(hlp_fake_device)

@@ -15,11 +15,12 @@ SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import contextlib
+import logging
 import statistics
 import struct
 import time
 from dataclasses import dataclass, fields
-from typing import Callable, Generator, Iterator, Optional
+from typing import Any, Callable, Generator, Iterator, Optional, Union
 
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
 from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
@@ -42,11 +43,17 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
                                             decode_controller, decode_key, decode_page_header, decode_records,
                                             decode_state_changed, is_event, key_name, stage_capacity)
-from gp2040ce_hostlighting.records import (Controller, ControlLights, ControlRecord, Hello, Instances, LightRecord,
-                                           Position, Settings, StateRecord)
+from gp2040ce_hostlighting.records import (ControlInstances, Controller, ControlLights, ControlRecord, Hello,
+                                           InputModeRecord, Instances, LightRecord, Position, Settings, StateRecord,
+                                           Summary)
 
 __all__ = ['CheckResult', 'Checks', 'run_checks', 'measure_round_trips', 'measure_paced_frames',
            'measure_unthrottled_frames']
+
+logger = logging.getLogger(__name__)
+
+# the pages and records the checks read once, by name or page number
+_Tables = dict[Union[str, int], Any]
 
 # what a protocol 2.0 board implements, from the protocol reference. A later 2.x board lists more
 _REQUEST_FLAGS = ({flag.bit_length() - 1 for flag in (FLAG_COMMIT_AFTER, FLAG_NO_REPLY, FLAG_KEEPALIVE, FLAG_HOLDER)}
@@ -106,7 +113,7 @@ class _Checker:
         """Start a section."""
         self.name = name
 
-    def check(self, ok, what: str, detail: str = '') -> CheckResult:
+    def check(self, ok: object, what: str, detail: str = '') -> CheckResult:
         """Make one check's result."""
         return CheckResult(section=self.name, what=what, passed=bool(ok), detail=detail)
 
@@ -156,7 +163,7 @@ def _configured(claim: LightsClaim, settings: Settings) -> Settings:
     return applied or Settings()
 
 
-def _status(reply: bytes) -> tuple:
+def _status(reply: bytes) -> tuple[int, int]:
     """Return a reply's status and, for an invalid argument, the request byte at fault."""
     return reply[2], reply[3]
 
@@ -164,14 +171,14 @@ def _status(reply: bytes) -> tuple:
 def _state(device: HostLightingDevice) -> StateRecord:
     """Read page 1.
 
-    It is read as an application that holds no claim would, which no claim refuses: the checks read it
-    while another token holds the claim too.
+    It is read as an application that holds no claim would, which no claim refuses, so that the checks
+    read it while another token holds the claim too.
     """
     with _other(device):
         return device.read_record(PAGE_STATE).records[0]
 
 
-def _events(device: HostLightingDevice, settle: float) -> list:
+def _events(device: HostLightingDevice, settle: float) -> list[StateRecord]:
     """Collect the page 1 records of the STATE_CHANGED events received so far and within settle seconds."""
     reports = device.take_events() + [report for report in device.collect(settle) if is_event(report)]
     return [decode_state_changed(report).record for report in reports if report[1] == EVENT_STATE_CHANGED]
@@ -181,9 +188,10 @@ def _claim(device: HostLightingDevice, action: int, token: int, name: bytes = b'
     return device.request(CMD_CLAIM, bytes([action]) + struct.pack('<I', token) + name[:16].ljust(16, b'\x00'))
 
 
-def _holder(reply: bytes) -> tuple:
+def _holder(reply: bytes) -> tuple[int, str]:
     """Return the holder a CLAIM reply shows: (token, name)."""
-    return struct.unpack_from('<I', reply, 8)[0], bytes(reply[12:28]).rstrip(b'\x00').decode('utf-8', 'replace')
+    token: int = struct.unpack_from('<I', reply, 8)[0]
+    return token, bytes(reply[12:28]).rstrip(b'\x00').decode('utf-8', 'replace')
 
 
 def _echoes(reply: bytes, action: int, token: int) -> bool:
@@ -196,17 +204,19 @@ def _configure(device: HostLightingDevice, overlay: int, timeout: int, brightnes
 
 
 @contextlib.contextmanager
-def _other(device: HostLightingDevice):
+def _other(device: HostLightingDevice) -> Iterator[None]:
     """Send requests as an application that holds no claim.
 
-    They carry no FLAG_HOLDER, and no generation but one a request's own flags carry.
+    They carry no FLAG_HOLDER, and no generation but one a request's own flags carry. Each status 4 reply with
+    their numbers is taken as theirs, so that a refusal the holder shown would not send is judged, not dropped.
     """
     held = device.generation, device.holding_exclusive
-    device.generation, device.holding_exclusive = 0, False
+    device.generation, device.holding_exclusive, device._every_refusal = 0, False, True
     try:
         yield
     finally:
         device.generation, device.holding_exclusive = held
+        device._every_refusal = False
 
 
 def _as_other(device: HostLightingDevice, command: int, payload: bytes = b'', flags: int = 0) -> bytes:
@@ -224,7 +234,7 @@ def _act_as(device: HostLightingDevice, reply: bytes, token: int) -> None:
     """
     holds = reply[2] == STATUS_OK and _holder(reply)[0] == token
     device.claim_token = token
-    device.generation = reply[29] if holds else 0
+    device.generation = reply[29] & (FLAG_GENERATION >> FLAG_GENERATION_SHIFT) if holds else 0
     device.holding_exclusive = holds and bool(reply[28] & CLAIM_EXCLUSIVE)
 
 
@@ -238,7 +248,7 @@ def _refused(reply: bytes) -> Optional[Controller]:
     return decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])) if reply[2] == STATUS_CLAIMED else None
 
 
-def _unlisted(listed: frozenset, ranges: tuple) -> list:
+def _unlisted(listed: frozenset[int], ranges: tuple[tuple[int, int], ...]) -> list[int]:
     """Pick numbers a board does not list: the lowest in each range and the highest of all."""
     free = [[number for number in range(low, high + 1) if number not in listed] for low, high in ranges]
     picks = {numbers[0] for numbers in free if numbers}
@@ -262,7 +272,7 @@ def _answered(device: HostLightingDevice, command: int, sequence: int, timeout: 
 def _check_hello(device: HostLightingDevice, checks: _Checker) -> Generator[CheckResult, None, Hello]:
     """Check HELLO and return it.
 
-    A later 2.x board may list more than 2.0 does: additions take free numbers, and hosts gate on the bitmaps.
+    A later 2.x board may list more than 2.0 does. Additions take free numbers, and hosts gate on the bitmaps.
     """
     checks.section('HELLO')
     hello = device.hello()
@@ -285,7 +295,7 @@ def _check_framing(device: HostLightingDevice, checks: _Checker, hello: Hello) -
     for command in _unlisted(hello.commands, COMMAND_RANGES):
         yield checks.check(device.request(command)[2] == STATUS_UNSUPPORTED,
                            f"unlisted command 0x{command:02X}: status 1")
-    # replies reach every application: count only reports with one of these sends' command and sequence;
+    # replies reach every application, so count only reports with one of these sends' command and sequence;
     # sequence 0, which no other request uses, where a reply would not look like an event
     device.collect(0.05)
     sent = {(command | REPLY_FLAG, device.send(command)) for command in (0x00, 0x80)}
@@ -296,7 +306,7 @@ def _check_framing(device: HostLightingDevice, checks: _Checker, hello: Hello) -
     yield checks.check(not stray, 'no reply to [0] 0x00 or bit 7, nor to NO_REPLY', f"{len(stray)} replies")
     if len(seen) > len(stray):
         yield checks.note(f"{len(seen) - len(stray)} reports for another application ignored")
-    # the queue limit is all the protocol guarantees: past it a request may be discarded, unanswered
+    # the queue limit is all the protocol guarantees. Past it a request may be discarded, unanswered
     limit = hello.reply_queue_limit
     sequences = [device.send(CMD_HELLO) for _ in range(limit)]
     answered = sum(_answered(device, CMD_HELLO, sequence) for sequence in sequences)
@@ -307,7 +317,7 @@ def _check_framing(device: HostLightingDevice, checks: _Checker, hello: Hello) -
     yield checks.note(f"{limit + 4} pipelined: {answered} answered")
 
 
-def _mask_ok(device: HostLightingDevice, page: int, mask: int, widths: tuple, token: int) -> bool:
+def _mask_ok(device: HostLightingDevice, page: int, mask: int, widths: tuple[int, ...], token: int) -> bool:
     """Check one field mask: the groups asked for, their stride, as many records as fit, and the token.
 
     Mask 0 asks for every group, so a later 2.x board also returns the groups it adds after 2.0's.
@@ -332,7 +342,7 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
             yield checks.check(all(_mask_ok(device, page, mask, widths, token) for mask in masks),
                                f"page {page}: every mask, stride, count, echo and token")
         else:
-            # group 0 alone: mask 0 would also return any group a later 2.x board adds
+            # group 0 alone, since mask 0 would also return any group a later 2.x board adds
             stride = decode_page_header(device.get_page(page, 0, 1)).stride
             yield checks.check(stride == widths[0], f"page {page}: record of {widths[0]} bytes", f"{stride}")
     for page in _unlisted(hello.pages, PAGE_RANGES):
@@ -373,7 +383,7 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
     return token
 
 
-def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> Generator[CheckResult, None, dict]:
+def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> Generator[CheckResult, None, _Tables]:
     state = _state(device)
     modes = device.read_table(PAGE_INPUT_MODES).records
     names = {mode.mode.value: mode.name for mode in modes}
@@ -386,8 +396,8 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     yield checks.check(_INPUT_MODE_CONFIG not in names, 'config mode not listed')
     summary = device.read_record(PAGE_SUMMARY).records[0].summary
     yield checks.note(', '.join(f"{item.name} {getattr(summary, item.name)}" for item in fields(summary)))
-    tables = {page: device.read_table(page).records for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS,
-                                                                 PAGE_ANIMATIONS)}
+    tables: _Tables = {page: device.read_table(page).records
+                       for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS)}
     for page, key in ((PAGE_PROFILES, 'profiles'), (PAGE_CONTROLS, 'controls'), (PAGE_LIGHTS, 'lights'),
                       (PAGE_ANIMATIONS, 'animations')):
         yield checks.check(len(tables[page]) == getattr(summary, key), f"page {page} total = Summary {key}")
@@ -405,28 +415,30 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     yield checks.check((summary.grid_width, summary.grid_height) == grid, 'grid size = highest light X, Y + 1')
     yield from _check_controls(checks, controls, lights, _unlit_positions(device))
     yield from _check_lights(checks, controls, lights)
+    yield from _check_ranges(checks, state, summary, tables)
+    yield from _check_flags(device, checks)
     yield checks.check(decode_page_header(device.get_page(PAGE_CONTROLS)).token == token,
                        'token unchanged across reads')
-    result: dict = {'summary': summary, 'modes': modes, 'state': state}
+    result: _Tables = {'summary': summary, 'modes': modes, 'state': state}
     result.update(tables)
     return result
 
 
-def _listed_modes(modes: tuple) -> str:
+def _listed_modes(modes: tuple[InputModeRecord, ...]) -> str:
     """List page 2's input modes with the lighting interface each carries."""
-    def lighting(mode) -> str:
+    def lighting(mode: InputModeRecord) -> str:
         if not mode.mode.lighting:
             return ''
         return ' (lighting once a PC is detected)' if mode.mode.detected else ' (lighting)'
     return ', '.join(f"{mode.mode.value} {mode.name}{lighting(mode)}" for mode in modes)
 
 
-def _unlit_positions(device: HostLightingDevice) -> list:
+def _unlit_positions(device: HostLightingDevice) -> list[int]:
     """List the unlit controls with a position group other than first LED 0xFFFF and a zero rectangle.
 
     The decoder folds an unlit control's position to None, so page 10's groups 0 and 2 are read as bytes.
     """
-    wrong: list = []
+    wrong: list[int] = []
     start, total = 0, 1
     while start < total:
         reply = device.get_page(PAGE_CONTROLS, start, 0b101)
@@ -441,7 +453,8 @@ def _unlit_positions(device: HostLightingDevice) -> list:
     return wrong
 
 
-def _expected_control(control: ControlRecord, controls: tuple, lights: tuple) -> tuple:
+def _expected_control(control: ControlRecord, controls: tuple[ControlRecord, ...], lights: tuple[LightRecord, ...]
+                      ) -> tuple[bool, bool, ControlInstances, Position, ControlLights]:
     """Give what the Lights page says a control's flags, instances, position and lights are."""
     mine = [light for light in lights if light.owner.pin == control.input.key]
     same = [other.input.key for other in controls if other.input.action == control.input.action]
@@ -449,11 +462,13 @@ def _expected_control(control: ControlRecord, controls: tuple, lights: tuple) ->
     if mine:
         xs, ys = [light.grid.x for light in mine], [light.grid.y for light in mine]
         position = Position(first_led=mine[0].leds.first_led, grid_rectangle=(min(xs), min(ys), max(xs), max(ys)))
-    return (len(same) > 1, bool(mine), Instances(instance=same.index(control.input.key) + 1, instances=len(same)),
-            position, ControlLights(first_light=mine[0].ordinal if mine else None, light_count=len(mine)))
+    return (len(same) > 1, bool(mine),
+            ControlInstances(instance=same.index(control.input.key) + 1, instances=len(same)), position,
+            ControlLights(first_light=mine[0].ordinal if mine else None, light_count=len(mine)))
 
 
-def _check_controls(checks: _Checker, controls: tuple, lights: tuple, unlit_positions: list) -> Iterator[CheckResult]:
+def _check_controls(checks: _Checker, controls: tuple[ControlRecord, ...], lights: tuple[LightRecord, ...],
+                    unlit_positions: list[int]) -> Iterator[CheckResult]:
     wrong = 0
     for control in controls:
         expected = _expected_control(control, controls, lights)
@@ -479,16 +494,19 @@ def _check_controls(checks: _Checker, controls: tuple, lights: tuple, unlit_posi
                        'lit control keys = the Lights owner pins that are controls')
 
 
-def _check_lights(checks: _Checker, controls: tuple, lights: tuple) -> Iterator[CheckResult]:
+def _check_lights(checks: _Checker, controls: tuple[ControlRecord, ...],
+                  lights: tuple[LightRecord, ...]) -> Iterator[CheckResult]:
     by_key = {control.input.key: control for control in controls}
     wrong = 0
     for light in lights:
-        control = by_key.get(light.owner.pin)
+        control = None if light.owner.pin is None else by_key.get(light.owner.pin)
         none = Instances(instance=None, instances=None)
+        expected: tuple[Optional[int], bool, Instances]
         if light.owner.pin is None:
             expected = (None, False, none)
         elif control is not None:
-            expected = (control.input.action, control.input.duplicated, control.instances)
+            owned = Instances(instance=control.instances.instance, instances=control.instances.instances)
+            expected = (control.input.action, control.input.duplicated, owned)
         else:
             expected = (light.owner.action, False, none)
         got = (light.owner.action, light.kind.duplicated, light.owner_instances)
@@ -502,7 +520,54 @@ def _check_lights(checks: _Checker, controls: tuple, lights: tuple) -> Iterator[
                        ', '.join(f"0x{pin:02X}" for pin in owners))
 
 
-def _check_subscribe(device: HostLightingDevice, checks: _Checker, events: frozenset) -> Iterator[CheckResult]:
+def _check_ranges(checks: _Checker, state: StateRecord, summary: Summary, tables: _Tables) -> Iterator[CheckResult]:
+    """Check page 1's and page 12's values against the ranges the other pages give them."""
+    shown = state.state
+    numbers = [profile.profile.number for profile in tables[PAGE_PROFILES]]
+    yield checks.check(shown.profile in numbers, 'page 1 profile listed on page 9', f"{shown.profile}")
+    yield checks.check(len(numbers) == len(set(numbers)), 'page 9 profile numbers each once')
+    yield checks.check(shown.animation is None or shown.animation < summary.animations,
+                       'page 1 animation off or a page 12 ordinal', f"{shown.animation}")
+    yield checks.check(max(shown.brightness_step_shown, shown.saved_brightness_step) <= summary.brightness_steps,
+                       'page 1 brightness steps within the Summary steps',
+                       f"{shown.brightness_step_shown} and {shown.saved_brightness_step}")
+    fast = [animation.ordinal for animation in tables[PAGE_ANIMATIONS]
+            if max(animation.speeds.idle, animation.speeds.pressed, animation.speeds.case)
+            > summary.animation_speed_steps]
+    yield checks.check(not fast, 'page 12 speeds within the Summary speed steps', f"not ordinals {fast}")
+
+
+def _record_bytes(device: HostLightingDevice, page: int, mask: int, offset: int) -> list[int]:
+    """Read one byte of every record of a page, at an offset into the groups the mask returns."""
+    values: list[int] = []
+    start, total = 0, 1
+    while start < total:
+        reply = device.get_page(page, start, mask)
+        header = decode_page_header(reply)
+        if not header.count:
+            break
+        values += [reply[HEADER_RECORDS + index * header.stride + offset] for index in range(header.count)]
+        start, total = start + header.count, header.total
+    return values
+
+
+# each flags byte the specification gives with its other bits zero: (what, page, mask, offset, defined bits)
+_FLAGS = (('Controller claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
+          ('page 2 flags', PAGE_INPUT_MODES, 0b01, 1, 0b11),
+          ('page 9 flags', PAGE_PROFILES, 0b1, 1, 0b1),
+          ('page 10 flags', PAGE_CONTROLS, 0b0001, 3, 0b11),
+          ('page 11 flags', PAGE_LIGHTS, 0b000010, 1, 0b1),
+          ('page 12 flags', PAGE_ANIMATIONS, 0b01, 0, 0b1))
+
+
+def _check_flags(device: HostLightingDevice, checks: _Checker) -> Iterator[CheckResult]:
+    """Check that each flags byte sets only the bits the specification defines."""
+    for what, page, mask, offset, defined in _FLAGS:
+        extra = sorted({value for value in _record_bytes(device, page, mask, offset) if value & ~defined})
+        yield checks.check(not extra, f"{what}: defined bits alone", ', '.join(f"0x{value:02X}" for value in extra))
+
+
+def _check_subscribe(device: HostLightingDevice, checks: _Checker, events: frozenset[int]) -> Iterator[CheckResult]:
     yield checks.check(EVENT_STATE_CHANGED in device.subscribe([EVENT_STATE_CHANGED]), 'SUBSCRIBE 1: event 0 enabled')
     yield checks.check(EVENT_STATE_CHANGED in device.subscribe([]),
                        'SUBSCRIBE 0 keeps event 0 (subscriptions only add)')
@@ -524,7 +589,7 @@ def _check_configure(device: HostLightingDevice, checks: _Checker, claim: Lights
                        'CONFIGURE brightness 2: status 2 at [6]')
 
 
-def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: dict,
+def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: _Tables,
                     claim: LightsClaim) -> Iterator[CheckResult]:
     """Check the takeover's number, keepalive and expiry.
 
@@ -629,7 +694,7 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
                        'a change of holder steps the claim generation', f"{took[29]} after {generation}")
     yield checks.check(state.settings == Settings(), 'and puts the CONFIGURE settings back to their defaults',
                        f"{state.settings}")
-    # the previous holder has not seen the change: its requests still carry its generation
+    # the previous holder has not seen the change, so its requests still carry its generation
     holder = Controller(holder_token=other, application_name='other', exclusive=False, claim_generation=took[29])
     previous = generation << FLAG_GENERATION_SHIFT
     stage = bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes(3)
@@ -667,7 +732,7 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     given = _claim(device, CLAIM_GIVE_UP, ours)
     _act_as(device, given, ours)
     yield checks.check(_holder(given)[0] == 0, 'give up clears the claim')
-    # a holder that stalled past the timeout: its renewal, which shows nothing, takes the claim again
+    # a holder that stalled past the timeout. Its renewal, which shows nothing, takes the claim again
     device.send(CMD_CLAIM, bytes([CLAIM_TAKE]) + struct.pack('<I', ours) + name.encode()[:16].ljust(16, b'\x00'),
                 FLAG_NO_REPLY)
     retaken = _refused(device.request(CMD_COMMIT, b'', taken[29] << FLAG_GENERATION_SHIFT))
@@ -697,7 +762,7 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     _retake(claim)
 
 
-def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: dict,
+def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tables,
                      claim: LightsClaim) -> Iterator[CheckResult]:
     """Check the exclusive claim: what it refuses, what it lets through, and CLAIM under it.
 
@@ -787,7 +852,7 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: dict,
     _retake(claim)
 
 
-def _check_unsaved(device: HostLightingDevice, checks: _Checker, tables: dict,
+def _check_unsaved(device: HostLightingDevice, checks: _Checker, tables: _Tables,
                    claim: LightsClaim) -> Iterator[CheckResult]:
     """Check the unsaved brightness step: shown at once, nothing written, and what ends it."""
     checks.section('Unsaved brightness')
@@ -845,11 +910,12 @@ def _check_unsaved(device: HostLightingDevice, checks: _Checker, tables: dict,
 
 
 def _reached(light: LightRecord, limit: int) -> bool:
-    """Tell whether STAGE reaches a light: it has an LED below the addressable LED limit."""
+    """Tell whether STAGE reaches a light, which needs an LED below the addressable LED limit."""
     return light.leds.first_led < limit and light.leds.led_count > 0
 
 
-def _check_runs(device: HostLightingDevice, checks: _Checker, limit: int, lights: tuple) -> Iterator[CheckResult]:
+def _check_runs(device: HostLightingDevice, checks: _Checker, limit: int,
+                lights: tuple[LightRecord, ...]) -> Iterator[CheckResult]:
     for name, pixel_format in (('RGB', PIXEL_RGB), ('RGBW', PIXEL_RGBW), ('RGB565', PIXEL_RGB565)):
         capacity = stage_capacity(ADDRESSING_LED_RUN, pixel_format)
         head = bytes([ADDRESSING_LED_RUN | (pixel_format << 4)])
@@ -875,8 +941,8 @@ def _check_runs(device: HostLightingDevice, checks: _Checker, limit: int, lights
     yield checks.check(reply[2] == STATUS_OK and (reply[3], reply[4]) == (0, 2), 'light run past the lights: skipped')
 
 
-def _check_entries(device: HostLightingDevice, checks: _Checker, controls: tuple, lights: tuple,
-                   limit: int) -> Iterator[CheckResult]:
+def _check_entries(device: HostLightingDevice, checks: _Checker, controls: tuple[ControlRecord, ...],
+                   lights: tuple[LightRecord, ...], limit: int) -> Iterator[CheckResult]:
     """Check STAGE by action, pin and kind, and UNSTAGE, on addresses with a light within the limit."""
     reached = [light for light in lights if _reached(light, limit)]
     actions = sorted({control.input.action for control in controls if control.input.lit}
@@ -951,7 +1017,7 @@ def _check_stage_arguments(device: HostLightingDevice, checks: _Checker, hello: 
                        'rejected', f"not for addressing {wrong}")
 
 
-def _check_staging(device: HostLightingDevice, checks: _Checker, tables: dict,
+def _check_staging(device: HostLightingDevice, checks: _Checker, tables: _Tables,
                    claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Staging')
     _configured(claim, Settings(brightness_applied=False))
@@ -966,7 +1032,7 @@ def _check_staging(device: HostLightingDevice, checks: _Checker, tables: dict,
                        'CLEAR, COMMIT, RELEASE')
 
 
-def _check_features(device: HostLightingDevice, checks: _Checker, tables: dict) -> Iterator[CheckResult]:
+def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Tables) -> Iterator[CheckResult]:
     checks.section('Board features')
     summary, state = tables['summary'], tables['state']
     rejected = (STATUS_INVALID, 3)
@@ -974,7 +1040,7 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: dict) 
                        'SET_PROFILE current: OK')
     yield checks.check(_status(device.request(CMD_SET_PROFILE, bytes([summary.profiles + 1]))) == rejected,
                        'SET_PROFILE past the last: status 2 at [3]')
-    if summary.brightness_steps < 255:
+    if summary.brightness_steps < 254:     # 0xFF is the saved step
         reply = device.request(CMD_SET_BRIGHTNESS, bytes([summary.brightness_steps + 1]))
         yield checks.check(_status(reply) == rejected, 'SET_BRIGHTNESS above the steps: status 2 at [3]')
     yield checks.check(_status(device.request(CMD_SET_ANIMATION, struct.pack('<H', summary.animations))) == rejected,
@@ -987,17 +1053,17 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: dict) 
                            'SET_ANIMATION_SPEED out of range: status 2')
     reply = device.request(CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
     yield checks.check(_status(reply) == rejected, 'SET_INPUT_MODE config mode: status 2 at [3]')
-    # the current mode: were the guard broken, the board would save and reboot into the mode it is in
+    # the current mode, since were the guard broken, the board would save and reboot into the mode it is in
     reply = device.request(CMD_SET_INPUT_MODE, bytes([state.state.input_mode]) + MAGIC_INPUT_MODE[:2] + b'X' +
                            MAGIC_INPUT_MODE[3:])
     yield checks.check(_status(reply) == (STATUS_INVALID, 6), 'SET_INPUT_MODE wrong magic: status 2 at [6]')
-    # a target far from the next free one: were it defined, the magic would reboot the board
+    # a target far from the next free one, since were it defined, the magic would reboot the board
     reply = device.request(CMD_REBOOT, bytes([0xFF]) + MAGIC_REBOOT)
     yield checks.check(_status(reply) == rejected, 'REBOOT target 0xFF: status 2 at [3]')
     yield from _check_lowest_offset(device, checks, tables)
 
 
-def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: dict) -> Iterator[CheckResult]:
+def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: _Tables) -> Iterator[CheckResult]:
     """Check that a request with several invalid bytes is refused at the lowest one."""
     summary, mode = tables['summary'], tables['state'].state.input_mode
     probes = [(CMD_CLAIM, bytes([CLAIM_GIVE_UP + 1]) + bytes(4), 3),              # action and token
@@ -1006,7 +1072,7 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: d
               (CMD_STAGE, bytes([_unlisted(tables['hello'].addressing_modes, ((0, 15),))[0], 0]), 3),
               (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', summary.led_limit, 0), 4),
               (CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
-              # the current mode: were the guard broken, the board would reboot into the mode it is in
+              # the current mode, since were the guard broken, the board would reboot into the mode it is in
               (CMD_SET_INPUT_MODE, bytes([mode]) + MAGIC_INPUT_MODE[:1] + b'XX' + MAGIC_INPUT_MODE[3:], 5),
               (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3)]                           # target and magic
     if summary.animation_speed_steps < 254:     # 0xFF means unchanged
@@ -1024,56 +1090,74 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: d
     yield checks.check(not wrong, 'several invalid bytes: status 2 at the lowest', ', '.join(wrong))
 
 
-def _check_settings(device: HostLightingDevice, checks: _Checker, tables: dict,
+def _check_settings(device: HostLightingDevice, checks: _Checker, tables: _Tables,
                     claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Settings (writes the settings flash)')
     summary, state, animations = tables['summary'], tables['state'], tables[PAGE_ANIMATIONS]
     if not summary.brightness_steps:
-        yield checks.note('no LED output: nothing to change')
+        yield checks.note('no LED output, so nothing to change')
         return
     _events(device, 0.05)
     step = state.state.brightness_step_shown
     other = step - 1 if step > 0 else 1
-    ok = device.request(CMD_SET_BRIGHTNESS, bytes([other, 1]))[2] == STATUS_OK
-    state = _state(device)
-    yield checks.check(ok and state.state.brightness_step_shown == other and not state.state.brightness_unsaved,
-                       'a saved SET_BRIGHTNESS applies at once, not unsaved')
-    _wait(claim, 0.1)
-    yield checks.check(any(event.state.brightness_step_shown == other for event in _events(device, 0.05)),
-                       'STATE_CHANGED for the brightness')
-    device.request(CMD_SET_BRIGHTNESS, bytes([step, 1]))
     animation = ANIMATION_OFF if state.state.animation is None else state.state.animation
-    device.request(CMD_SET_ANIMATION, struct.pack('<H', ANIMATION_OFF))
-    yield checks.check(_state(device).state.animation is None, 'SET_ANIMATION off')
-    device.request(CMD_SET_ANIMATION, struct.pack('<H', animation))
-    yield checks.check(_state(device).state.animation == state.state.animation, 'SET_ANIMATION back')
-    if animations:
-        speeds = animations[0].speeds
-        before = decode_page_header(device.get_page(PAGE_ANIMATIONS)).token
-        counted = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
-        new = (speeds.idle + 1) % (summary.animation_speed_steps + 1)
-        ok = device.request(CMD_SET_ANIMATION_SPEED, struct.pack('<H', 0) + bytes([new, 0xFF, 0xFF]))[2] == STATUS_OK
-        reply = device.get_page(PAGE_ANIMATIONS)
-        yield checks.check(ok and decode_records(reply)[0].speeds.idle == new and
-                           decode_page_header(reply).token != before,
-                           'SET_ANIMATION_SPEED: page 12 and the token change')
-        animation_counter = PAGE_ANIMATIONS - PAGE_SUMMARY
-        stepped = list(counted)
-        stepped[animation_counter] = (counted[animation_counter] + 1) & 0xFF
-        changes = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
-        yield checks.check(changes == tuple(stepped), "page 12's change counter steps, and no other",
-                           f"{counted} to {changes}")
-        device.request(CMD_SET_ANIMATION_SPEED,
-                       struct.pack('<H', 0) + bytes([speeds.idle, speeds.pressed, speeds.case]))
-        yield checks.check(decode_page_header(device.get_page(PAGE_ANIMATIONS)).token == before,
-                           'speeds restored: the token returns')
-        stepped[animation_counter] = (stepped[animation_counter] + 1) & 0xFF
-        yield checks.check(device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters == tuple(stepped),
-                           'the counter steps again: it counts changes, the token follows the content')
+    # each setting changed, with the request that puts it back. One the checks have not put back when they stop,
+    # an error or Ctrl-C included, is put back on the way out
+    changed: dict[int, bytes] = {CMD_SET_BRIGHTNESS: bytes([step, 1])}
+    try:
+        ok = device.request(CMD_SET_BRIGHTNESS, bytes([other, 1]))[2] == STATUS_OK
+        state = _state(device)
+        yield checks.check(ok and state.state.brightness_step_shown == other and not state.state.brightness_unsaved,
+                           'a saved SET_BRIGHTNESS applies at once, not unsaved')
+        _wait(claim, 0.1)
+        yield checks.check(any(event.state.brightness_step_shown == other for event in _events(device, 0.05)),
+                           'STATE_CHANGED for the brightness')
+        _put_back(device, changed, CMD_SET_BRIGHTNESS)
+        changed[CMD_SET_ANIMATION] = struct.pack('<H', animation)
+        device.request(CMD_SET_ANIMATION, struct.pack('<H', ANIMATION_OFF))
+        yield checks.check(_state(device).state.animation is None, 'SET_ANIMATION off')
+        _put_back(device, changed, CMD_SET_ANIMATION)
+        yield checks.check(_state(device).state.animation == state.state.animation, 'SET_ANIMATION back')
+        if animations:
+            speeds = animations[0].speeds
+            before = decode_page_header(device.get_page(PAGE_ANIMATIONS)).token
+            counted = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
+            new = (speeds.idle + 1) % (summary.animation_speed_steps + 1)
+            changed[CMD_SET_ANIMATION_SPEED] = struct.pack('<H', 0) + bytes([speeds.idle, speeds.pressed, speeds.case])
+            reply = device.request(CMD_SET_ANIMATION_SPEED, struct.pack('<H', 0) + bytes([new, 0xFF, 0xFF]))
+            ok = reply[2] == STATUS_OK
+            reply = device.get_page(PAGE_ANIMATIONS)
+            yield checks.check(ok and decode_records(reply)[0].speeds.idle == new and
+                               decode_page_header(reply).token != before,
+                               'SET_ANIMATION_SPEED: page 12 and the token change')
+            animation_counter = PAGE_ANIMATIONS - PAGE_SUMMARY
+            stepped = list(counted)
+            stepped[animation_counter] = (counted[animation_counter] + 1) & 0xFF
+            changes = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
+            yield checks.check(changes == tuple(stepped), "page 12's change counter steps, and no other",
+                               f"{counted} to {changes}")
+            _put_back(device, changed, CMD_SET_ANIMATION_SPEED)
+            yield checks.check(decode_page_header(device.get_page(PAGE_ANIMATIONS)).token == before,
+                               'speeds restored: the token returns')
+            stepped[animation_counter] = (stepped[animation_counter] + 1) & 0xFF
+            yield checks.check(device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters == tuple(stepped),
+                               'the counter steps again: it counts changes, the token follows the content')
+    finally:
+        for command in list(changed):
+            try:
+                _put_back(device, changed, command)
+            except HostLightingError:
+                logger.warning("could not put back the setting command 0x%02X changed", command)
     _wait(claim, 1.5)             # the board writes its settings flash shortly after a change
 
 
-def _check_timing(device: HostLightingDevice, checks: _Checker, tables: dict, quick: bool,
+def _put_back(device: HostLightingDevice, changed: dict[int, bytes], command: int) -> None:
+    """Send the request that puts a changed setting back, then forget the change."""
+    device.request(command, changed[command])
+    del changed[command]
+
+
+def _check_timing(device: HostLightingDevice, checks: _Checker, tables: _Tables, quick: bool,
                   claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Timing')
     count = 50 if quick else 200
@@ -1096,7 +1180,8 @@ def _check_timing(device: HostLightingDevice, checks: _Checker, tables: dict, qu
     device.request_ok(CMD_RELEASE)
 
 
-def _check_delivery(device: HostLightingDevice, checks: _Checker, open_second) -> Iterator[CheckResult]:
+def _check_delivery(device: HostLightingDevice, checks: _Checker,
+                    open_second: Callable[[], HostLightingDevice]) -> Iterator[CheckResult]:
     """Check that the operating system delivers each reply to every application with the interface open.
 
     The protocol's sharing rules rest on it. A second handle is opened on the board. Each handle must read
@@ -1106,7 +1191,7 @@ def _check_delivery(device: HostLightingDevice, checks: _Checker, open_second) -
     try:
         second = open_second()
     except (HostLightingError, OSError) as error:
-        yield checks.note(f"not checked: a second handle could not be opened ({error})")
+        yield checks.note(f"not checked, since a second handle could not be opened ({error})")
         return
     try:
         for sender, reader, what in ((device, second, "a second handle reads the reply to the first's request"),
@@ -1149,7 +1234,7 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
 
 
 def _run_checks(device: HostLightingDevice, checks: _Checker, claim: LightsClaim, settings: bool, quick: bool,
-                open_second) -> Iterator[CheckResult]:
+                open_second: Optional[Callable[[], HostLightingDevice]]) -> Iterator[CheckResult]:
     hello = yield from _check_hello(device, checks)
     yield from _check_framing(device, checks, hello)
     if open_second is not None:
@@ -1183,11 +1268,14 @@ def _reports(leds: int) -> int:
     return (leds + capacity - 1) // capacity
 
 
-def measure_round_trips(device: HostLightingDevice, count: int) -> list:
+def measure_round_trips(device: HostLightingDevice, count: int,
+                        claim: Optional[LightsClaim] = None) -> list[float]:
     """Time HELLOs one at a time.
 
     :param count: how many to send
+    :param claim: the claim held while measuring, which a status 4 refusal goes to
     :return: each answered one's round trip in ms. A refusal or a missing reply is not counted
+    :raises HostLightingClaimedError: once the claim is lost
     """
     trips = []
     for _ in range(count):
@@ -1196,6 +1284,11 @@ def measure_round_trips(device: HostLightingDevice, count: int) -> list:
             device.request_ok(CMD_HELLO)
         except HostLightingDisconnectedError:
             raise
+        except HostLightingRejectedError as error:
+            if claim is not None and error.status == STATUS_CLAIMED:
+                claim.refused(error)
+                _held(claim)
+            continue
         except HostLightingError:
             continue
         trips.append((time.perf_counter() - start) * 1000)

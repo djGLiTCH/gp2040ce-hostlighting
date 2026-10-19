@@ -13,7 +13,7 @@ from gp2040ce_hostlighting import claim as claim_module
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.claim import ClaimChange, ClaimChangeKind, ClaimState, LightsClaim
 from gp2040ce_hostlighting.records import Controller, Settings
-from gp2040ce_hostlighting.testing import other_event, page_reply, state_event, state_record
+from gp2040ce_hostlighting.testing import fake_device, other_event, page_reply, state_event, state_record
 
 TOKEN = 0x51
 
@@ -301,3 +301,252 @@ def test_keep_sleeps_between_renewals(hlp_fake_device, hlp_fake_board, clock, mo
     assert len(claims(hlp_fake_board)) == 4
     hlp_fake_board.take_over(0xB2, b'Other')
     assert not claim.keep(5.0) and claim.state is ClaimState.LOST
+
+
+def test_a_give_up_that_goes_unanswered_ends_the_generation_and_holder(hlp_model_board, clock, monkeypatch):
+    """Test that a give up with no reply leaves the device sending no generation and no HOLDER."""
+    from gp2040ce_hostlighting.testing import fake_device
+    device = fake_device(hlp_model_board)
+    claim = lights_claim(device, clock).take(exclusive=True)
+    assert device.generation and device.holding_exclusive
+
+    def unanswered(*arguments, **options):
+        raise hl.HostLightingTimeoutError("no reply to command 0x03 within 0.5 s")
+    monkeypatch.setattr(device, 'claim', unanswered)
+    assert claim.give_up() is False
+    assert (device.generation, device.holding_exclusive) == (0, False)
+
+
+def test_a_refusal_showing_the_board_unclaimed_while_waiting_asks_at_once(hlp_model_board, clock):
+    """Test that a status 4 refusal showing token 0 has a waiting claim ask for the claim at once."""
+    from gp2040ce_hostlighting.testing import fake_device
+    device = fake_device(hlp_model_board)
+    hlp_model_board.take_over()
+    claim = lights_claim(device, clock).take(wait=True)
+    assert claim.state is ClaimState.WAITING
+    hlp_model_board.let_go()
+    error = hl.HostLightingRejectedError(hl.CMD_STAGE, hl.STATUS_CLAIMED, 0, holder(0, hlp_model_board.generation))
+    assert claim.refused(error).kind is ClaimChangeKind.TAKEN and claim.state is ClaimState.HELD
+
+
+def test_a_configure_refused_after_a_retake_finds_the_claim_taken_over(hlp_model_board, clock):
+    """Test that another application taking over between a retake and its CONFIGURE leaves the claim lost."""
+    from gp2040ce_hostlighting.testing import fake_device
+    device = fake_device(hlp_model_board)
+    claim = lights_claim(device, clock, wait_when_taken_over=False).take()
+    hlp_model_board.let_go()                # the claim lapsed
+    write = hlp_model_board.write
+
+    def take_over_after_the_claim(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM:
+            hlp_model_board.write = write
+            hlp_model_board.take_over()
+        return written
+    hlp_model_board.write = take_over_after_the_claim
+    change = claim.renew()
+    assert (change.kind, claim.state, claim.holder.holder_token) == (ClaimChangeKind.LOST, ClaimState.LOST, 0xB2)
+    assert claim.configure(Settings(keepalive_ms=900)) is None
+
+
+def test_keep_stages_again_after_a_renewal_takes_a_lapsed_claim_again(hlp_model_board, clock, monkeypatch):
+    """Test that keep() calls restage when a renewal took the claim again, which cleared the staged frame."""
+    monkeypatch.setattr(claim_module, 'time', SimpleNamespace(sleep=lambda seconds: setattr(
+        clock, 'now', clock.now + seconds), monotonic=clock))
+    from gp2040ce_hostlighting.testing import fake_device
+    device = fake_device(hlp_model_board)
+    claim = lights_claim(device, clock).take()
+    hlp_model_board.let_go()
+    clock.now = 1.0                         # a renewal is due
+    staged = []
+    assert claim.keep(0.5, lambda: staged.append(claim.holder.claim_generation)) and len(staged) == 1
+
+
+def test_take_waits_when_taken_over_before_its_settings(hlp_model_board, monkeypatch):
+    """Test another application taking over between CLAIM and CONFIGURE: WAITING with wait, the error without."""
+    for wait in (True, False):
+        board = type(hlp_model_board)()
+        write = board.write
+
+        def take_over_after_the_claim(data, board=board, write=write):
+            written = write(data)
+            if data[1] == hl.CMD_CLAIM and board.holder_token == TOKEN:
+                board.take_over(0xB2, b'MESH')
+            return written
+        monkeypatch.setattr(board, 'write', take_over_after_the_claim)
+        claim = LightsClaim(fake_device(board), 'app', token=TOKEN, clock=board.time)
+        if wait:
+            assert claim.take(wait=True).state is ClaimState.WAITING and claim.holder.holder_token == 0xB2
+        else:
+            with pytest.raises(hl.HostLightingClaimedError, match="'MESH' holds the lights"):
+                claim.take()
+            assert claim.state is ClaimState.ENDED and board.holder_token == 0xB2
+
+
+def test_take_drops_the_events_older_than_its_claim(hlp_model_board):
+    """Test that events received by the claim's reply are dropped, so observe() does not take them as new."""
+    device = fake_device(hlp_model_board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    hlp_model_board.take_over()
+    hlp_model_board.let_go()
+    claim = LightsClaim(device, 'app', token=TOKEN, clock=hlp_model_board.time).take()
+    assert claim.observe(device.take_events()).kind is ClaimChangeKind.UNCHANGED
+    assert len(hlp_model_board.sent(hl.CMD_CLAIM)) == 1 and len(hlp_model_board.sent(hl.CMD_CONFIGURE)) == 1
+
+
+def test_refused_while_waiting_takes_a_claim_its_lost_reply_took(hlp_fake_device, hlp_fake_board, clock):
+    """Test that a refusal showing this claim's token while waiting renews at once, taking the claim."""
+    hlp_fake_board.take_over()
+    claim = lights_claim(hlp_fake_device, clock).take(wait=True)
+    hlp_fake_board.let_go()
+    hlp_fake_device.claim(hl.CLAIM_TAKE, TOKEN, b'app')      # a CLAIM with a reply the claim did not see
+    change = claim.refused(hl.HostLightingRejectedError(hl.CMD_STAGE, hl.STATUS_CLAIMED, 0, holder(TOKEN, 3)))
+    assert change.kind is ClaimChangeKind.TAKEN and claim.state is ClaimState.HELD
+
+
+def test_an_unanswered_renewal_after_a_refusal_showing_no_holder_leaves_the_claim_waiting(
+        hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that the claim holds nothing while the device sends no generation and the renewal is unanswered."""
+    claim = lights_claim(hlp_fake_device, clock).take()
+    write = hlp_fake_board.write
+    monkeypatch.setattr(hlp_fake_board, 'write', lambda data: len(data) if data[1] == hl.CMD_CLAIM else write(data))
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.refused(hl.HostLightingRejectedError(hl.CMD_STAGE, hl.STATUS_CLAIMED, 0, holder(0, 3)))
+    assert claim.state is ClaimState.WAITING
+
+
+@pytest.mark.parametrize('keepalive_ms', [900, 9000])
+def test_an_unanswered_configure_after_a_retake_renews_at_once(
+        hlp_fake_device, hlp_fake_board, clock, monkeypatch, keepalive_ms):
+    """Test that a CONFIGURE unanswered has the next renewal go at once, send it again, and pace by the shortest."""
+    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=keepalive_ms)).take()
+    hlp_fake_board.let_go()
+    write, lost = hlp_fake_board.write, []
+
+    def lose_one_configure(data):
+        if data[1] == hl.CMD_CONFIGURE and not lost:
+            lost.append(True)
+            return len(data)
+        return write(data)
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_one_configure)
+    clock.now += keepalive_ms / 3000 + 0.1
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.maintain()
+    assert claim.seconds_to_renewal == 0.0
+    configures = len(hlp_fake_board.sent(hl.CMD_CONFIGURE))
+    claim.maintain()
+    assert len(hlp_fake_board.sent(hl.CMD_CONFIGURE)) == configures + 1 and claim.applied.keepalive_ms == keepalive_ms
+
+
+def test_a_refusal_with_its_renewal_answered_but_configure_lost_keeps_the_claim(
+        hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that the claim stays held when only the CONFIGURE after a refusal goes unanswered, and gives up."""
+    claim = lights_claim(hlp_fake_device, clock).take()
+    write = hlp_fake_board.write
+    monkeypatch.setattr(hlp_fake_board, 'write', lambda data: len(data) if data[1] == hl.CMD_CONFIGURE else write(data))
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.refused(hl.HostLightingRejectedError(hl.CMD_STAGE, hl.STATUS_CLAIMED, 0, holder(0, 3)))
+    assert claim.state is ClaimState.HELD
+    assert claim.give_up() and hlp_fake_board.holder_token == 0
+
+
+def test_a_waiting_claim_gives_up_a_claim_its_lost_renewal_took(hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that give_up() sends while waiting, since a renewal with its reply lost may hold the claim."""
+    hlp_fake_board.take_over()
+    claim = lights_claim(hlp_fake_device, clock).take(wait=True)
+    hlp_fake_board.let_go()
+    write = hlp_fake_board.write
+
+    def lose_the_claim_reply(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM:
+            hlp_fake_board.outbox.clear()
+        return written
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_the_claim_reply)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.renew()
+    assert claim.state is ClaimState.WAITING and hlp_fake_board.holder_token == TOKEN
+    monkeypatch.setattr(hlp_fake_board, 'write', write)
+    claim.give_up()
+    assert hlp_fake_board.holder_token == 0 and claim.state is ClaimState.ENDED
+
+
+def test_a_renewal_lost_after_an_unanswered_configure_keeps_the_shortest_pace(
+        hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that renewals keep to the shortest timeout the board may have while CONFIGURE and a renewal are lost."""
+    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=9000)).take()
+    hlp_fake_board.let_go()
+    write, lost = hlp_fake_board.write, []
+
+    def lose_configure_then_claim(data):
+        if (data[1] == hl.CMD_CONFIGURE and not lost) or (data[1] == hl.CMD_CLAIM and len(lost) == 1):
+            lost.append(data[1])
+            return len(data)
+        return write(data)
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_configure_then_claim)
+    clock.now += 3.1
+    for _ in range(2):
+        with pytest.raises(hl.HostLightingTimeoutError):
+            claim.maintain()
+    assert lost == [hl.CMD_CONFIGURE, hl.CMD_CLAIM] and claim.seconds_to_renewal <= 2.0 / 3 + 0.01
+
+
+def test_a_take_with_its_claim_reply_lost_gives_the_claim_up(hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that take() gives up a claim its unanswered CLAIM may have taken, then raises."""
+    write, lost = hlp_fake_board.write, []
+
+    def lose_the_first_claim_reply(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM and not lost:
+            lost.append(True)
+            hlp_fake_board.outbox.clear()
+        return written
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_the_first_claim_reply)
+    claim = lights_claim(hlp_fake_device, clock)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.take()
+    assert hlp_fake_board.holder_token == 0 and claim.state is ClaimState.ENDED
+    last = hlp_fake_board.requests[-1]
+    assert last[0] == hl.CMD_CLAIM and last[3] == hl.CLAIM_GIVE_UP
+
+
+def test_a_claim_taken_again_forgets_an_earlier_unanswered_claim(hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that a claim waited for after an earlier take() lost its reply sends no give up."""
+    write = hlp_fake_board.write
+
+    def lose_the_claim_reply(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM:
+            hlp_fake_board.outbox.clear()
+        return written
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_the_claim_reply)
+    claim = lights_claim(hlp_fake_device, clock)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.take()
+    monkeypatch.setattr(hlp_fake_board, 'write', write)
+    hlp_fake_board.take_over()
+    claim.take(wait=True)
+    sent = len(hlp_fake_board.requests)
+    assert claim.state is ClaimState.WAITING and not claim.give_up() and len(hlp_fake_board.requests) == sent
+
+
+def test_a_configure_with_its_renewal_lost_sends_the_settings_at_the_next_renewal(
+        hlp_fake_device, hlp_fake_board, clock, monkeypatch):
+    """Test that a configure() with an unanswered renewal has the next renewal go at once and send the settings."""
+    claim = lights_claim(hlp_fake_device, clock, Settings(keepalive_ms=5000)).take()
+    write, lost = hlp_fake_board.write, []
+
+    def lose_one_claim_reply(data):
+        written = write(data)
+        if data[1] == hl.CMD_CLAIM and not lost:
+            lost.append(True)
+            hlp_fake_board.outbox.clear()
+        return written
+    monkeypatch.setattr(hlp_fake_board, 'write', lose_one_claim_reply)
+    with pytest.raises(hl.HostLightingTimeoutError):
+        claim.configure(Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=1200))
+    configures = len(hlp_fake_board.sent(hl.CMD_CONFIGURE))
+    assert claim.seconds_to_renewal == 0.0
+    claim.maintain()
+    sent = hlp_fake_board.sent(hl.CMD_CONFIGURE)
+    assert len(sent) == configures + 1 and sent[-1][3:6] == bytes([hl.TAKEOVER_OVERLAY]) + (1200).to_bytes(2, 'little')

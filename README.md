@@ -1,7 +1,7 @@
 # gp2040ce-hostlighting
 
-A Python library and tools for the GP2040-CE Host Lighting add-on, which lets host software drive a board's RGB
-LEDs live over a vendor HID interface.
+A Python library and tools for the GP2040-CE Host Lighting add-on, which lets
+host software drive a board's RGB LEDs live over a vendor HID interface.
 
 ## Installation
 
@@ -9,17 +9,21 @@ LEDs live over a vendor HID interface.
 pip install gp2040ce-hostlighting
 ```
 
-It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on 3.15 pip builds it from source,
-which needs a C compiler, and on Linux the development packages hidapi's README lists.
+It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
+3.15 pip builds it from source, which needs a C compiler, and on Linux the
+development packages hidapi's README lists.
 
-From a clone, `pip install -e .[dev]` installs the commands and the development tools.
+From a clone, `pip install -e .[dev]` installs the commands and the development
+tools.
 
 ## Standalone executables
 
-`packaging/hlp-tools.spec` builds the `hlp-*` commands as Windows executables that run without Python. From a
-clone with the development tools installed, run `pip install pyinstaller`, then `pyinstaller
-packaging/hlp-tools.spec` in the repository's root. `dist/hlp-tools` then holds one executable per command and
-the `_internal` folder they share, which also holds the licences of this package, Python and hidapi.
+`packaging/hlp-tools.spec` builds the `hlp-*` commands as Windows executables
+that run without Python. From a clone with the development tools installed, run
+`pip install pyinstaller`, then `pyinstaller packaging/hlp-tools.spec` in the
+repository's root. `dist/hlp-tools` then holds one executable per command and
+the `_internal` folder they share, which also holds the licences of this
+package, Python and hidapi.
 
 ## Layout
 
@@ -40,36 +44,54 @@ the `_internal` folder they share, which also holds the licences of this package
 
 ## Specification
 
-`docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the document the Host Lighting add-on
-adds to GP2040-CE as `docs/host-lighting.md`.
+`docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the
+document the Host Lighting add-on adds to GP2040-CE as `docs/host-lighting.md`.
 
 ## The library
 
-`gp2040ce_hostlighting.protocol` speaks Host Lighting Protocol 2.0 to a board. It needs only the `hidapi`
-package. The library never prints, exits or sets up logging. Each module logs to its own logger, and each
-failure raises a subclass of `HostLightingError`. A device, and everything built on it, belongs to one thread.
-Each call that sends an answered request blocks for its round trip, and for about 200 ms while the board writes
-its settings flash. The package carries type hints (`py.typed`).
+`gp2040ce_hostlighting.protocol` speaks Host Lighting Protocol 2.0 to a board.
+It needs only the `hidapi` package. The library never prints, exits or sets up
+logging. Each module logs to its own logger. Each protocol or device failure
+raises a subclass of `HostLightingError`, and an invalid argument raises
+`ValueError`. A device, and everything built on it, belongs to one thread. Each
+call that sends an answered request blocks for its round trip, and for about
+200 ms while the board writes its settings flash. The package carries type
+hints (`py.typed`) and passes mypy's strict mode.
 
 A host drives the lights in these steps:
 
-1. Open a board with `open_device()`. With several boards connected, pass a hex prefix of the board ID.
-   When it finds no board to open, it raises `HostLightingBoardSelectionError`. Its `boards` and `matched`
-   name the boards it found. `find_board()` opens one board by its whole ID and returns `None` when it is not
-   connected.
-2. Read what the board reports with `hello()`, `read_identity()`, `read_record()` and `read_table()`. The two
-   reads give a `PageRead` of the records and the state token. Each record carries its `ordinal`, its position
-   in the page, and one attribute per field group, named after the specification's, such as `light.owner.pin`.
-   Reading a group the reply did not return raises `HostLightingGroupNotReadError`, and `record.has(group)`
-   says whether it was returned.
-3. Take the claim with `LightsClaim(device, name, settings).take()`, where the name is up to 16 bytes.
-   `take()` claims, then sends the CONFIGURE settings. While another application holds the claim it raises
-   `HostLightingClaimedError`, unless it is to take the claim over (`force=True`) or wait for it (`wait=True`).
-4. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
-5. Call the claim's `maintain()` often. It renews the claim when a renewal is due and returns a `ClaimChange`.
-   When the change's `restage` is true, the claim started again with nothing staged, so stage the whole frame
-   again. `keep(seconds)` maintains the claim for a while, sleeping between renewals.
-6. Give the claim up with `give_up()`, which a `with` block does, then close the device.
+1. Open a board with `open_device()`. With several boards connected, pass a hex
+   prefix of the board ID. When it finds no board to open, it raises
+   `HostLightingBoardSelectionError`. Its `boards` and `matched` name the
+   boards it found. `find_board()` opens one board by its whole ID and returns
+   `None` when it is not connected.
+2. Read what the board reports with `hello()`, `read_identity()`,
+   `read_record()` and `read_table()`. The two reads give a `PageRead` of the
+   records and the state token. Each record carries its `ordinal`, its position
+   in the page, and one attribute per field group, named after the
+   specification's, such as `light.owner.pin`. Reading a group the reply did
+   not return raises `HostLightingGroupNotReadError`, and `record.has(group)`
+   says whether it was returned. A type checker knows each page's record type,
+   such as `LightRecord` for `read_table(PAGE_LIGHTS)`. A host without a
+   `Session` checks the HELLO reply with `require_capabilities()`.
+3. Take the claim with `LightsClaim(device, name, settings).take()`, where the
+   name is up to 16 bytes. `take()` claims, then sends the CONFIGURE settings,
+   and drops the events received by then, which are older than the claim.
+   While another application holds the claim, or takes it over before the
+   settings are applied, it raises `HostLightingClaimedError`, unless it is to
+   take the claim over (`force=True`) or wait for it (`wait=True`).
+4. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with
+   `commit=True`, only while `claim.state` is `HELD`. Pass a status 4
+   `HostLightingRejectedError` from staging to `claim.refused()` before staging
+   again. After a refusal that shows another holder, the device sends no
+   generation, so a frame would land in that application's claim.
+5. Call the claim's `maintain()` often. It renews the claim when a renewal is
+   due and returns a `ClaimChange`. When the change's `restage` is true, the
+   claim started again with nothing staged, so stage the whole frame again.
+   `keep(seconds, restage)` maintains the claim for a while, sleeping between
+   renewals, and calls `restage` when a renewal took the claim again.
+6. Give the claim up with `give_up()`, which a `with` block does, then close
+   the device.
 
 The example lights every LED red for 3 s:
 
@@ -86,28 +108,44 @@ with open_device() as device:
         claim.keep(3)
 ```
 
-`LightsClaim` logs each change at INFO. Once another application takes the lights over, `maintain()` returns
-a change of kind `LOST` and `keep()` returns `False`. The claim then waits, and each renewal asks for it until
-the board is unclaimed. With `wait_when_taken_over=False` the claim ends there, and the lights belong to the new
-holder. `observe()` applies the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4
-refusal to the claim.
+`LightsClaim` logs each change at INFO. Once another application takes the
+lights over, `maintain()` returns a change of kind `LOST` and `keep()` returns
+`False`. The claim then waits, and each renewal asks for it until the board is
+unclaimed. With `wait_when_taken_over=False` the claim ends there, and the
+lights belong to the new holder. `observe()` applies the holders that
+`STATE_CHANGED` events show, and `refused()` applies a status 4 refusal to the
+claim.
 
-A streaming host builds each frame as a `Frame` of entries and runs, staged in the order they were added, and
-sends it with `publish_frame()`. Every report but the last goes with `NO_REPLY`, and the last with
-`COMMIT_AFTER`, which alone is answered and is sent once more when its answer does not come. The `FrameResult`
-says whether the frame was acknowledged, and is true when it was.
+A streaming host builds each frame as a `Frame` of entries and runs, staged in
+the order they were added, and sends it with `publish_frame()`. Every report
+but the last goes with `NO_REPLY`, and the last with `COMMIT_AFTER`, which
+alone is answered and is sent once more when its answer does not come. The
+`FrameResult` says whether the frame was acknowledged, and is true when it was.
+When it was not, a host sends `HELLO` before taking the board as lost, and
+passes a status 4 reply to `claim.refused()`, as `Session.show()` does.
 
-A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the Summary, then each page with a
-moved change counter, under the Summary's state token, and returns the pages it read again. A host calls it
-after each change of the state token, and calls `clear()` after a reconnect.
+A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the
+Summary, then each page with a moved change counter, under the Summary's state
+token, and returns the pages it read again. Its `moved` names every page with a
+moved counter, kept or not. A host calls it after each change of the state
+token, and calls `clear()` after a reconnect.
 
-A `Session` runs the specification's whole host flow on these parts. `start()`, or a `with` block, checks the
-board's capabilities, reads the configuration, takes the claim, sends the settings and subscribes to
-`STATE_CHANGED`. `poll()` renews the claim, applies the events, reads changed pages again and returns a
-`SessionUpdate`. Its `restage` says when to stage the whole frame again. `show()` publishes a frame,
-`reconnect()` finds the board again after it leaves the bus, and `close()` gives the claim up. Its cache keeps
-the pages and groups that `pages` and `masks` name, by default all of them. With the name `None`, a `Session`
-runs the flow of a host that does not claim, which sends its settings only while the board is unclaimed.
+A `Session` runs the specification's whole host flow on these parts. `start()`,
+or a `with` block, checks the board's capabilities, reads the configuration,
+takes the claim, sends the settings and subscribes to `STATE_CHANGED`. `poll()`
+renews the claim, applies the events, reads changed pages again and returns a
+`SessionUpdate`. Its `restage` says when to stage the whole frame again.
+`show()` publishes a frame, the first after each start clearing first.
+`configure()` changes the settings, `reconnect()` finds the board again after
+it leaves the bus, and `close()` gives the claim up. Before `start()`, `poll()`
+and `show()` raise `HostLightingError`. A failed start in a `with` block closes
+the device. Its cache keeps the pages and groups that `pages` and `masks` name,
+by default all of them. With the name `None`, a `Session` runs the flow of a
+host that does not claim. It sends its settings only while the board is
+unclaimed, and the defaults only in place of its own, while page 1 shows them
+and no other since. Its `close()` puts the defaults back in place of its own
+settings likewise, and once it has sent a frame, sends `RELEASE` and
+`SET_BRIGHTNESS` 0xFF.
 
 The example shows the case lights blue for 3 s at 60 frames a second:
 
@@ -128,49 +166,109 @@ with Session(open_device(), 'my-host') as session:
         time.sleep(1 / 60)
 ```
 
-A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
-`drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
-reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.
+A host that sends with `send()` and waits with `wait_reply()` reads the reports
+already received with `drain()` before each send, takes the events received
+with `take_events()`, and builds the error for a refused reply with
+`HostLightingDevice.rejected()`. The error's `holder` is the holder as
+`claim()` returns it. A device keeps up to `EVENTS_KEPT` events until they are
+taken, the oldest dropped first.
+
+### What a session recovers from
+
+A `Session` keeps to the claim rules through these failures:
+
+* Another application takes the claim, shared or exclusive, at any point,
+  `start()` included. A host that claims waits, or with
+  `wait_when_taken_over=False` stops, and sends no frame and no `CONFIGURE`
+  into that application's claim. One that does not claim stops at its next
+  page 1 read or event.
+* A request or its reply is lost. The call raises
+  `HostLightingTimeoutError`, and `poll()` raises
+  `HostLightingUnansweredError` after three in a row. A frame without an
+  acknowledgement is sent once more, then `HELLO` follows. A `CLAIM` without
+  a reply may have taken the claim, so `take()` and `close()` give it up. A
+  claim renews at once and sends the settings when its `CONFIGURE`, or the
+  renewal before a `configure()` change, goes unanswered. A host that does not
+  claim reads page 1 before each `CONFIGURE`, counts one without a reply as
+  applied once page 1 shows its settings or another host's sent since, and
+  sends it again while page 1 still shows what it showed before. When the
+  read before it goes unanswered, settings other than the defaults go over
+  the settings page 1 showed only after a change of holder, or as the resend
+  of an earlier `CONFIGURE` that did not land, so a caller that needs them
+  now should call `configure()` again.
+* An event is lost. Every session reads page 1 at least every second, or a
+  third of the timeout when that is shorter, with events or without, and at
+  the next `poll()` after a read goes unanswered, so a change of holder or of
+  the state token is learned.
+* The board leaves the bus. `reconnect()` finds it again by its board ID,
+  starts again under the same token, and clears before its first frame.
+
+Some things it cannot rule out. A host that does not claim can make neither
+`CONFIGURE` nor a frame conditional, so a claim taken since its last page 1
+read or event receives them until its next answered read or event. Two hosts
+that do not claim cannot tell settings of the same values apart: the first to
+close, or to go back to the defaults, can put the defaults over the other's,
+and a resend can go over the other's later settings when those equal what
+page 1 showed before. A host that needs known settings claims. The claim
+generation has seven values, so a claim that changes holder seven times
+between two looks seems unchanged. If a board's USB session restarts without
+leaving the bus, it is noticed only when a request fails. `close()` does not
+retry a request it loses, so the keepalive timeout or the next change of
+holder restores what it would have. A keepalive timeout shorter than the
+0.5 s a request waits for its reply lets the claim lapse whenever a reply is
+lost.
 
 ### Enum names
 
-The pages carry GP2040-CE's enum values verbatim, such as an action or a light type. `read_enum_names()` in
-`gp2040ce_hostlighting.enums` reads their names from GP2040-CE's `enums.proto`, given as the file or its
-directory, so a host can show `BUTTON_PRESS_UP` beside action 1. The library keeps no list of its own.
+The pages carry GP2040-CE's enum values verbatim, such as an action or a light
+type. `read_enum_names()` in `gp2040ce_hostlighting.enums` reads their names
+from GP2040-CE's `enums.proto`, given as the file or its directory, so a host
+can show `BUTTON_PRESS_UP` beside action 1. The library keeps no list of its
+own.
 
 ### Testing a host
 
-`gp2040ce_hostlighting.testing` fakes a board, so a host's tests run without one. `fake_device(FakeBoard())`
-returns a `HostLightingDevice` connected to a board that answers as the firmware does. `ModelBoard` also follows
-the protocol's timing, claim and staging rules, on a clock the test controls with `sleep()` and `time()`. The
-record builders set what a fake board reports, for example `board.lights = [light_record(0, pin=2)]`. A fake
-board can also be unplugged and plugged back, reconfigured, taken over by another application or have its
-animations go idle, and `frames` keeps every frame it published. `attach()` puts fake boards on a fake bus, so
-`open_device()`, `find_board()` and the rest find them.
+`gp2040ce_hostlighting.testing` fakes a board, so a host's tests run without
+one. `fake_device(FakeBoard())` returns a `HostLightingDevice` connected to a
+board that answers and checks each request as the firmware does. `ModelBoard`
+also follows the protocol's timing, the claim's refusals, events and the change
+counters, on a clock the test controls with `sleep()` and `time()`. The record
+builders set what a fake board reports, for example
+`board.lights = [light_record(0, pin=2)]`. A fake board can also be unplugged
+and plugged back, reconfigured, taken over by another application or have its
+animations go idle, and `frames` keeps every frame it published. `attach()`
+puts fake boards on a fake bus, so `open_device()`, `find_board()` and the rest
+find them.
 
 ### Conformance checks
 
-`gp2040ce_hostlighting.conformance` holds the checks `hlp-conformance` runs. `run_checks()` runs them under a
-`LightsClaim` and yields each `CheckResult` as it is made, and `Checks` collects and counts them.
-`measure_round_trips()`, `measure_paced_frames()` and `measure_unthrottled_frames()` take the measurements
-`hlp-bench` prints.
+`gp2040ce_hostlighting.conformance` holds the checks `hlp-conformance` runs.
+`run_checks()` runs them under a `LightsClaim` and yields each `CheckResult` as
+it is made, and `Checks` collects and counts them. `measure_round_trips()`,
+`measure_paced_frames()` and `measure_unthrottled_frames()` take the
+measurements `hlp-bench` prints.
 
 ## The hlp-* commands
 
-The `hlp-*` tools talk to a board running the GP2040-CE Host Lighting add-on, which exposes a vendor HID
-interface for driving the board's RGB LEDs from host software. They speak Host Lighting Protocol 2.0.
+The `hlp-*` tools talk to a board running the GP2040-CE Host Lighting add-on,
+which exposes a vendor HID interface for driving the board's RGB LEDs from host
+software. They speak Host Lighting Protocol 2.0.
 
-* They require the `hidapi` package and a board with the add-on enabled (Configuration -> Add-Ons
-  Configuration -> Host Lighting in the web configurator).
-* If more than one board is connected, select one with `--board-id <hex prefix of its factory ID>`.
-* Actions, light kinds and colour formats are GP2040-CE's own enum values. Given GP2040-CE's `.proto` files
-  (`-P`), the tools also print their names.
+* They require the `hidapi` package and a board with the add-on enabled
+  (Configuration -> Add-Ons Configuration -> Host Lighting in the web
+  configurator).
+* If more than one board is connected, select one with
+  `--board-id <hex prefix of its board ID>`.
+* Actions, light kinds and colour formats are GP2040-CE's own enum values.
+  Given GP2040-CE's `.proto` files (`-P`), the tools also print their names.
 
-On Linux, a board's hidraw node is open only to root until a udev rule grants access. The rule below lets the
-logged-in user reach the lighting interface in each mode that carries it, at the mode's USB ID. A USB ID
-override in the web configurator changes that ID. Put the rule in
-`/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run `sudo udevadm control --reload-rules` and replug the
-board.
+On Linux, the library uses hidapi's hidraw backend, which several applications
+can share. A board's hidraw node is open only to root until a udev rule grants
+access. The rule below lets the logged-in user reach the lighting interface in
+each mode that carries it, at the mode's USB ID. A USB ID override in the web
+configurator changes that ID. Put the rule in
+`/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
+`sudo udevadm control --reload-rules` and replug the board.
 
 ```
 # Generic HID, Keyboard, SInput, and XInput with Host Lighting
@@ -180,69 +278,87 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10c6", TAG+="uacc
 KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uaccess"
 ```
 
-* `hlp-ping` says HELLO, checks the magic and protocol version, and times the command round trip.
-* `hlp-caps` decodes everything the board reports about itself: the HELLO capabilities, identity, state, input
-  modes, summary, input profiles, controls, lights and on-board animations. The state includes the application
-  holding the claim and the claim generation. The summary includes the display's button layouts and each
-  configuration page's change counter. Controls are listed lit or not. Each light is listed with its LEDs,
-  kind, owner and grid cell, and each animation with its speeds.
-* `hlp-fill` fills the LEDs with a colour (`--scope all|buttons|turbo|case|players`) as a quick visual test, then
+* `hlp-ping` says HELLO, checks the magic and protocol version, and times the
+  command round trip.
+* `hlp-caps` decodes everything the board reports about itself: the HELLO
+  capabilities, identity, state, input modes, summary, input profiles,
+  controls, lights and on-board animations. The state includes the application
+  holding the claim and the claim generation. The summary includes the
+  display's button layouts and each configuration page's change counter.
+  Controls are listed lit or not. Each light is listed with its LEDs, kind,
+  owner and grid cell, and each animation with its speeds.
+* `hlp-fill` fills the LEDs with a colour
+  (`--scope all|buttons|turbo|case|players`) as a quick visual test, then
   restores the board's own animations.
-* `hlp-set-light` colours lights by their light ordinal, or with `--by pin|action|kind` by what they belong
-  to, then restores the board's own animations. It names the addresses skipped, which have no light or none
-  below the LED limit. An eight-digit colour (`RRGGBBWW`) sends RGBW pixels. Put `--` before the entries when
-  an address is negative (`--by action -- -10:FF0000`).
-* `hlp-stream` streams whole frames as a worked example: red, green and blue fills, then a rainbow at 60 fps.
-  Each frame is sent as LED runs with `NO_REPLY`, and with `COMMIT_AFTER` on the last report, which alone is
-  answered. `--leds` sets the frame size (default: the LED extent). `--timeout-test` then goes silent and
-  times how long the board keeps the frame, which is the keepalive timeout.
-* `hlp-buttons` gives every lit control its own hue (staged by action), then every light its own hue (one
-  light run), then the buttons the board lights among B1-B4, L1, R1, L2 and R2 white over the running
-  animations (overlay takeover).
-* `hlp-settings` shows the input profile, animation, animation speeds and brightness with the values each
-  accepts, and changes them (`--profile`, `--animation N|off`, `--speed ORDINAL --idle/--pressed/--case`,
-  `--brightness`). `--profile` switches the live button mapping. Each differing value is written to the
-  board's settings flash shortly after, so use it for a user's choice and not as an effect. `--brightness N
-  --unsaved` shows step N unsaved for `--seconds` (default 5) and writes nothing. The command holds the claim
-  meanwhile, so `--force` and `--exclusive` apply. The board shows the saved step again when the command ends,
-  Ctrl-C and a killed command included.
-* `hlp-watch` subscribes to the board's `STATE_CHANGED` event and prints what each one changes: input mode,
-  profile, player, animation, the brightness step shown and the saved one, takeover, the application holding
-  the claim, whether its claim is exclusive, the claim generation, the `CONFIGURE` settings and the state
-  token. The subscription is shared. Every application with the interface open receives the event until the
-  board's USB session ends.
-* `hlp-input-mode` sets the board's input mode and reboots into it. It accepts the modes the board lists. A
-  mode without the lighting interface needs `--force`, because these tools cannot switch the board back from
-  one.
-* `hlp-reboot gamepad|webconfig|bootsel` reboots the board into its saved input mode, the web configurator or
-  the BOOTSEL bootloader for flashing. The saved input mode can differ from the one the board runs when a boot
-  hotkey chose that one.
-* `hlp-conformance` checks a board against the protocol and prints each rule it checks. It covers the HELLO
-  capabilities, framing, every page and field mask and the pages' cross-references. It covers takeover,
-  keepalive and claim-lease timing, the claim generation and the `CONFIGURE` defaults at each change of
-  holder, shared and exclusive claims, unsaved brightness, staging, events and board-feature argument checks.
-  It checks whether a second handle on the board receives every reply, which is the operating system's part of
-  sharing a board, then measures round trip and throughput. It holds the claim while it runs and renews it
-  without keeping a takeover alive, so run it with no other lighting application. `--settings` also changes
-  and restores brightness, animation and a speed, which writes the settings flash, and checks the change
-  counters. `--quick` shortens the timing runs.
-* `hlp-bench` measures round trip (median and p95) and frame rates: whole frames paced at 60 fps, then back to
-  back with every report answered and pipelined. `--leds` sets the frame size (default: the LED extent).
+* `hlp-set-light` colours lights by their light ordinal, or with
+  `--by pin|action|kind` by what they belong to, then restores the board's own
+  animations. It names the addresses skipped, which have no light or none below
+  the LED limit. An eight-digit colour (`RRGGBBWW`) sends RGBW pixels. A
+  negative address needs no `--` (`--by action -10:FF0000`).
+* `hlp-stream` streams whole frames as a worked example: red, green and blue
+  fills, then a rainbow at 60 fps. Each frame is sent as LED runs with
+  `NO_REPLY`, and with `COMMIT_AFTER` on the last report, which alone is
+  answered. `--leds` sets the frame size (default: the LED extent).
+  `--timeout-test` then goes silent and times how long the board keeps the
+  frame, which is the keepalive timeout.
+* `hlp-buttons` gives every lit control its own hue (staged by action), then
+  every light its own hue (one light run), then the buttons the board lights
+  among B1-B4, L1, R1, L2 and R2 white over the running animations (overlay
+  takeover).
+* `hlp-settings` shows the input profile, animation, animation speeds and
+  brightness with the values each accepts, and changes them (`--profile`,
+  `--animation N|off`, `--speed ORDINAL --idle/--pressed/--case`,
+  `--brightness`). `--profile` switches the live button mapping. Each differing
+  value is written to the board's settings flash shortly after, so use it for a
+  user's choice and not as an effect. `--brightness N --unsaved` shows step N
+  unsaved for `--seconds` (default 5) and writes nothing. The command holds the
+  claim meanwhile, so `--force` and `--exclusive` apply. The board shows the
+  saved step again when the command ends, Ctrl-C and a killed command included.
+* `hlp-watch` subscribes to the board's `STATE_CHANGED` event and prints what
+  each one changes: input mode, profile, player, animation, the brightness step
+  shown and the saved one, takeover, the application holding the claim, whether
+  its claim is exclusive, the claim generation, the `CONFIGURE` settings and
+  the state token. The subscription is shared. Every application with the
+  interface open receives the event until the board's USB session ends.
+* `hlp-input-mode` sets the board's input mode and reboots into it. It accepts
+  the modes the board lists. A mode without the lighting interface needs
+  `--force`, because these tools cannot switch the board back from one.
+* `hlp-reboot gamepad|webconfig|bootsel` reboots the board into its saved input
+  mode, the web configurator or the BOOTSEL bootloader for flashing. The saved
+  input mode can differ from the one the board runs when a boot hotkey chose
+  that one.
+* `hlp-conformance` checks a board against the protocol and prints each rule it
+  checks. It covers the HELLO capabilities, framing, every page and field mask
+  and the pages' cross-references. It covers takeover, keepalive and
+  claim-lease timing, the claim generation and the `CONFIGURE` defaults at each
+  change of holder, shared and exclusive claims, unsaved brightness, staging,
+  events and board-feature argument checks. It checks whether a second handle
+  on the board receives every reply, which is the operating system's part of
+  sharing a board, then measures round trip and throughput. It holds the claim
+  while it runs and renews it without keeping a takeover alive, so run it with
+  no other lighting application. `--settings` also changes and restores
+  brightness, animation and a speed, which writes the settings flash, and
+  checks the change counters. `--quick` shortens the timing runs.
+* `hlp-bench` measures round trip (median and p95) and frame rates: whole
+  frames paced at 60 fps, then back to back with every report answered and
+  pipelined. `--leds` sets the frame size (default: the LED extent).
 
-The tools that drive the LEDs (`hlp-fill`, `hlp-set-light`, `hlp-stream`, `hlp-buttons`, `hlp-bench`,
-`hlp-conformance`) claim the board while they do.
+The tools that drive the LEDs (`hlp-fill`, `hlp-set-light`, `hlp-stream`,
+`hlp-buttons`, `hlp-bench`, `hlp-conformance`) claim the board while they do.
 
-* They give the claim up afterwards, Ctrl-C included, which restores the on-board animations and the
-  `CONFIGURE` defaults.
-* Their requests carry the claim generation. Once another application takes over a tool's claim, the tool is refused at
-  once and cannot stage into that application's frame.
-* A tool takes its own claim again at its next renewal when it lapsed, on a stalled PC for example, and sends
-  its `CONFIGURE` settings again.
-* While another application holds the claim, MESH for example, they leave the lights alone unless `--force`
-  takes them over.
-* Their claim is shared unless `--exclusive` makes it exclusive. Until the lights are handed back, the board
-  then refuses changes from applications that do not hold the claim. An `hlp-settings` run alongside is
-  refused with `CLAIMED`, naming the holder. Reads, `CLAIM` and `SUBSCRIBE` still work.
+* They give the claim up afterwards, Ctrl-C included, which restores the
+  on-board animations and the `CONFIGURE` defaults.
+* Their requests carry the claim generation. Once another application takes
+  over a tool's claim, the tool is refused at once and cannot stage into that
+  application's frame.
+* A tool takes its own claim again at its next renewal when it lapsed, on a
+  stalled PC for example, and sends its `CONFIGURE` settings again.
+* While another application holds the claim, MESH for example, they leave the
+  lights alone unless `--force` takes them over.
+* Their claim is shared unless `--exclusive` makes it exclusive. Until the
+  lights are handed back, the board then refuses changes from applications that
+  do not hold the claim. An `hlp-settings` run alongside is refused with
+  `CLAIMED`, naming the holder. Reads, `CLAIM` and `SUBSCRIBE` still work.
 
 Sample usage:
 
@@ -314,5 +430,6 @@ skipped addresses (no light, or none below the LED limit): [99]
 released, on-board animations restored
 ```
 
-The controls page shows that this board wires two buttons to action 1 (Up) and two to action 17 (L3).
-`hlp-set-light --by action 1` lights both, and `--by pin` or a light ordinal addresses one.
+The controls page shows that this board wires two buttons to action 1 (Up) and
+two to action 17 (L3). `hlp-set-light --by action 1` lights both, and
+`--by pin` or a light ordinal addresses one.
