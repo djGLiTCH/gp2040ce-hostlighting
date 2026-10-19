@@ -5,11 +5,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 import logging
 import struct
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
 
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting import records
 from gp2040ce_hostlighting.testing import (FakeBoard, control_record, fake_device, hello_reply, identity_reply,
                                            light_record, other_event, page_reply, state_event, state_record,
                                            summary_record)
@@ -76,12 +78,12 @@ def test_encode_address_widths():
 def test_decode_hello():
     """Test the HELLO reply: magic, version, board ID, queue limit and capability sets."""
     hello = hl.decode_hello(hello_reply())
-    assert hello['magic'] == b'GPHL' and (hello['major'], hello['minor']) == (2, 0)
-    assert hello['board_id'] == '433030343237362E' and hello['queue_limit'] == 16
-    assert hello['flags'] == {0, 1, 2, 3, 4, 5, 6}        # four flags and the claim generation's three bits
-    assert 0x33 in hello['commands'] and 0x71 in hello['commands'] and 0x06 not in hello['commands']
-    assert hello['pages'] == {0, 1, 2, 8, 9, 10, 11, 12}
-    assert hello['pixel_formats'] == {0, 1, 2} and hello['events'] == {0} and hello['subscribed'] == set()
+    assert hello.magic == b'GPHL' and (hello.major, hello.minor) == (2, 0)
+    assert hello.board_id == '433030343237362E' and hello.reply_queue_limit == 16
+    assert hello.request_flags == {0, 1, 2, 3, 4, 5, 6}     # four flags and the claim generation's three bits
+    assert 0x33 in hello.commands and 0x71 in hello.commands and 0x06 not in hello.commands
+    assert hello.pages == {0, 1, 2, 8, 9, 10, 11, 12} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
+    assert hello.pixel_formats == {0, 1, 2} and hello.events == {0} and hello.events_enabled == frozenset()
 
 
 def test_decode_state_all_groups():
@@ -91,12 +93,17 @@ def test_decode_state_all_groups():
                                                     brightness=0, unsaved=1, exclusive=1, saved=5,
                                                     generation=3)])
     header = hl.decode_page_header(reply)
-    assert (header['page'], header['total'], header['count'], header['stride'], header['groups']) == (1, 1, 1, 35, 7)
-    (state,) = hl.decode_records(reply)
-    assert state == {'ordinal': 0, 'takeover_live': True, 'brightness_unsaved': True, 'input_mode': 14,
-                     'profile': 2, 'player': 0, 'animation': None, 'brightness_step': 7, 'takeover_number': 9,
-                     'saved_brightness_step': 5, 'holder_token': 0xA1, 'holder_name': 'MESH', 'claim_exclusive': True,
-                     'claim_generation': 3, 'overlay': True, 'keepalive_ms': 300, 'brightness_applied': False}
+    assert (header.page, header.total, header.count, header.stride, header.groups) == (1, 1, 1, 35, 7)
+    (record,) = hl.decode_records(reply)
+    assert record == records.StateRecord(
+        ordinal=0,
+        state=records.State(takeover_live=True, brightness_unsaved=True, animations_idle=False, input_mode=14,
+                            profile=2, player=0, animation=None, brightness_step_shown=7, takeover_number=9,
+                            saved_brightness_step=5),
+        controller=hl.Controller(holder_token=0xA1, application_name='MESH', exclusive=True, claim_generation=3),
+        settings=hl.Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False))
+    idle = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(idle=1)]))[0].state
+    assert idle.animations_idle and not idle.takeover_live and not idle.brightness_unsaved
 
 
 def test_decode_records_honours_the_echoed_groups():
@@ -104,28 +111,30 @@ def test_decode_records_honours_the_echoed_groups():
     lights = [light_record(i, pin=2 + i, action=5, x=i, y=1, slot=0xFF) for i in range(30)]
     reply = page_reply(hl.PAGE_LIGHTS, lights, start=0, mask=0b11100)
     header = hl.decode_page_header(reply)
-    assert (header['stride'], header['count'], header['groups']) == (9, 5, 0b11100)
-    records = hl.decode_records(reply)
-    assert records[4] == {'ordinal': 4, 'owner_pin': 6, 'owner_action': 5, 'owner_instance': 0, 'owner_instances': 0,
-                          'grid': (4, 1)}
+    assert (header.stride, header.count, header.groups) == (9, 5, 0b11100)
+    decoded = hl.decode_records(reply)
+    assert decoded[4] == records.LightRecord(ordinal=4, owner=records.Owner(pin=6, action=5),
+                                             owner_instances=records.Instances(instance=0, instances=0),
+                                             grid=records.GridCell(x=4, y=1))
+    assert decoded[4].groups == {'owner', 'owner_instances', 'grid'}
     reply = page_reply(hl.PAGE_LIGHTS, lights, start=0, mask=0b10000)
-    assert hl.decode_page_header(reply)['count'] == 24
-    assert hl.decode_records(reply)[23] == {'ordinal': 23, 'grid': (23, 1)}
+    assert hl.decode_page_header(reply).count == 24
+    assert hl.decode_records(reply)[23] == records.LightRecord(ordinal=23, grid=records.GridCell(x=23, y=1))
     # a later reply's records count from its start
     reply = page_reply(hl.PAGE_LIGHTS, lights, start=24, mask=0b10000)
-    assert [record['ordinal'] for record in hl.decode_records(reply)] == list(range(24, 30))
+    assert [record.ordinal for record in hl.decode_records(reply)] == list(range(24, 30))
 
 
 def test_decode_controls_and_lights_none_values():
     """Test the none values: unlit controls, lights without an owner or palette slot."""
     reply = page_reply(hl.PAGE_CONTROLS, [control_record(12, 13, lit=0), control_record(2, 1, dup=1, instances=2)])
     unlit, lit = hl.decode_records(reply)
-    assert unlit['first_led'] is None and unlit['grid_rectangle'] is None and unlit['first_light'] is None
-    assert not unlit['lit'] and unlit['action'] == 13
-    assert lit['duplicated'] and lit['instances'] == 2 and lit['grid_rectangle'] == (1, 0, 1, 0)
+    assert unlit.position == records.Position(first_led=None, grid_rectangle=None)
+    assert unlit.lights.first_light is None and not unlit.input.lit and unlit.input.action == 13
+    assert lit.input.duplicated and lit.instances.instances == 2 and lit.position.grid_rectangle == (1, 0, 1, 0)
     (case,) = hl.decode_records(page_reply(hl.PAGE_LIGHTS, [light_record(12, 3, kind=1, slot=0)]))
-    assert case['owner_pin'] is None and case['owner_action'] is None and case['palette_slot'] == 0
-    assert (case['first_led'], case['led_count'], case['kind']) == (12, 3, 1)
+    assert case.owner == records.Owner(pin=None, action=None) and case.palette.slot == 0
+    assert (case.leds.first_led, case.leds.led_count, case.kind.value) == (12, 3, 1)
 
 
 def test_decode_keys():
@@ -137,45 +146,85 @@ def test_decode_keys():
                                (0xD0, ('unknown', 0xD0), 'key 0xD0'), (0xFF, ('unknown', 0xFF), 'key 0xFF')):
         assert hl.decode_key(key) == decoded and hl.key_name(key) == name, key
     (control,) = hl.decode_records(page_reply(hl.PAGE_CONTROLS, [control_record(hl.KEY_TRIGGER + 3, 5, lit=0)]))
-    assert (control['key'], control['source'], control['index'], control['lit']) == (0x83, 'hall_effect', 3, False)
+    assert (control.input.key, control.input.source, control.input.index, control.input.lit) == (
+        0x83, 'hall_effect', 3, False)
 
 
 def test_decode_other_pages():
     """Test pages 2, 8, 9 and 12."""
     modes = [[bytes([0, 0x03]), b'XINPUT'.ljust(22, b'\x00')], [bytes([14, 0x01]), b'GENERIC'.ljust(22, b'\x00')]]
-    assert hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes)) == [
-        {'ordinal': 0, 'mode': 0, 'lighting': True, 'after_detection': True, 'name': 'XINPUT'},
-        {'ordinal': 1, 'mode': 14, 'lighting': True, 'after_detection': False, 'name': 'GENERIC'}]
+    assert hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes)) == (
+        records.InputModeRecord(ordinal=0, mode=records.InputModeFlags(value=0, lighting=True, detected=True),
+                                name='XINPUT'),
+        records.InputModeRecord(ordinal=1, mode=records.InputModeFlags(value=14, lighting=True, detected=False),
+                                name='GENERIC'))
     (summary,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [summary_record()]))
-    assert summary['led_extent'] == 19 and summary['speed_steps'] == 10 and summary['animations'] == 3
-    record = summary_record(layout=18, layout_right=9, changes=bytes([1, 0, 2, 3, 255, 0, 0, 0]))
+    assert summary.summary == records.Summary(
+        led_extent=19, led_limit=100, render_hz=40, colour_format=0, white_channel=False, brightness_maximum=255,
+        brightness_steps=10, animation_speed_steps=10, button_layout=0, button_layout_right=0,
+        button_layout_orientation=0, grid_width=9, grid_height=6, profiles=3, controls=12, lit_controls=10,
+        unlit_controls=2, lights=16, animations=3)
+    record = summary_record(colour=3, white=1, layout=18, layout_right=9, orientation=1,
+                            changes=bytes([1, 0, 2, 3, 255, 0, 0, 0]))
     (summary,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [record]))
-    assert (summary['button_layout'], summary['button_layout_right']) == (18, 9)
-    assert summary['page_changes'] == {8: 1, 9: 0, 10: 2, 11: 3, 12: 255, 13: 0, 14: 0, 15: 0}
+    assert (summary.summary.colour_format, summary.summary.white_channel) == (3, True)
+    assert (summary.summary.button_layout, summary.summary.button_layout_right,
+            summary.summary.button_layout_orientation) == (18, 9, 1)
+    assert summary.changes.counters == (1, 0, 2, 3, 255, 0, 0, 0) and summary.changes.counter(12) == 255
+    with pytest.raises(ValueError, match='page 16 is not a configuration page'):
+        summary.changes.counter(16)
     (changes,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [record], mask=0b10))
-    assert list(changes) == ['ordinal', 'page_changes']
+    assert changes.groups == {'changes'}
     profiles = [[bytes([1, 1]) + b'Base'.ljust(16, b'\x00')], [bytes([2, 0]) + b'Two'.ljust(16, b'\x00')]]
-    assert hl.decode_records(page_reply(hl.PAGE_PROFILES, profiles))[1] == {'ordinal': 1, 'number': 2,
-                                                                            'enabled': False, 'label': 'Two'}
+    assert hl.decode_records(page_reply(hl.PAGE_PROFILES, profiles))[1] == records.ProfileRecord(
+        ordinal=1, profile=records.Profile(number=2, enabled=False, label='Two'))
     animations = [[bytes([1, 2, 1, 2]), bytes([5, 5, 5])]]
-    assert hl.decode_records(page_reply(hl.PAGE_ANIMATIONS, animations)) == [
-        {'ordinal': 0, 'enabled': True, 'effects': (2, 1, 2), 'speeds': (5, 5, 5)}]
+    assert hl.decode_records(page_reply(hl.PAGE_ANIMATIONS, animations)) == (records.AnimationRecord(
+        ordinal=0, effects=records.Effects(enabled=True, idle=2, pressed=1, case=2),
+        speeds=records.Speeds(idle=5, pressed=5, case=5)),)
+
+
+def test_a_group_not_read_raises_and_records_are_immutable():
+    """Test the checked groups: a group not read raises, has() and hasattr() tell, merged() fills groups in."""
+    lights = [light_record(4, 2, pin=3, action=5, x=1, y=2)]
+    whole = hl.decode_records(page_reply(hl.PAGE_LIGHTS, lights))[0]
+    owners = hl.decode_records(page_reply(hl.PAGE_LIGHTS, lights, mask=0b1110))[0]
+    with pytest.raises(hl.HostLightingGroupNotReadError, match='page 11 record 0: the grid group was not read'):
+        owners.grid
+    assert isinstance(hl.HostLightingGroupNotReadError(11, 'grid', 0), AttributeError)
+    assert not hasattr(owners, 'grid') and hasattr(owners, 'owner') and owners.has('owner') and not owners.has('leds')
+    with pytest.raises(ValueError, match="page 11 has no field group 'colour'"):
+        owners.has('colour')
+    with pytest.raises(TypeError, match="page 11 has no field group 'colour'"):
+        records._Record.__init__(owners, 0, {'colour': 1})
+    assert whole.merged(owners) == whole and owners.merged(whole) == whole and hash(whole.merged(owners)) == hash(whole)
+    moved = hl.decode_records(page_reply(hl.PAGE_LIGHTS, [light_record(4, 2, pin=3, action=6)], mask=0b100))[0]
+    assert whole.merged(moved).owner.action == 6 and whole.merged(moved).grid == whole.grid
+    with pytest.raises(ValueError, match='same ordinal'):
+        whole.merged(hl.decode_records(page_reply(hl.PAGE_LIGHTS, lights * 2, start=1))[0])
+    with pytest.raises(AttributeError, match='immutable'):
+        whole.ordinal = 3
+    with pytest.raises(AttributeError, match='immutable'):
+        del whole.ordinal
+    assert whole != owners and whole != 'record' and 'grid=GridCell(x=1, y=2)' in repr(whole)
+    assert records.LightRecord.grid.name == 'grid'           # the class attribute is the group itself
 
 
 def test_decode_identity_strings():
     """Test page 0: NUL-terminated strings, a 48-byte string with no NUL, and the echoed groups."""
     strings = ['Haute42 COSMOX M Ultra', 'Haute42COSMOXMUltra', 'rp2040', 'v0.7.12-88-ga83f820', '0.7.12',
                'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
-    assert hl.decode_identity(identity_reply(strings)) == {0: strings[0], 1: strings[1]}
+    assert hl.decode_identity(identity_reply(strings)) == records.Identity(board_label=strings[0],
+                                                                           board_config=strings[1])
     long = 'X' * 48
-    assert hl.decode_identity(identity_reply(['', '', '', long], mask=0x08)) == {3: long}
+    assert hl.decode_identity(identity_reply(['', '', '', long], mask=0x08)) == records.Identity(firmware_version=long)
 
 
 def test_request_skips_other_applications_and_keeps_events(hlp_fake_device, hlp_fake_board):
     """Test that a reply to another application and an event are passed over while waiting."""
     hlp_fake_board.before[hl.CMD_HELLO] = [bytes([hl.CMD_HELLO | hl.REPLY_FLAG, 99, 0]) + bytes(61),
                                            bytes([hl.EVENT_MARKER, hl.EVENT_STATE_CHANGED, 0]) + bytes(61)]
-    assert hlp_fake_device.hello()['board_id'] == '433030343237362E'
+    assert hlp_fake_device.hello().board_id == '433030343237362E'
     assert len(hlp_fake_device.events) == 1 and not hlp_fake_board.outbox
 
 
@@ -186,7 +235,7 @@ def test_request_drops_reports_received_before_it(hlp_fake_device, hlp_fake_boar
     earlier += b'app-b'
     hlp_fake_board.outbox += [earlier.ljust(hl.REPORT_SIZE, b'\x00'),
                               bytes([hl.EVENT_MARKER, hl.EVENT_STATE_CHANGED, 0]) + bytes(61)]
-    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a')['holder_token'] == 0xAAAA
+    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a').holder_token == 0xAAAA
     assert len(hlp_fake_device.events) == 1 and not hlp_fake_board.outbox
 
 
@@ -198,7 +247,7 @@ def test_drain_keeps_events_and_take_events_hands_them_over(hlp_fake_device, hlp
     assert not hlp_fake_board.outbox and len(hlp_fake_device.events) == 1 and len(hlp_fake_device.pending) == 1
     hlp_fake_board.outbox.append(state_event(profile=3))                     # received, not yet read
     events = hlp_fake_device.take_events()
-    assert [hl.decode_state_changed(event)[0]['profile'] for event in events] == [2, 3]
+    assert [hl.decode_state_changed(event).record.state.profile for event in events] == [2, 3]
     assert hlp_fake_device.events == [] and hlp_fake_device.take_events() == []
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, sequence)[1] == sequence
 
@@ -210,7 +259,7 @@ def test_replies_read_early_are_kept_for_their_requests(hlp_fake_device, hlp_fak
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, second)[1] == second
     third = hlp_fake_device.send(hl.CMD_HELLO)
     hlp_fake_board.outbox.append(hello_reply(200))      # another application's
-    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a')['holder_token'] == 0xAAAA
+    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a').holder_token == 0xAAAA
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, first)[1] == first
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, third)[1] == third
     assert not hlp_fake_device.pending and not hlp_fake_device.awaited
@@ -225,14 +274,14 @@ def test_claim_takes_an_invalid_argument_reply_without_an_echo(hlp_fake_device):
 
 def test_exclusive_claim_sends_the_flag_and_holder(hlp_fake_device, hlp_fake_board):
     """Test that an exclusive claim's holder sends FLAG_HOLDER and the generation, a shared one the generation."""
-    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True) == {
-        'holder_token': 0xAAAA, 'holder_name': 'app-a', 'claim_exclusive': True, 'claim_generation': 2}
+    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True) == hl.Controller(
+        holder_token=0xAAAA, application_name='app-a', exclusive=True, claim_generation=2)
     assert hlp_fake_board.sent(hl.CMD_CLAIM)[-1][24] == hl.CLAIM_EXCLUSIVE and hlp_fake_device.holding_exclusive
     assert hlp_fake_board.sent(hl.CMD_CLAIM)[-1][2] == 0 and hlp_fake_device.generation == 2
-    state, _ = hlp_fake_device.read_record(hl.PAGE_STATE)
-    assert state['holder_token'] == 0xAAAA and state['claim_exclusive']
+    holder = hlp_fake_device.read_record(hl.PAGE_STATE).records[0].controller
+    assert holder.holder_token == 0xAAAA and holder.exclusive
     assert hlp_fake_board.sent(hl.CMD_GET_PAGE)[-1][2] == hl.FLAG_HOLDER | 2 << hl.FLAG_GENERATION_SHIFT
-    assert not hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a')['claim_exclusive']     # renewed shared
+    assert not hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a').exclusive     # renewed shared
     assert hlp_fake_board.sent(hl.CMD_CLAIM)[-1][24] == 0 and not hlp_fake_device.holding_exclusive
     hlp_fake_device.hello()
     assert hlp_fake_board.sent(hl.CMD_HELLO)[-1][2] == 2 << hl.FLAG_GENERATION_SHIFT
@@ -240,7 +289,7 @@ def test_exclusive_claim_sends_the_flag_and_holder(hlp_fake_device, hlp_fake_boa
     hlp_fake_device.request(hl.CMD_HELLO, flags=5 << hl.FLAG_GENERATION_SHIFT)
     assert hlp_fake_board.sent(hl.CMD_HELLO)[-1][2] == 5 << hl.FLAG_GENERATION_SHIFT
     holder = hlp_fake_device.claim(hl.CLAIM_GIVE_UP, 0xAAAA)
-    assert (holder['holder_token'], holder['holder_name']) == (0, '')
+    assert (holder.holder_token, holder.application_name) == (0, '')
     hlp_fake_device.hello()
     assert hlp_fake_device.generation == 0 and hlp_fake_board.sent(hl.CMD_HELLO)[-1][2] == 0
 
@@ -249,7 +298,7 @@ def test_a_refused_exclusive_claim_sends_no_holder_flag(hlp_fake_device, hlp_fak
     """Test that requests under another application's exclusive claim carry no FLAG_HOLDER and no generation."""
     hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'MESH'.ljust(16, b'\x00')
     holder = hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True)
-    assert (holder['holder_token'], holder['holder_name']) == (0xB2, 'MESH')
+    assert (holder.holder_token, holder.application_name) == (0xB2, 'MESH')
     hlp_fake_device.hello()
     assert not hlp_fake_device.holding_exclusive and hlp_fake_board.sent(hl.CMD_HELLO)[-1][2] == 0
 
@@ -266,14 +315,14 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.answer = claimed
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
-    assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == {
-        'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': True, 'claim_generation': 3}
+    assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == hl.Controller(
+        holder_token=0xB2, application_name='MESH', exclusive=True, claim_generation=3)
     assert str(rejected.value) == "command 0x21 rejected: CLAIMED by 'MESH' (claim 0x000000B2, generation 3)"
     holder = bytes(20) + bytes([0, 4])                    # the claim lapsed: no holder, the generation now
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
-    assert rejected.value.holder == {'holder_token': 0, 'holder_name': '', 'claim_exclusive': False,
-                                     'claim_generation': 4}
+    assert rejected.value.holder == hl.Controller(holder_token=0, application_name='', exclusive=False,
+                                                  claim_generation=4)
     assert str(rejected.value) == 'command 0x21 rejected: CLAIMED: the claim has ended (generation 4)'
 
 
@@ -284,13 +333,13 @@ def test_rejected_builds_the_error_from_a_reply():
     assert (error.status, error.offset, error.holder) == (hl.STATUS_INVALID, 7, None)
     holder = struct.pack('<I', 0xB2) + b'MESH'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 3])
     claimed = bytes([hl.CMD_STAGE | hl.REPLY_FLAG, 1, hl.STATUS_CLAIMED]) + holder + bytes(39)
-    assert hl.HostLightingDevice.rejected(hl.CMD_STAGE, claimed).holder == {
-        'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': True, 'claim_generation': 3}
+    assert hl.HostLightingDevice.rejected(hl.CMD_STAGE, claimed).holder == hl.Controller(
+        holder_token=0xB2, application_name='MESH', exclusive=True, claim_generation=3)
 
 
 def test_a_claim_name_over_16_bytes_is_refused(hlp_fake_device, hlp_fake_board):
     """Test that claim() and LightsClaim refuse a name the board would cut short, sending nothing."""
-    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'x' * 16)['holder_name'] == 'x' * 16
+    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'x' * 16).application_name == 'x' * 16
     with pytest.raises(ValueError, match='17 bytes, over the 16'):
         hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'x' * 17)
     with pytest.raises(ValueError, match='18 bytes'):
@@ -332,14 +381,15 @@ def test_rejection_carries_status_and_offset(hlp_fake_device):
 def test_get_page_ignores_another_applications_page_reply(hlp_fake_device, hlp_fake_board):
     """Test that a reply with our command and sequence but another page is not taken for ours."""
     hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, hlp_fake_board.lights, sequence=1)]
-    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_SUMMARY))['page'] == hl.PAGE_SUMMARY
+    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_SUMMARY)).page == hl.PAGE_SUMMARY
 
 
 def test_read_table_walks_every_record(hlp_fake_device, hlp_fake_board):
     """Test a walk across several replies, naming the first reply's token in the later reads."""
     hlp_fake_board.lights = [light_record(i, pin=2) for i in range(7)]
-    lights, token = hlp_fake_device.read_table(hl.PAGE_LIGHTS)
-    assert [light['first_led'] for light in lights] == list(range(7)) and token == hlp_fake_board.token
+    read = hlp_fake_device.read_table(hl.PAGE_LIGHTS)
+    token = read.token
+    assert [light.leds.first_led for light in read.records] == list(range(7)) and token == hlp_fake_board.token
     reads = [struct.unpack_from('<BHIH', read, 3) for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
     assert [(start, expected) for _, start, expected, _ in reads] == [(0, 0), (3, token), (6, token)]
 
@@ -348,40 +398,40 @@ def test_read_table_restarts_when_the_state_changes(hlp_fake_device, hlp_fake_bo
     """Test that a stale token mid-walk restarts the walk, so the records never mix two states."""
     hlp_fake_board.lights = [light_record(i) for i in range(5)]
     hlp_fake_board.stale_once_at = 3
-    lights, token = hlp_fake_device.read_table(hl.PAGE_LIGHTS)
-    assert len(lights) == 5 and token == 0x1234ABCD + 1
+    read = hlp_fake_device.read_table(hl.PAGE_LIGHTS)
+    assert len(read.records) == 5 and read.token == 0x1234ABCD + 1
     starts = [struct.unpack_from('<H', read, 4)[0] for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
     assert starts == [0, 3, 0, 3]
 
 
-def test_read_table_at_reads_under_the_callers_token(hlp_fake_device, hlp_fake_board):
+def test_read_table_under_a_token_reads_under_the_callers_token(hlp_fake_device, hlp_fake_board):
     """Test that every read names the caller's token and an out-of-date token raises without a retry."""
     hlp_fake_board.lights = [light_record(i, pin=2) for i in range(7)]
     token = hlp_fake_board.token
-    lights = hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, token)
-    assert [light['first_led'] for light in lights] == list(range(7))
+    lights = hlp_fake_device.read_table(hl.PAGE_LIGHTS, token=token).records
+    assert [light.leds.first_led for light in lights] == list(range(7))
     reads = [struct.unpack_from('<BHIH', read, 3) for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
     assert [(start, expected) for _, start, expected, _ in reads] == [(0, token), (3, token), (6, token)]
     hlp_fake_board.stale_once_at = 3
     with pytest.raises(hl.HostLightingStaleTokenError) as raised:
-        hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, token)
+        hlp_fake_device.read_table(hl.PAGE_LIGHTS, token=token)
     assert (raised.value.page, raised.value.token) == (hl.PAGE_LIGHTS, token)
     assert issubclass(hl.HostLightingStaleTokenError, hl.HostLightingError)
     assert len(hlp_fake_board.sent(hl.CMD_GET_PAGE)) == 3 + 2
-    with pytest.raises(ValueError):
-        hlp_fake_device.read_table_at(hl.PAGE_LIGHTS, 0)
 
 
 def test_read_identity_asks_again_for_groups_that_did_not_fit(hlp_fake_device, hlp_fake_board):
     """Test that page 0 is read until every string has come back."""
-    assert hlp_fake_device.read_identity() == dict(enumerate(hlp_fake_board.identity))
+    names = [item.name for item in fields(records.Identity)]
+    assert hlp_fake_device.read_identity() == records.Identity(**dict(zip(names, hlp_fake_board.identity)))
     masks = [struct.unpack_from('<H', read, 10)[0] for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)]
     assert masks[0] == 0xFF and len(masks) > 1
 
 
 def test_read_identity_reads_only_the_groups_asked_for(hlp_fake_device, hlp_fake_board):
     """Test that a mask reads only its groups."""
-    assert hlp_fake_device.read_identity(0b1001) == {0: hlp_fake_board.identity[0], 3: hlp_fake_board.identity[3]}
+    assert hlp_fake_device.read_identity(0b1001) == records.Identity(board_label=hlp_fake_board.identity[0],
+                                                                     firmware_version=hlp_fake_board.identity[3])
     assert [struct.unpack_from('<H', read, 10)[0] for read in hlp_fake_board.sent(hl.CMD_GET_PAGE)] == [0b1001]
 
 
@@ -393,7 +443,8 @@ def test_stage_entries_chunks_and_commits_once(hlp_fake_device, hlp_fake_board):
     assert [stage[4] for stage in stages] == [11, 2]
     assert [stage[2] for stage in stages] == [0, hl.FLAG_COMMIT_AFTER]
     assert stages[1][5:10] == struct.pack('<H', 11) + b'\x0b\x00\x00'
-    assert outcomes == [(2, 9, 0b11), (0, 2, 0)]
+    assert outcomes == [hl.StageOutcome(applied=2, skipped=9, outcome=0b11),
+                        hl.StageOutcome(applied=0, skipped=2, outcome=0)]
 
 
 def test_stage_payloads_are_built_without_sending(hlp_fake_device, hlp_fake_board):
@@ -417,8 +468,8 @@ def test_fill_and_configure(hlp_fake_device, hlp_fake_board):
     hlp_fake_device.fill((1, 2, 3, 4), hl.PIXEL_RGBW, commit=True)
     (fill,) = hlp_fake_board.sent(hl.CMD_FILL)
     assert fill[2] == hl.FLAG_COMMIT_AFTER and fill[3:8] == bytes([0x10, 1, 2, 3, 4])
-    assert hlp_fake_device.configure(overlay=True, keepalive_ms=300, brightness=False) == {
-        'overlay': True, 'keepalive_ms': 300, 'brightness_applied': False}
+    assert hlp_fake_device.configure(overlay=True, keepalive_ms=300, brightness=False) == hl.Settings(
+        takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False)
 
 
 def test_a_late_reply_is_a_timeout(hlp_fake_device, hlp_fake_board):
@@ -535,7 +586,7 @@ def test_send_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fa
 def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
     """Test an empty table, a board that stops making progress, and a state that keeps changing."""
     hlp_fake_board.profiles = []
-    assert hlp_fake_device.read_table(hl.PAGE_PROFILES) == ([], hlp_fake_board.token)
+    assert hlp_fake_device.read_table(hl.PAGE_PROFILES) == hl.PageRead(records=(), token=hlp_fake_board.token)
     hlp_fake_board.profiles = [[bytes([1, 1]) + bytes(16)]] * 5
     real_page = hlp_fake_board.page
     hlp_fake_board.page = lambda sequence, request: (
@@ -561,9 +612,9 @@ def test_get_page_takes_only_the_groups_it_asked_for(hlp_fake_device, hlp_fake_b
     """Test that a reply with our page and start but fewer groups (another application's mask) is skipped."""
     hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, hlp_fake_board.lights, mask=0b1,
                                                          sequence=1)]
-    records = hl.decode_records(hlp_fake_device.get_page(hl.PAGE_LIGHTS))
-    assert 'grid' in records[0]
-    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS, mask=0b1))['groups'] == 1
+    decoded = hl.decode_records(hlp_fake_device.get_page(hl.PAGE_LIGHTS))
+    assert decoded[0].has('grid')
+    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS, mask=0b1)).groups == 1
 
 
 def test_sequence_wraps_past_zero(hlp_fake_device, hlp_fake_board):
@@ -578,14 +629,13 @@ def test_decode_partial_groups_of_controls_and_animations():
     controls = [control_record(pin, 1) for pin in range(5)]
     reply = page_reply(hl.PAGE_CONTROLS, controls, mask=0b0111)
     header = hl.decode_page_header(reply)
-    assert (header['stride'], header['count']) == (14, 3)
-    assert set(hl.decode_records(reply)[2]) == {
-        'ordinal', 'key', 'source', 'index', 'action', 'duplicated', 'lit', 'instance', 'instances', 'first_led',
-        'grid_rectangle'}
+    assert (header.stride, header.count) == (14, 3)
+    assert hl.decode_records(reply)[2].groups == {'input', 'instances', 'position'}
     animations = [[bytes([1, 2, 1, 2]), bytes([n, 5, 5])] for n in range(20)]
     reply = page_reply(hl.PAGE_ANIMATIONS, animations, mask=0b10)
-    assert hl.decode_page_header(reply)['count'] == 16
-    assert hl.decode_records(reply)[15] == {'ordinal': 15, 'speeds': (15, 5, 5)}
+    assert hl.decode_page_header(reply).count == 16
+    assert hl.decode_records(reply)[15] == records.AnimationRecord(
+        ordinal=15, speeds=records.Speeds(idle=15, pressed=5, case=5))
 
 
 def test_subscribe_and_next_event(hlp_fake_device, hlp_fake_board):
@@ -595,9 +645,9 @@ def test_subscribe_and_next_event(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.before[hl.CMD_HELLO] = [state_event(profile=2)]    # arrives before the HELLO reply: kept
     hlp_fake_device.hello()
     hlp_fake_board.outbox.append(state_event(profile=3))
-    first, _ = hl.decode_state_changed(hlp_fake_device.next_event(0.01))
-    second, token = hl.decode_state_changed(hlp_fake_device.next_event(0.01))
-    assert (first['profile'], second['profile'], token) == (2, 3, 0x1234ABCD)
+    first = hl.decode_state_changed(hlp_fake_device.next_event(0.01))
+    second = hl.decode_state_changed(hlp_fake_device.next_event(0.01))
+    assert (first.record.state.profile, second.record.state.profile, second.token) == (2, 3, 0x1234ABCD)
     hlp_fake_board.outbox.append(hello_reply(9))              # another application's reply: skipped
     assert hlp_fake_device.next_event(0.01) is None
     sequence = hlp_fake_device.send(hl.CMD_HELLO)             # its reply, read while waiting for an event: kept
@@ -607,9 +657,9 @@ def test_subscribe_and_next_event(hlp_fake_device, hlp_fake_board):
 
 def test_decode_state_changed_matches_page_1():
     """Test that a STATE_CHANGED event decodes as the page 1 record it carries."""
-    record, token = hl.decode_state_changed(state_event(0xCAFE, animation=0xFFFF, name=b'MESH', token=7))
-    assert token == 0xCAFE and record['animation'] is None
-    assert record['holder_token'] == 7 and record['holder_name'] == 'MESH'
+    changed = hl.decode_state_changed(state_event(0xCAFE, animation=0xFFFF, name=b'MESH', token=7))
+    assert changed.token == 0xCAFE and changed.record.state.animation is None
+    assert changed.record.controller.holder_token == 7 and changed.record.controller.application_name == 'MESH'
     with pytest.raises(hl.HostLightingError, match='event 1 is not STATE_CHANGED'):
         hl.decode_state_changed(other_event())
 
@@ -632,13 +682,15 @@ def test_collect_returns_every_report(hlp_fake_device, hlp_fake_board):
 def test_stage_run_answers_only_the_last_report(hlp_model_board):
     """Test that a run is chunked to the capacity, sent without replies but the last, which commits."""
     device = fake_device(hlp_model_board)
-    assert device.stage_run(hl.ADDRESSING_LED_RUN, 0, [(1, 2, 3)] * 40, commit=True) == (2, 0, 0b11)
+    assert device.stage_run(hl.ADDRESSING_LED_RUN, 0, [(1, 2, 3)] * 40, commit=True) == hl.StageOutcome(
+        applied=2, skipped=0, outcome=0b11)
     stages = hlp_model_board.sent(hl.CMD_STAGE)
     assert [(stage[2], stage[4:7]) for stage in stages] == [
         (hl.FLAG_NO_REPLY, bytes([0, 0, 19])), (hl.FLAG_NO_REPLY, bytes([19, 0, 19])),
         (hl.FLAG_COMMIT_AFTER, bytes([38, 0, 2]))]
     assert hlp_model_board.live
-    assert device.stage_run(hl.ADDRESSING_LIGHT_RUN, 1, [(9, 9, 9, 9)] * 2, hl.PIXEL_RGBW) == (1, 1, 1)
+    assert device.stage_run(hl.ADDRESSING_LIGHT_RUN, 1, [(9, 9, 9, 9)] * 2, hl.PIXEL_RGBW) == hl.StageOutcome(
+        applied=1, skipped=1, outcome=1)
     with pytest.raises(ValueError):
         device.stage_run(hl.ADDRESSING_LIGHT, 0, [(1, 2, 3)])
     with pytest.raises(ValueError):
@@ -657,8 +709,8 @@ def test_a_claimed_page_read_names_the_holder(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.answer = claimed
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.get_page(hl.PAGE_STATE)
-    assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == {
-        'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': False, 'claim_generation': 5}
+    assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == hl.Controller(
+        holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=5)
 
 
 def test_a_lights_claim_reports_a_takeover(hlp_fake_device, hlp_fake_board):

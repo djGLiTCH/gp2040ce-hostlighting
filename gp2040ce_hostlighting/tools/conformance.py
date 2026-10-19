@@ -91,7 +91,7 @@ def bench():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        leds = args.leds or device.read_record(PAGE_SUMMARY)[0]['led_extent'] or 1
+        leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
         try:
             with holding_lights(device, 'hlp-bench', args.force, args.exclusive, brightness=False) as claim:
                 _bench(device, leds, args.quick, _keeper(claim))

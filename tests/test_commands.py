@@ -8,6 +8,7 @@ import struct
 import pytest
 
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting import records
 from gp2040ce_hostlighting.testing import (control_record, light_record, other_event, state_event, state_record,
                                            summary_record)
 from gp2040ce_hostlighting.tools import commands as tools
@@ -23,7 +24,8 @@ def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
     assert 'firmware version: v0.7.12-88-ga83f820' in out
     assert 'input mode 0, profile 1, player 1, animation 0, brightness step 5' in out
     assert '0 XINPUT - lighting once a PC is detected' in out and '4 PS4\n' in out
-    assert 'LED extent 19, limit 100, render rate 40 Hz, colour format 0\n' in out
+    assert 'LED extent 19, limit 100, render rate 40 Hz, colour format 0, no white channel\n' in out
+    assert 'button layouts 0 and 0, orientation 0\n' in out and 'changes counted on pages 8: 0, 9: 0' in out
     assert 'GP2 action 1 (BUTTON_PRESS_UP) LED 0 at (1,0), 1 light(s) from ordinal 0' in out
     assert 'GP12 action 13 unlit' in out and 'PCF3 action 5 unlit' in out
     assert '1 LED 1 x3 kind 1 (Case) at (0,0) palette slot 0' in out
@@ -351,14 +353,16 @@ def test_watch_prints_what_each_event_changes(hlp_run_on_fake_board, hlp_fake_bo
     hlp_run_on_fake_board(tools.watch, '--seconds', '0.05')
     lines = capsys.readouterr().out.splitlines()
     assert hlp_fake_board.subscribed == 1
-    assert lines[0].endswith('profile 1, player 1, animation 0, brightness_step 5, takeover_number 3, '
-                             'saved_brightness_step 5, holder_token 0x00000000, holder_name , '
-                             'claim_exclusive False, claim_generation 1, overlay False, '
-                             'keepalive_ms 2000, brightness_applied True, token 0x1234ABCD')
+    assert lines[0].endswith('takeover_live False, brightness_unsaved False, animations_idle False, input_mode 0, '
+                             'profile 1, player 1, animation 0, brightness_step_shown 5, takeover_number 3, '
+                             'saved_brightness_step 5, holder_token 0x00000000, application_name , '
+                             'exclusive False, claim_generation 1, takeover 0, keepalive_ms 2000, '
+                             'brightness_applied True, token 0x1234ABCD')
     assert 'ordinal' not in lines[0]
     assert lines[1].endswith(' profile 1 -> 2, token 0x1234ABCD -> 0x00000002')
     assert lines[2].endswith(' no change')
-    assert lines[3].endswith(' animation 0 -> off, holder_token 0x00000000 -> 0x00000005, holder_name  -> MESH')
+    assert lines[3].endswith(' animation 0 -> off, holder_token 0x00000000 -> 0x00000005, '
+                             'application_name  -> MESH')
     assert len(lines) == 4
 
 
@@ -440,8 +444,9 @@ def test_buttons_overlay_takes_the_buttons_the_board_lights(hlp_run_on_model_boa
 
 def test_overlay_buttons_follow_the_proto_names_when_given():
     """Test that a button's action comes from the .proto names when present, and from enums.proto's value if not."""
-    controls = [{'action': 40, 'lit': True}, {'action': 6, 'lit': True}, {'action': 7, 'lit': False},
-                {'action': 1, 'lit': True}]
+    controls = [records.ControlRecord(ordinal=ordinal, input=records.ControlInput(
+        key=ordinal, source='gpio', index=ordinal, action=action, duplicated=False, lit=lit))
+        for ordinal, (action, lit) in enumerate(((40, True), (6, True), (7, False), (1, True)))]
     assert tools.overlay_buttons(controls, {}) == [('B2', 6)]
     names = {'GpioAction': {40: 'BUTTON_PRESS_B1', 6: 'BUTTON_PRESS_B2', 7: 'BUTTON_PRESS_B3'}}
     assert tools.overlay_buttons(controls, names) == [('B1', 40), ('B2', 6)]
@@ -495,7 +500,8 @@ def test_a_retaken_claim_gets_its_settings_again():
 
         def claim(self, action, token, name, flags, exclusive):
             self.generation = self.retaken or self.generation
-            return {'holder_token': token, 'holder_name': ''}
+            return hl.Controller(holder_token=token, application_name='', exclusive=False,
+                                 claim_generation=self.generation)
 
         def configure(self, **settings):
             self.configured.append(settings)

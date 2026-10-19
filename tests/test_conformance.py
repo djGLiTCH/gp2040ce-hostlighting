@@ -298,7 +298,8 @@ def test_conformance_reports_an_ownerless_light_with_an_action(hlp_run_on_model_
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert 'FAIL  Lights owner action, flag and instances agree with Controls' in out
-    assert 'light 1: (5, False, 0, 0) vs (None, False, 0, 0)' in out
+    assert ('light 1: (5, False, Instances(instance=0, instances=0)) vs '
+            '(None, False, Instances(instance=0, instances=0))') in out
 
 
 def test_conformance_reports_an_unlit_control_with_a_position(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -569,7 +570,8 @@ def test_conformance_catches_settings_that_outlast_their_holder(hlp_run_on_model
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'FAIL  and puts the CONFIGURE settings back to their defaults  ((False, 300, True))' in out
+    assert ('FAIL  and puts the CONFIGURE settings back to their defaults  '
+            '(Settings(takeover=0, keepalive_ms=300, brightness_applied=True))') in out
     assert 'FAIL  a lapse is a change of holder too: the generation steps, the settings return' in out
 
 
@@ -687,8 +689,8 @@ def test_round_trips_stop_once_another_application_holds_the_claim():
     """Test that hlp-bench takes a HELLO refused under its generation as the claim lost, not as a lost reply."""
     class Device:
         def request_ok(self, command):
-            raise hl.HostLightingRejectedError(command, hl.STATUS_CLAIMED, 0, {
-                'holder_token': 0xB2, 'holder_name': 'MESH', 'claim_exclusive': False, 'claim_generation': 3})
+            raise hl.HostLightingRejectedError(command, hl.STATUS_CLAIMED, 0, hl.Controller(
+                holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=3))
 
     with pytest.raises(hl_conformance._TakenOver):
         hl_conformance._round_trips(Device(), 3)

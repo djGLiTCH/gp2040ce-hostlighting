@@ -21,6 +21,7 @@ import secrets
 import struct
 import sys
 import time
+from dataclasses import fields
 from importlib import metadata
 from typing import Iterator, Optional
 
@@ -28,14 +29,15 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLEAR, CMD_HELLO,
                                             CMD_REBOOT, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS,
-                                            CMD_SET_INPUT_MODE, CMD_SET_PROFILE, EVENT_STATE_CHANGED, IDENTITY_FIELDS,
-                                            KIND_BUTTON, KIND_CASE, KIND_PLAYERS, MAGIC_INPUT_MODE, MAGIC_REBOOT,
-                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
-                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
-                                            REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, HostLightingDevice,
+                                            CMD_SET_INPUT_MODE, CMD_SET_PROFILE, EVENT_STATE_CHANGED, KIND_BUTTON,
+                                            KIND_CASE, KIND_PLAYERS, MAGIC_INPUT_MODE, MAGIC_REBOOT, PAGE_ANIMATIONS,
+                                            PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE,
+                                            PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_WEBCONFIG,
+                                            SPEED_UNCHANGED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingDevice,
                                             HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
                                             LightsClaim, decode_state_changed, key_name, open_device, send_reboot,
                                             stage_capacity)
+from gp2040ce_hostlighting.records import Hello, StateRecord
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +212,8 @@ def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive
     """
     token = secrets.randbits(32) or 1
     holder = device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, token, name.encode(), exclusive=exclusive)
-    if holder['holder_token'] != token:
-        raise SystemExit(f"'{holder['holder_name']}' holds the lights (claim 0x{holder['holder_token']:08X}). "
+    if not holder.held_by(token):
+        raise SystemExit(f"'{holder.application_name}' holds the lights (claim 0x{holder.holder_token:08X}). "
                          "Add --force to take them over")
     claim = LightsClaim(device, name, token, exclusive, report=print)
     try:
@@ -242,9 +244,9 @@ def ping():
     try:
         hello = device.hello()
         identity = device.read_identity()
-        print(f"{identity.get(0, '?')} ({identity.get(3, '?')}), board ID {hello['board_id']}")
-        print(f"magic {hello['magic'].decode('ascii', 'replace')}, protocol {hello['major']}.{hello['minor']}, "
-              f"reply queue limit {hello['queue_limit']}")
+        print(f"{identity.board_label or '?'} ({identity.firmware_version or '?'}), board ID {hello.board_id}")
+        print(f"magic {hello.magic.decode('ascii', 'replace')}, protocol {hello.major}.{hello.minor}, "
+              f"reply queue limit {hello.reply_queue_limit}")
         count = 100
         start = time.monotonic()
         for _ in range(count):
@@ -266,8 +268,9 @@ def caps():
         _print_hello(device.hello())
         identity = device.read_identity()
         print("page 0 (identity):")
-        for group, field in enumerate(IDENTITY_FIELDS):
-            print(f"  {field}: {identity.get(group, '?')}")
+        for item in fields(identity):
+            label = item.name.replace('_', ' ').replace(' id', ' ID')
+            print(f"  {label}: {getattr(identity, item.name) or '?'}")
         _print_state(device)
         _print_input_modes(device)
         _print_summary(device, names)
@@ -279,87 +282,96 @@ def caps():
         device.close()
 
 
-def _print_hello(hello: dict) -> None:
+def _print_hello(hello: Hello) -> None:
     """Print the HELLO reply's version, board ID and capabilities."""
-    def listed(values: set) -> str:
+    def listed(values: frozenset) -> str:
         return ', '.join(str(value) for value in sorted(values)) or 'none'
 
-    print(f"protocol {hello['major']}.{hello['minor']}, board ID {hello['board_id']}, "
-          f"reply queue limit {hello['queue_limit']}")
-    print("  commands: " + ', '.join(f"0x{command:02X}" for command in sorted(hello['commands'])))
-    print(f"  pages: {listed(hello['pages'])}; request flags: {listed(hello['flags'])}; "
-          f"addressing modes: {listed(hello['addressing'])}; pixel formats: {listed(hello['pixel_formats'])}; "
-          f"events: {listed(hello['events'])} (subscribed now: {listed(hello['subscribed'])})")
+    print(f"protocol {hello.major}.{hello.minor}, board ID {hello.board_id}, "
+          f"reply queue limit {hello.reply_queue_limit}")
+    print("  commands: " + ', '.join(f"0x{command:02X}" for command in sorted(hello.commands)))
+    print(f"  pages: {listed(hello.pages)}; request flags: {listed(hello.request_flags)}; "
+          f"addressing modes: {listed(hello.addressing_modes)}; pixel formats: {listed(hello.pixel_formats)}; "
+          f"events: {listed(hello.events)} (subscribed now: {listed(hello.events_enabled)})")
 
 
 def _print_state(device: HostLightingDevice) -> None:
     """Read and print page 1, the board's state."""
-    state, token = device.read_record(PAGE_STATE)
-    animation = 'off' if state['animation'] is None else state['animation']
-    print(f"page 1 (state), token 0x{token:08X}: input mode {state['input_mode']}, profile {state['profile']}, "
-          f"player {state['player']}, animation {animation}, brightness step {state['brightness_step']}"
-          + (f" (unsaved; saved step {state['saved_brightness_step']})" if state['brightness_unsaved'] else ''))
-    live = 'live' if state['takeover_live'] else 'not live'
-    print(f"  takeover {live} (number {state['takeover_number']}), "
-          f"{'overlay' if state['overlay'] else 'whole-frame'}, keepalive {state['keepalive_ms']} ms, "
-          f"board brightness {'applied' if state['brightness_applied'] else 'not applied'} to host pixels")
-    if state['holder_token']:
-        kind = 'exclusive' if state['claim_exclusive'] else 'shared'
-        print(f"  claimed by '{state['holder_name']}' (token 0x{state['holder_token']:08X}, {kind}), "
-              f"claim generation {state['claim_generation']}")
+    read = device.read_record(PAGE_STATE)
+    record = read.records[0]
+    state, holder, settings = record.state, record.controller, record.settings
+    animation = 'off' if state.animation is None else state.animation
+    print(f"page 1 (state), token 0x{read.token:08X}: input mode {state.input_mode}, profile {state.profile}, "
+          f"player {state.player}, animation {animation}{' (idle)' if state.animations_idle else ''}, "
+          f"brightness step {state.brightness_step_shown}"
+          + (f" (unsaved; saved step {state.saved_brightness_step})" if state.brightness_unsaved else ''))
+    live = 'live' if state.takeover_live else 'not live'
+    takeover = {TAKEOVER_WHOLE_FRAME: 'whole-frame', TAKEOVER_OVERLAY: 'overlay'}.get(settings.takeover,
+                                                                                      f"takeover {settings.takeover}")
+    print(f"  takeover {live} (number {state.takeover_number}), {takeover}, keepalive {settings.keepalive_ms} ms, "
+          f"board brightness {'applied' if settings.brightness_applied else 'not applied'} to host pixels")
+    if holder.holder_token:
+        kind = 'exclusive' if holder.exclusive else 'shared'
+        print(f"  claimed by '{holder.application_name}' (token 0x{holder.holder_token:08X}, {kind}), "
+              f"claim generation {holder.claim_generation}")
     else:
-        print(f"  unclaimed, claim generation {state['claim_generation']}")
+        print(f"  unclaimed, claim generation {holder.claim_generation}")
 
 
 def _print_input_modes(device: HostLightingDevice) -> None:
     """Read and print page 2, the input modes SET_INPUT_MODE accepts."""
-    modes, _ = device.read_table(PAGE_INPUT_MODES)
+    modes = device.read_table(PAGE_INPUT_MODES).records
     print(f"page 2 (input modes): {len(modes)}")
     for mode in modes:
         note = ''
-        if mode['lighting']:
-            note = ' - lighting once a PC is detected' if mode['after_detection'] else ' - lighting'
-        print(f"  {mode['mode']:3d} {mode['name']}{note}")
+        if mode.mode.lighting:
+            note = ' - lighting once a PC is detected' if mode.mode.detected else ' - lighting'
+        print(f"  {mode.mode.value:3d} {mode.name}{note}")
 
 
 def _print_summary(device: HostLightingDevice, names: dict) -> None:
     """Read and print page 8, the summary a host sizes itself from."""
-    summary, _ = device.read_record(PAGE_SUMMARY)
-    rate = f"{summary['render_hz']} Hz" if summary['render_hz'] else 'not stated'
-    print(f"page 8 (summary): LED extent {summary['led_extent']}, limit {summary['led_limit']}, "
-          f"render rate {rate}, colour format {_named(summary['colour_format'], names, 'LEDFormat_Proto')}")
-    print(f"  brightness maximum {summary['brightness_maximum']}, {summary['brightness_steps']} steps; "
-          f"animation speed steps {summary['speed_steps']}; grid {summary['grid_width']}x{summary['grid_height']}")
-    print(f"  {summary['profiles']} profiles, {summary['controls']} controls ({summary['lit_controls']} lit, "
-          f"{summary['unlit_controls']} unlit), {summary['lights']} lights, {summary['animations']} animations")
-    print(f"  button layouts {_named(summary['button_layout'], names, 'ButtonLayout')} and "
-          f"{_named(summary['button_layout_right'], names, 'ButtonLayoutRight')}; changes counted on pages "
-          + ', '.join(f"{page}: {count}" for page, count in summary['page_changes'].items()))
+    record = device.read_record(PAGE_SUMMARY).records[0]
+    summary = record.summary
+    rate = f"{summary.render_hz} Hz" if summary.render_hz else 'not stated'
+    print(f"page 8 (summary): LED extent {summary.led_extent}, limit {summary.led_limit}, render rate {rate}, "
+          f"colour format {_named(summary.colour_format, names, 'LEDFormat_Proto')}, "
+          f"{'a' if summary.white_channel else 'no'} white channel")
+    print(f"  brightness maximum {summary.brightness_maximum}, {summary.brightness_steps} steps; "
+          f"animation speed steps {summary.animation_speed_steps}; grid {summary.grid_width}x{summary.grid_height}")
+    print(f"  {summary.profiles} profiles, {summary.controls} controls ({summary.lit_controls} lit, "
+          f"{summary.unlit_controls} unlit), {summary.lights} lights, {summary.animations} animations")
+    print(f"  button layouts {_named(summary.button_layout, names, 'ButtonLayout')} and "
+          f"{_named(summary.button_layout_right, names, 'ButtonLayoutRight')}, orientation "
+          f"{_named(summary.button_layout_orientation, names, 'ButtonLayoutOrientation')}")
+    print("  changes counted on pages "
+          + ', '.join(f"{page}: {count}" for page, count in enumerate(record.changes.counters, PAGE_SUMMARY)))
 
 
 def _print_profiles(device: HostLightingDevice) -> None:
     """Read and print page 9, the input profiles."""
-    profiles, _ = device.read_table(PAGE_PROFILES)
+    profiles = [record.profile for record in device.read_table(PAGE_PROFILES).records]
     print(f"page 9 (profiles): {len(profiles)}")
     for profile in profiles:
-        state = 'enabled' if profile['enabled'] else 'disabled'
-        print(f"  {profile['number']} {state} {profile['label']}".rstrip())
+        state = 'enabled' if profile.enabled else 'disabled'
+        print(f"  {profile.number} {state} {profile.label}".rstrip())
 
 
 def _print_controls(device: HostLightingDevice, names: dict) -> None:
     """Read and print page 10, every input with an action, lit or not."""
-    controls, token = device.read_table(PAGE_CONTROLS)
-    lit = sum(1 for control in controls if control['lit'])
-    print(f"page 10 (controls): {len(controls)} ({lit} lit), token 0x{token:08X}")
+    read = device.read_table(PAGE_CONTROLS)
+    controls = read.records
+    lit = sum(1 for control in controls if control.input.lit)
+    print(f"page 10 (controls): {len(controls)} ({lit} lit), token 0x{read.token:08X}")
     for control in controls:
-        pieces = [key_name(control['key']), 'action ' + _named(control['action'], names, 'GpioAction')]
-        if control['instances'] > 1:
-            pieces.append(f"instance {control['instance']} of {control['instances']}")
-        if control['lit']:
-            x0, y0, x1, y1 = control['grid_rectangle']
+        pieces = [key_name(control.input.key), 'action ' + _named(control.input.action, names, 'GpioAction')]
+        if control.instances.instances > 1:
+            pieces.append(f"instance {control.instances.instance} of {control.instances.instances}")
+        if control.input.lit:
+            x0, y0, x1, y1 = control.position.grid_rectangle
             cell = f"({x0},{y0})" if (x0, y0) == (x1, y1) else f"({x0},{y0})-({x1},{y1})"
-            pieces.append(f"LED {control['first_led']} at {cell}, {control['light_count']} light(s) from "
-                          f"ordinal {control['first_light']}")
+            pieces.append(f"LED {control.position.first_led} at {cell}, {control.lights.light_count} light(s) "
+                          f"from ordinal {control.lights.first_light}")
         else:
             pieces.append('unlit')
         print("  " + ' '.join(pieces))
@@ -367,34 +379,36 @@ def _print_controls(device: HostLightingDevice, names: dict) -> None:
 
 def _print_lights(device: HostLightingDevice, names: dict) -> None:
     """Read and print page 11, every light."""
-    lights, token = device.read_table(PAGE_LIGHTS)
-    print(f"page 11 (lights): {len(lights)}, token 0x{token:08X}")
-    for ordinal, light in enumerate(lights):
-        pieces = [f"{ordinal:3d} LED {light['first_led']}"]
-        if light['led_count'] > 1:
-            pieces.append(f"x{light['led_count']}")
-        pieces.append('kind ' + _named(light['kind'], names, 'LightType'))
-        if light['owner_pin'] is not None:
-            owner = key_name(light['owner_pin'])
-            if light['owner_action'] is not None:
-                owner += ' action ' + _named(light['owner_action'], names, 'GpioAction')
-            if light['owner_instances'] > 1:
-                owner += f" (instance {light['owner_instance']} of {light['owner_instances']})"
+    read = device.read_table(PAGE_LIGHTS)
+    lights = read.records
+    print(f"page 11 (lights): {len(lights)}, token 0x{read.token:08X}")
+    for light in lights:
+        pieces = [f"{light.ordinal:3d} LED {light.leds.first_led}"]
+        if light.leds.led_count > 1:
+            pieces.append(f"x{light.leds.led_count}")
+        pieces.append('kind ' + _named(light.kind.value, names, 'LightType'))
+        if light.owner.pin is not None:
+            owner = key_name(light.owner.pin)
+            if light.owner.action is not None:
+                owner += ' action ' + _named(light.owner.action, names, 'GpioAction')
+            if light.owner_instances.instances > 1:
+                owner += f" (instance {light.owner_instances.instance} of {light.owner_instances.instances})"
             pieces.append(owner)
-        pieces.append("at (%d,%d)" % light['grid'])
-        if light['palette_slot'] is not None:
-            pieces.append(f"palette slot {light['palette_slot']}")
+        pieces.append(f"at ({light.grid.x},{light.grid.y})")
+        if light.palette.slot is not None:
+            pieces.append(f"palette slot {light.palette.slot}")
         print("  " + ' '.join(pieces))
 
 
 def _print_animations(device: HostLightingDevice) -> None:
     """Read and print page 12, the on-board animations."""
-    animations, _ = device.read_table(PAGE_ANIMATIONS)
+    animations = device.read_table(PAGE_ANIMATIONS).records
     print(f"page 12 (animations): {len(animations)}")
-    for ordinal, animation in enumerate(animations):
-        state = 'enabled' if animation['enabled'] else 'disabled'
-        print(f"  {ordinal} {state}, effects idle/pressed/case %d/%d/%d, speeds %d/%d/%d"
-              % (animation['effects'] + animation['speeds']))
+    for animation in animations:
+        effects, speeds = animation.effects, animation.speeds
+        state = 'enabled' if effects.enabled else 'disabled'
+        print(f"  {animation.ordinal} {state}, effects idle/pressed/case {effects.idle}/{effects.pressed}/"
+              f"{effects.case}, speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
 
 
 @hlp_command
@@ -476,26 +490,35 @@ def _apply(device: HostLightingDevice, option: str, command: int, payload: bytes
 
 def _print_settings(device: HostLightingDevice, names: dict) -> None:
     """Print the settings hlp-settings changes, with the values each accepts."""
-    state, _ = device.read_record(PAGE_STATE)
-    summary, _ = device.read_record(PAGE_SUMMARY)
-    profiles, _ = device.read_table(PAGE_PROFILES)
-    animations, _ = device.read_table(PAGE_ANIMATIONS)
-    print(f"profile {state['profile']}:")
+    state = device.read_record(PAGE_STATE).records[0].state
+    summary = device.read_record(PAGE_SUMMARY).records[0].summary
+    profiles = [record.profile for record in device.read_table(PAGE_PROFILES).records]
+    animations = device.read_table(PAGE_ANIMATIONS).records
+    print(f"profile {state.profile}:")
     for profile in profiles:
-        mark = '*' if profile['number'] == state['profile'] else ' '
-        enabled = 'enabled' if profile['enabled'] else 'disabled'
-        print(f"  {mark} {profile['number']} {enabled} {profile['label']}".rstrip())
-    animation = 'off' if state['animation'] is None else state['animation']
-    print(f"animation {animation} (an enabled ordinal, or off); speeds 0-{summary['speed_steps']}:")
-    for ordinal, entry in enumerate(animations):
-        mark = '*' if ordinal == state['animation'] else ' '
-        idle, pressed, case = entry['effects']
-        print(f"  {mark} {ordinal} {'enabled' if entry['enabled'] else 'disabled'}, "
-              f"idle {_named(idle, names, 'AnimationNonPressedEffects')}, "
-              f"pressed {_named(pressed, names, 'AnimationPressedEffects')}, "
-              f"case {_named(case, names, 'AnimationNonPressedEffects')}, speeds %d/%d/%d" % entry['speeds'])
-    print(f"brightness step {state['brightness_step']} of 0-{summary['brightness_steps']} "
-          f"(maximum {summary['brightness_maximum']}){', unsaved' if state['brightness_unsaved'] else ''}")
+        mark = '*' if profile.number == state.profile else ' '
+        enabled = 'enabled' if profile.enabled else 'disabled'
+        print(f"  {mark} {profile.number} {enabled} {profile.label}".rstrip())
+    animation = 'off' if state.animation is None else state.animation
+    print(f"animation {animation} (an enabled ordinal, or off); speeds 0-{summary.animation_speed_steps}:")
+    for entry in animations:
+        effects, speeds = entry.effects, entry.speeds
+        mark = '*' if entry.ordinal == state.animation else ' '
+        print(f"  {mark} {entry.ordinal} {'enabled' if effects.enabled else 'disabled'}, "
+              f"idle {_named(effects.idle, names, 'AnimationNonPressedEffects')}, "
+              f"pressed {_named(effects.pressed, names, 'AnimationPressedEffects')}, "
+              f"case {_named(effects.case, names, 'AnimationNonPressedEffects')}, "
+              f"speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
+    print(f"brightness step {state.brightness_step_shown} of 0-{summary.brightness_steps} "
+          f"(maximum {summary.brightness_maximum}){', unsaved' if state.brightness_unsaved else ''}")
+
+
+def _state_fields(record: StateRecord, token: int) -> dict:
+    """Page 1's fields for hlp-watch, group by group in order, then the state token."""
+    shown = {item.name: getattr(group, item.name) for group in (record.state, record.controller, record.settings)
+             for item in fields(group)}
+    shown['token'] = token
+    return shown
 
 
 def _state_text(key: str, value) -> str:
@@ -519,12 +542,11 @@ def watch():
     try:
         if not device.subscribe(1 << EVENT_STATE_CHANGED) & (1 << EVENT_STATE_CHANGED):
             raise HostLightingError("the board did not enable STATE_CHANGED")
-        last, token = device.read_record(PAGE_STATE)
-        last['token'] = token
+        read = device.read_record(PAGE_STATE)
+        last = _state_fields(read.records[0], read.token)
         device.events.clear()       # sent before the page 1 reply, so older than it
         start = time.monotonic()
-        shown = [f"{key} {_state_text(key, value)}" for key, value in last.items() if key != 'ordinal']
-        print("   0.000 " + ', '.join(shown))
+        print("   0.000 " + ', '.join(f"{key} {_state_text(key, value)}" for key, value in last.items()))
         while True:
             left = args.seconds - (time.monotonic() - start) if args.seconds else 0.5
             if left <= 0:
@@ -532,8 +554,8 @@ def watch():
             event = device.next_event(min(0.5, left))
             if event is None or event[1] != EVENT_STATE_CHANGED:
                 continue
-            now, token = decode_state_changed(event)
-            now['token'] = token
+            changed = decode_state_changed(event)
+            now = _state_fields(changed.record, changed.token)
             changes = [f"{key} {_state_text(key, last[key])} -> {_state_text(key, value)}"
                        for key, value in now.items() if value != last[key]]
             print(f"{time.monotonic() - start:8.3f} " + (', '.join(changes) or 'no change'))
@@ -604,15 +626,15 @@ def set_light():
     try:
         with holding_lights(device, 'hlp-set-light', args.force, args.exclusive) as claim:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
-            applied = sum(outcome[0] for outcome in outcomes)
-            skipped = sum(outcome[1] for outcome in outcomes)
+            applied = sum(outcome.applied for outcome in outcomes)
+            skipped = sum(outcome.skipped for outcome in outcomes)
             print(f"{applied} applied, {skipped} skipped for {args.seconds} s")
             if skipped:
                 capacity = stage_capacity(addressing, pixel_format)
                 missing = [entries[report * capacity + bit][0]
-                           for report, (_, _, mask) in enumerate(outcomes)
+                           for report, outcome in enumerate(outcomes)
                            for bit in range(min(capacity, len(entries) - report * capacity))
-                           if not (mask >> bit) & 1]
+                           if not (outcome.outcome >> bit) & 1]
                 print(f"skipped addresses (no light, or none below the LED limit): {missing}")
             claim.keep(args.seconds)
     finally:
@@ -633,7 +655,7 @@ def stream():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        leds = args.leds or device.read_record(PAGE_SUMMARY)[0]['led_extent'] or 1
+        leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
         with holding_lights(device, 'hlp-stream', args.force, args.exclusive) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:
@@ -685,7 +707,7 @@ def _time_expiry(device: HostLightingDevice) -> None:
     """Go silent and report when page 1 shows the takeover ended."""
     print("silent: waiting for the keepalive timeout")
     start = time.monotonic()
-    while device.read_record(PAGE_STATE)[0]['takeover_live'] and time.monotonic() - start < 15:
+    while device.read_record(PAGE_STATE).records[0].state.takeover_live and time.monotonic() - start < 15:
         time.sleep(0.02)
     print(f"takeover ended after {time.monotonic() - start:.2f} s")
 
@@ -696,7 +718,7 @@ OVERLAY_BUTTONS = (('BUTTON_PRESS_B1', 5), ('BUTTON_PRESS_B2', 6), ('BUTTON_PRES
                    ('BUTTON_PRESS_L1', 9), ('BUTTON_PRESS_R1', 10), ('BUTTON_PRESS_L2', 11), ('BUTTON_PRESS_R2', 12))
 
 
-def overlay_buttons(controls: list, names: dict) -> list:
+def overlay_buttons(controls: tuple, names: dict) -> list:
     """Pick the buttons of OVERLAY_BUTTONS that the board lights.
 
     :param controls: the page 10 records
@@ -704,7 +726,7 @@ def overlay_buttons(controls: list, names: dict) -> list:
     :return: [(label, action)] in the order of OVERLAY_BUTTONS, for the controls the board reports as lit
     """
     values = {name: value for value, name in names.get('GpioAction', {}).items()}
-    lit = {control['action'] for control in controls if control['lit']}
+    lit = {control.input.action for control in controls if control.input.lit}
     return [(name[len('BUTTON_PRESS_'):], values.get(name, fallback)) for name, fallback in OVERLAY_BUTTONS
             if values.get(name, fallback) in lit]
 
@@ -721,25 +743,25 @@ def buttons():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        controls, _ = device.read_table(PAGE_CONTROLS)
-        lights, _ = device.read_table(PAGE_LIGHTS)
+        controls = device.read_table(PAGE_CONTROLS).records
+        lights = device.read_table(PAGE_LIGHTS).records
         with holding_lights(device, 'hlp-buttons', args.force, args.exclusive) as claim:
             _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names()))
     finally:
         device.close()
 
 
-def _buttons(claim: LightsClaim, controls: list, lights: list, seconds: float, overlay: list) -> None:
+def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float, overlay: list) -> None:
     """Run hlp-buttons' three phases, stopping if another application takes the lights over.
 
     The hand-back restores the CONFIGURE defaults, whole-frame takeover included.
     """
     device = claim.device
-    actions = sorted({control['action'] for control in controls if control['lit']})
+    actions = sorted({control.input.action for control in controls if control.input.lit})
     if actions:
         hues = [(action, _hue(i, len(actions))) for i, action in enumerate(actions)]
         outcomes = device.stage_entries(ADDRESSING_ACTION, hues, commit=True)
-        print(f"phase 1: {sum(outcome[0] for outcome in outcomes)} of {len(actions)} lit actions, one hue each")
+        print(f"phase 1: {sum(outcome.applied for outcome in outcomes)} of {len(actions)} lit actions, one hue each")
         if not claim.keep(seconds):
             return
     if lights:
@@ -754,7 +776,7 @@ def _buttons(claim: LightsClaim, controls: list, lights: list, seconds: float, o
         outcomes = device.stage_entries(ADDRESSING_ACTION, [(action, (255, 255, 255)) for _, action in overlay],
                                         commit=True)
         print(f"phase 3: overlay, {' '.join(label for label, _ in overlay)} white over the animations "
-              f"({sum(outcome[0] for outcome in outcomes)} applied)")
+              f"({sum(outcome.applied for outcome in outcomes)} applied)")
     else:
         print("phase 3: overlay, the board lights none of B1-B4, L1, R1, L2 and R2")
     claim.keep(seconds)
@@ -771,23 +793,23 @@ def input_mode():
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
     try:
-        modes, _ = device.read_table(PAGE_INPUT_MODES)
-        known = {mode['mode']: mode for mode in modes}
+        modes = device.read_table(PAGE_INPUT_MODES).records
+        known = {mode.mode.value: mode for mode in modes}
         if args.mode not in known:
             raise SystemExit(f"the board does not accept input mode {args.mode}. It accepts "
-                             + ', '.join(f"{mode['mode']} ({mode['name']})" for mode in modes))
-        if not known[args.mode]['lighting']:
+                             + ', '.join(f"{mode.mode.value} ({mode.name})" for mode in modes))
+        if not known[args.mode].mode.lighting:
             leave = ("only the web configurator, a boot-time button hold, the reboot hotkeys or the display menu "
                      "leave it")
             if not args.force:
-                raise SystemExit(f"{known[args.mode]['name']} has no lighting interface and these tools cannot "
+                raise SystemExit(f"{known[args.mode].name} has no lighting interface and these tools cannot "
                                  f"switch the board back: {leave}. Add --force to switch anyway")
-            print(f"note: {known[args.mode]['name']} has no lighting interface, and {leave}")
-        elif known[args.mode]['after_detection']:
-            print(f"note: {known[args.mode]['name']} presents the lighting interface once the board has detected "
+            print(f"note: {known[args.mode].name} has no lighting interface, and {leave}")
+        elif known[args.mode].mode.detected:
+            print(f"note: {known[args.mode].name} presents the lighting interface once the board has detected "
                   "a PC, a few seconds and a second enumeration after it starts")
         send_reboot(device, CMD_SET_INPUT_MODE, bytes([args.mode]) + MAGIC_INPUT_MODE)
-        print(f"input mode {args.mode} ({known[args.mode]['name']}) set. The board is rebooting")
+        print(f"input mode {args.mode} ({known[args.mode].name}) set. The board is rebooting")
     finally:
         device.close()
 

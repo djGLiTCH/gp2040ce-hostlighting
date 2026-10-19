@@ -44,10 +44,13 @@ A host drives the lights in these steps:
 
 1. Open a board with `open_device()`. With several boards connected, pass a hex prefix of the board ID.
    `find_board()` opens one board by its whole ID and returns `None` when it is not connected.
-2. Read what the board reports with `hello()`, `read_identity()`, `read_record()` and `read_table()`. Each
-   record carries its `ordinal`, its position in the page.
+2. Read what the board reports with `hello()`, `read_identity()`, `read_record()` and `read_table()`. The two
+   reads give a `PageRead` of the records and the state token. Each record carries its `ordinal`, its position
+   in the page, and one attribute per field group, named after the specification's, such as `light.owner.pin`.
+   Reading a group the reply did not return raises `HostLightingGroupNotReadError`, and `record.has(group)`
+   says whether it was returned.
 3. Take the claim with `claim(CLAIM_TAKE, token, name)`, where the name is up to 16 bytes. The claim is held
-   when the `holder_token` of the holder it returns is the token.
+   when the holder it returns is `held_by()` the token.
 4. Keep the claim in a `LightsClaim` and send the settings with its `configure()`.
 5. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
 6. Renew the claim within each keepalive timeout with `renew()`, or wait and renew with `keep()`.
@@ -62,11 +65,11 @@ from gp2040ce_hostlighting.protocol import ADDRESSING_LED_RUN, CLAIM_TAKE, PAGE_
 
 device = open_device()
 try:
-    leds = device.read_record(PAGE_SUMMARY)[0]['led_extent']
+    leds = device.read_record(PAGE_SUMMARY).records[0].summary.led_extent
     token = secrets.randbits(32) or 1
     holder = device.claim(CLAIM_TAKE, token, b'my-host')
-    if holder['holder_token'] != token:
-        raise SystemExit(f"'{holder['holder_name']}' holds the lights")
+    if not holder.held_by(token):
+        raise SystemExit(f"'{holder.application_name}' holds the lights")
     claim = LightsClaim(device, 'my-host', token)
     claim.configure(keepalive_ms=2000)
     device.stage_run(ADDRESSING_LED_RUN, 0, [(255, 0, 0)] * leds, commit=True)
@@ -88,7 +91,10 @@ reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder a
 `gp2040ce_hostlighting.testing` fakes a board, so a host's tests run without one. `fake_device(FakeBoard())`
 returns a `HostLightingDevice` connected to a board that answers as the firmware does. `ModelBoard` also follows
 the protocol's timing, claim and staging rules, on a clock the test controls with `sleep()` and `time()`. The
-record builders set what a fake board reports, for example `board.lights = [light_record(0, pin=2)]`.
+record builders set what a fake board reports, for example `board.lights = [light_record(0, pin=2)]`. A fake
+board can also be unplugged and plugged back, reconfigured, taken over by another application or have its
+animations go idle, and `frames` keeps every frame it published. `attach()` puts fake boards on a fake bus, so
+`open_device()`, `find_board()` and the rest find them.
 
 ### Conformance checks
 

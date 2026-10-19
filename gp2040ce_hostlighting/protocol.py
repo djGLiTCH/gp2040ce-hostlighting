@@ -41,7 +41,15 @@ import logging
 import secrets
 import struct
 import time
+from dataclasses import fields
 from typing import Callable, Optional
+
+from gp2040ce_hostlighting.records import (AnimationRecord, Changes, ControlInput, Controller, ControlLights,
+                                           ControlRecord, Effects, GridCell, Hello, Identity, InputModeFlags,
+                                           InputModeRecord, Instances, LedRange, LightKind, LightRecord, Owner,
+                                           PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
+                                           Settings, Speeds, StageOutcome, State, StateChanged, StateRecord, Summary,
+                                           SummaryRecord)
 
 logger = logging.getLogger(__name__)
 
@@ -117,15 +125,20 @@ HEADER_TOKEN = 60
 PAGE_GROUPS = {
     PAGE_STATE: (9, 22, 4),
     PAGE_INPUT_MODES: (2, 22),
-    PAGE_SUMMARY: (28, 8),
+    PAGE_SUMMARY: (30, 8),
     PAGE_PROFILES: (18,),
     PAGE_CONTROLS: (4, 4, 6, 4),
     PAGE_LIGHTS: (4, 2, 3, 4, 2, 1),
     PAGE_ANIMATIONS: (4, 3),
 }
-IDENTITY_FIELDS = ('board label', 'board config', 'platform', 'firmware version', 'version ID', 'build ID',
-                   'build type', 'file name')
+IDENTITY_GROUPS = 8
 IDENTITY_STRING_MAX = 48
+
+# page 1's State flags and page 8's Summary flags
+STATE_LIVE = 0x01
+STATE_UNSAVED = 0x02
+STATE_IDLE = 0x04
+SUMMARY_WHITE_CHANNEL = 0x01
 
 # page 10 keys: GPIO pin p is key p, Hall-effect trigger n is KEY_TRIGGER + n and PCF8575 pin n is
 # KEY_EXPANDER + n. The rest are reserved
@@ -336,31 +349,23 @@ def _require_length(data: bytes, length: int, what: str) -> None:
         raise HostLightingError(f"{what} is {len(data)} bytes, shorter than the {length} it needs")
 
 
-def decode_hello(reply: bytes) -> dict:
+def decode_hello(reply: bytes) -> Hello:
     """Decode a HELLO reply.
 
     :param reply: the reply report
-    :return: magic, version, board ID, reply queue limit and the capability bitmaps as sets
+    :return: the magic, version, board ID, reply queue limit and the capability bitmaps
     :raises HostLightingError: if the reply is too short
     """
     _require_length(reply, 47, 'the HELLO reply')
-    return {
-        'magic': bytes(reply[3:7]),
-        'major': reply[7],
-        'minor': reply[8],
-        'board_id': bytes(reply[9:17]).hex().upper(),
-        'queue_limit': reply[17],
-        'flags': set(_bits(reply[18])),
-        'commands': set(_bits(int.from_bytes(reply[19:35], 'little'))),
-        'pages': set(_bits(_u32(reply, 35))),
-        'addressing': set(_bits(_u16(reply, 39))),
-        'pixel_formats': set(_bits(_u16(reply, 41))),
-        'events': set(_bits(_u16(reply, 43))),
-        'subscribed': set(_bits(_u16(reply, 45))),
-    }
+    return Hello(magic=bytes(reply[3:7]), major=reply[7], minor=reply[8], board_id=bytes(reply[9:17]).hex().upper(),
+                 reply_queue_limit=reply[17], request_flags=frozenset(_bits(reply[18])),
+                 commands=frozenset(_bits(int.from_bytes(reply[19:35], 'little'))),
+                 pages=frozenset(_bits(_u32(reply, 35))), addressing_modes=frozenset(_bits(_u16(reply, 39))),
+                 pixel_formats=frozenset(_bits(_u16(reply, 41))), events=frozenset(_bits(_u16(reply, 43))),
+                 events_enabled=frozenset(_bits(_u16(reply, 45))))
 
 
-def decode_page_header(reply: bytes) -> dict:
+def decode_page_header(reply: bytes) -> PageHeader:
     """Decode the header every GET_PAGE reply carries.
 
     :param reply: the reply report
@@ -369,62 +374,58 @@ def decode_page_header(reply: bytes) -> dict:
     :raises HostLightingError: if the reply is too short
     """
     _require_length(reply, HEADER_TOKEN + 4, 'the GET_PAGE reply')
-    return {
-        'status': reply[2],
-        'page': reply[3],
-        'start': _u16(reply, 4),
-        'total': _u16(reply, 6),
-        'count': reply[8],
-        'stride': reply[9],
-        'groups': _u16(reply, 10),
-        'token': _u32(reply, HEADER_TOKEN),
-    }
+    return PageHeader(status=reply[2], page=reply[3], start=_u16(reply, 4), total=_u16(reply, 6), count=reply[8],
+                      stride=reply[9], groups=_u16(reply, 10), token=_u32(reply, HEADER_TOKEN))
 
 
-def _state_group(group: int, data: bytes) -> dict:
-    if group == 0:
-        return {'takeover_live': bool(data[0] & 0x01), 'brightness_unsaved': bool(data[0] & 0x02),
-                'input_mode': data[1], 'profile': data[2], 'player': data[3],
-                'animation': None if _u16(data, 4) == ANIMATION_OFF else _u16(data, 4),
-                'brightness_step': data[6], 'takeover_number': data[7], 'saved_brightness_step': data[8]}
-    if group == 1:
-        return decode_controller(data)
-    return {'overlay': data[0] == TAKEOVER_OVERLAY, 'keepalive_ms': _u16(data, 1),
-            'brightness_applied': bool(data[3])}
+def _state(data: bytes) -> State:
+    animation = _u16(data, 4)
+    return State(takeover_live=bool(data[0] & STATE_LIVE), brightness_unsaved=bool(data[0] & STATE_UNSAVED),
+                 animations_idle=bool(data[0] & STATE_IDLE), input_mode=data[1], profile=data[2], player=data[3],
+                 animation=None if animation == ANIMATION_OFF else animation, brightness_step_shown=data[6],
+                 takeover_number=data[7], saved_brightness_step=data[8])
 
 
-def decode_controller(data: bytes) -> dict:
+def decode_controller(data: bytes) -> Controller:
     """Decode page 1's Controller group, which the CLAIM reply ([8..29]) and a status 4 reply ([3..24]) carry too.
 
     :param data: the group's 22 bytes
-    :return: the holder's token (0 unclaimed) and name, whether its claim is exclusive, and the claim generation
+    :return: the claim's holder
     :raises HostLightingError: if the group is too short
     """
     _require_length(data, CONTROLLER_SIZE, 'the Controller group')
-    return {'holder_token': _u32(data, 0), 'holder_name': _string(data[4:20]),
-            'claim_exclusive': bool(data[20] & CLAIM_EXCLUSIVE), 'claim_generation': data[21]}
+    return Controller(holder_token=_u32(data, 0), application_name=_string(data[4:20]),
+                      exclusive=bool(data[20] & CLAIM_EXCLUSIVE), claim_generation=data[21])
 
 
-def _input_mode_group(group: int, data: bytes) -> dict:
-    if group == 0:
-        return {'mode': data[0], 'lighting': bool(data[1] & 0x01), 'after_detection': bool(data[1] & 0x02)}
-    return {'name': _string(data[:22])}
+def _settings(data: bytes) -> Settings:
+    return Settings(takeover=data[0], keepalive_ms=_u16(data, 1), brightness_applied=bool(data[3]))
 
 
-def _summary_group(group: int, data: bytes) -> dict:
-    if group == 1:
-        # one change counter for each configuration page, 8 to 15
-        return {'page_changes': {PAGE_SUMMARY + index: count for index, count in enumerate(data[:8])}}
-    return {'led_extent': _u16(data, 0), 'led_limit': _u16(data, 2), 'render_hz': _u16(data, 4),
-            'colour_format': data[6], 'brightness_maximum': data[7], 'brightness_steps': data[8],
-            'speed_steps': data[9], 'grid_width': _u16(data, 10), 'grid_height': _u16(data, 12),
-            'profiles': _u16(data, 14), 'controls': _u16(data, 16), 'lit_controls': _u16(data, 18),
-            'unlit_controls': _u16(data, 20), 'lights': _u16(data, 22), 'animations': _u16(data, 24),
-            'button_layout': data[26], 'button_layout_right': data[27]}
+def _input_mode_flags(data: bytes) -> InputModeFlags:
+    return InputModeFlags(value=data[0], lighting=bool(data[1] & 0x01), detected=bool(data[1] & 0x02))
 
 
-def _profile_group(group: int, data: bytes) -> dict:
-    return {'number': data[0], 'enabled': bool(data[1] & 0x01), 'label': _string(data[2:18])}
+def _input_mode_name(data: bytes) -> str:
+    return _string(data[:22])
+
+
+def _summary(data: bytes) -> Summary:
+    return Summary(led_extent=_u16(data, 0), led_limit=_u16(data, 2), render_hz=_u16(data, 4), colour_format=data[6],
+                   white_channel=bool(data[7] & SUMMARY_WHITE_CHANNEL), brightness_maximum=data[8],
+                   brightness_steps=data[9], animation_speed_steps=data[10], button_layout=data[11],
+                   button_layout_right=data[12], button_layout_orientation=data[13], grid_width=_u16(data, 14),
+                   grid_height=_u16(data, 16), profiles=_u16(data, 18), controls=_u16(data, 20),
+                   lit_controls=_u16(data, 22), unlit_controls=_u16(data, 24), lights=_u16(data, 26),
+                   animations=_u16(data, 28))
+
+
+def _changes(data: bytes) -> Changes:
+    return Changes(counters=tuple(data[:8]))
+
+
+def _profile(data: bytes) -> Profile:
+    return Profile(number=data[0], enabled=bool(data[1] & 0x01), label=_string(data[2:18]))
 
 
 def decode_key(key: int) -> tuple:
@@ -445,110 +446,129 @@ def key_name(key: int) -> str:
     return f"{KEY_PREFIXES[source]}{index}" if source in KEY_PREFIXES else f"key 0x{key:02X}"
 
 
-def _control_group(group: int, data: bytes) -> dict:
-    if group == 0:
-        source, index = decode_key(data[0])
-        return {'key': data[0], 'source': source, 'index': index, 'action': _s16(data, 1),
-                'duplicated': bool(data[3] & 0x01), 'lit': bool(data[3] & 0x02)}
-    if group == 1:
-        return {'instance': _u16(data, 0), 'instances': _u16(data, 2)}
-    if group == 2:
-        first = _u16(data, 0)
-        return {'first_led': None if first == INDEX_NONE else first,
-                'grid_rectangle': None if first == INDEX_NONE else tuple(data[2:6])}
+def _control_input(data: bytes) -> ControlInput:
+    source, index = decode_key(data[0])
+    return ControlInput(key=data[0], source=source, index=index, action=_s16(data, 1),
+                        duplicated=bool(data[3] & 0x01), lit=bool(data[3] & 0x02))
+
+
+def _instances(data: bytes) -> Instances:
+    return Instances(instance=_u16(data, 0), instances=_u16(data, 2))
+
+
+def _position(data: bytes) -> Position:
     first = _u16(data, 0)
-    return {'first_light': None if first == INDEX_NONE else first, 'light_count': _u16(data, 2)}
+    return Position(first_led=None if first == INDEX_NONE else first,
+                    grid_rectangle=None if first == INDEX_NONE else tuple(data[2:6]))
 
 
-def _light_group(group: int, data: bytes) -> dict:
-    if group == 0:
-        return {'first_led': _u16(data, 0), 'led_count': _u16(data, 2)}
-    if group == 1:
-        return {'kind': data[0], 'duplicated': bool(data[1] & 0x01)}
-    if group == 2:
-        action = _s16(data, 1)
-        return {'owner_pin': None if data[0] == PIN_NONE else data[0],
-                'owner_action': None if action == ACTION_NONE else action}
-    if group == 3:
-        return {'owner_instance': _u16(data, 0), 'owner_instances': _u16(data, 2)}
-    if group == 4:
-        return {'grid': (data[0], data[1])}
-    return {'palette_slot': None if data[0] == SLOT_NONE else data[0]}
+def _control_lights(data: bytes) -> ControlLights:
+    first = _u16(data, 0)
+    return ControlLights(first_light=None if first == INDEX_NONE else first, light_count=_u16(data, 2))
 
 
-def _animation_group(group: int, data: bytes) -> dict:
-    if group == 0:
-        return {'enabled': bool(data[0] & 0x01), 'effects': tuple(data[1:4])}
-    return {'speeds': tuple(data[0:3])}
+def _led_range(data: bytes) -> LedRange:
+    return LedRange(first_led=_u16(data, 0), led_count=_u16(data, 2))
 
 
-GROUP_DECODERS = {
-    PAGE_STATE: _state_group,
-    PAGE_INPUT_MODES: _input_mode_group,
-    PAGE_SUMMARY: _summary_group,
-    PAGE_PROFILES: _profile_group,
-    PAGE_CONTROLS: _control_group,
-    PAGE_LIGHTS: _light_group,
-    PAGE_ANIMATIONS: _animation_group,
+def _light_kind(data: bytes) -> LightKind:
+    return LightKind(value=data[0], duplicated=bool(data[1] & 0x01))
+
+
+def _owner(data: bytes) -> Owner:
+    action = _s16(data, 1)
+    return Owner(pin=None if data[0] == PIN_NONE else data[0], action=None if action == ACTION_NONE else action)
+
+
+def _grid_cell(data: bytes) -> GridCell:
+    return GridCell(x=data[0], y=data[1])
+
+
+def _palette_slot(data: bytes) -> PaletteSlot:
+    return PaletteSlot(slot=None if data[0] == SLOT_NONE else data[0])
+
+
+def _effects(data: bytes) -> Effects:
+    return Effects(enabled=bool(data[0] & 0x01), idle=data[1], pressed=data[2], case=data[3])
+
+
+def _speeds(data: bytes) -> Speeds:
+    return Speeds(idle=data[0], pressed=data[1], case=data[2])
+
+
+# each table page's record type, and the attribute and decoder of each field group in mask bit order
+_PAGE_RECORDS: dict = {
+    PAGE_STATE: (StateRecord, (('state', _state), ('controller', decode_controller), ('settings', _settings))),
+    PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name))),
+    PAGE_SUMMARY: (SummaryRecord, (('summary', _summary), ('changes', _changes))),
+    PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
+    PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _instances), ('position', _position),
+                                    ('lights', _control_lights))),
+    PAGE_LIGHTS: (LightRecord, (('leds', _led_range), ('kind', _light_kind), ('owner', _owner),
+                                ('owner_instances', _instances), ('grid', _grid_cell), ('palette', _palette_slot))),
+    PAGE_ANIMATIONS: (AnimationRecord, (('effects', _effects), ('speeds', _speeds))),
 }
 
 
-def decode_records(reply: bytes) -> list:
+def decode_records(reply: bytes) -> tuple:
     """Decode the records of a GET_PAGE reply, field group by field group.
 
-    Only the groups the reply echoes are present. Each record is one dict of their fields, with `ordinal`, the
-    record's position in the page (the reply's start plus its index in the reply).
+    Each record holds the groups the reply echoes, and None for the others, with `ordinal`, the record's
+    position in the page (the reply's start plus its index in the reply).
 
     :param reply: the reply report of a table page (1, 2, 8-12)
-    :return: the records, one dict each
+    :return: the records
     :raises HostLightingError: for a page that is not a table, a stride narrower than the groups it echoes, or
         more records than the reply holds
     """
     header = decode_page_header(reply)
-    page = header['page']
+    page = header.page
     if page not in PAGE_GROUPS:
         raise HostLightingError(f"page {page} is not a table page")
     widths = PAGE_GROUPS[page]
-    decode = GROUP_DECODERS[page]
-    echoed = sum(width for group, width in enumerate(widths) if header['groups'] & (1 << group))
-    if header['count'] and header['stride'] < echoed:
-        raise HostLightingError(f"page {page} records are {header['stride']} bytes apart, narrower than the "
+    record_type, groups = _PAGE_RECORDS[page]
+    echoed = sum(width for group, width in enumerate(widths) if header.groups & (1 << group))
+    if header.count and header.stride < echoed:
+        raise HostLightingError(f"page {page} records are {header.stride} bytes apart, narrower than the "
                                 f"{echoed} bytes of the groups echoed")
-    if header['count'] * header['stride'] > RECORD_AREA:
-        raise HostLightingError(f"the page {page} reply holds {header['count']} records of {header['stride']} "
+    if header.count * header.stride > RECORD_AREA:
+        raise HostLightingError(f"the page {page} reply holds {header.count} records of {header.stride} "
                                 f"bytes, more than its {RECORD_AREA}-byte records area")
     records = []
-    for index in range(header['count']):
-        offset = HEADER_RECORDS + index * header['stride']
-        record: dict = {'ordinal': header['start'] + index}
-        for group, width in enumerate(widths):
-            if header['groups'] & (1 << group):
-                record.update(decode(group, bytes(reply[offset:offset + width])))
+    for index in range(header.count):
+        offset = HEADER_RECORDS + index * header.stride
+        values: dict = {'ordinal': header.start + index}
+        for group, (width, (name, decode)) in enumerate(zip(widths, groups)):
+            if header.groups & (1 << group):
+                values[name] = decode(bytes(reply[offset:offset + width]))
                 offset += width
-        records.append(record)
-    return records
+        records.append(record_type(**values))
+    return tuple(records)
 
 
-def decode_state_changed(event: bytes) -> tuple[dict, int]:
+def decode_state_changed(event: bytes) -> StateChanged:
     """Decode a STATE_CHANGED event. Its [3..63] are those of a page 1 reply with mask 0.
 
     :param event: the event report ([1] is the event number)
-    :return: (the page 1 record, the state token)
+    :return: the page 1 record and the state token
     :raises HostLightingError: for any other event
     """
     if event[1] != EVENT_STATE_CHANGED:
         raise HostLightingError(f"event {event[1]} is not STATE_CHANGED")
-    return decode_records(event)[0], _u32(event, HEADER_TOKEN)
+    return StateChanged(record=decode_records(event)[0], token=_u32(event, HEADER_TOKEN))
 
 
-def decode_identity(reply: bytes) -> dict:
+_IDENTITY_NAMES = tuple(item.name for item in fields(Identity))
+
+
+def decode_identity(reply: bytes) -> Identity:
     """Decode a page 0 reply's strings.
 
     Each returned group is a string of up to 48 bytes, NUL-terminated when shorter, starting after the
     previous one's NUL or 48th byte.
 
     :param reply: the reply report
-    :return: {group bit: string} for the groups the reply echoes
+    :return: the strings the reply echoes, None for the others
     :raises HostLightingError: if the reply is too short
     """
     _require_length(reply, HEADER_RECORDS, 'the page 0 reply')
@@ -556,12 +576,12 @@ def decode_identity(reply: bytes) -> dict:
     area = bytes(reply[HEADER_RECORDS:HEADER_RECORDS + RECORD_AREA])
     strings = {}
     used = 0
-    for group in range(len(IDENTITY_FIELDS)):
+    for group in range(IDENTITY_GROUPS):
         if groups & (1 << group):
             raw = area[used:used + IDENTITY_STRING_MAX].split(b'\x00')[0]
-            strings[group] = raw.decode('utf-8', 'replace')
+            strings[_IDENTITY_NAMES[group]] = raw.decode('utf-8', 'replace')
             used += len(raw) + 1 if len(raw) < IDENTITY_STRING_MAX else IDENTITY_STRING_MAX
-    return strings
+    return Identity(**strings)
 
 
 def _check_claim_name(name: bytes) -> None:
@@ -580,7 +600,7 @@ class HostLightingError(RuntimeError):
 class HostLightingRejectedError(HostLightingError):
     """The board answered a command with a status other than 0."""
 
-    def __init__(self, command: int, status: int, offset: int, holder: Optional[dict] = None):
+    def __init__(self, command: int, status: int, offset: int, holder: Optional[Controller] = None):
         """Record the rejected command, its status, and the byte at fault or the claim's holder.
 
         :param holder: for CLAIMED, the holder as decode_controller gives it, with holder_token 0 when unclaimed
@@ -591,9 +611,9 @@ class HostLightingRejectedError(HostLightingError):
         self.holder = holder
         detail = f" at request byte {offset}" if status == STATUS_INVALID else ''
         if status == STATUS_CLAIMED and holder:
-            detail = (f" by '{holder['holder_name']}' (claim 0x{holder['holder_token']:08X}, generation "
-                      f"{holder['claim_generation']})" if holder['holder_token']
-                      else f": the claim has ended (generation {holder['claim_generation']})")
+            detail = (f" by '{holder.application_name}' (claim 0x{holder.holder_token:08X}, generation "
+                      f"{holder.claim_generation})" if holder.holder_token
+                      else f": the claim has ended (generation {holder.claim_generation})")
         super().__init__(f"command 0x{command:02X} rejected: {STATUS_NAMES.get(status, hex(status))}{detail}")
 
 
@@ -613,6 +633,20 @@ class HostLightingStaleTokenError(HostLightingError):
 
 class HostLightingDisconnectedError(HostLightingError):
     """A read or a write on the HID device failed: the board has left the bus."""
+
+
+class HostLightingGroupNotReadError(HostLightingError, AttributeError):
+    """A record's field group was read, but the reply had not returned it.
+
+    It is an AttributeError too, so hasattr() tells whether a record holds a group.
+    """
+
+    def __init__(self, page: int, group: str, ordinal: int):
+        """Record the page, the group and the record's ordinal."""
+        self.page = page
+        self.group = group
+        self.ordinal = ordinal
+        super().__init__(f"page {page} record {ordinal}: the {group} group was not read")
 
 
 class HostLightingDevice:
@@ -847,15 +881,15 @@ class HostLightingDevice:
             return HostLightingRejectedError(command, reply[2], reply[3])
         return HostLightingRejectedError(command, reply[2], 0, decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])))
 
-    def hello(self) -> dict:
+    def hello(self) -> Hello:
         """Send HELLO and decode the reply.
 
         :return: the decoded reply (see decode_hello)
         :raises HostLightingError: if the reply does not carry the GPHL magic
         """
         info = decode_hello(self.request_ok(CMD_HELLO))
-        if info['magic'] != MAGIC:
-            raise HostLightingError(f"HELLO reply carries magic {info['magic']!r}, not {MAGIC!r}")
+        if info.magic != MAGIC:
+            raise HostLightingError(f"HELLO reply carries magic {info.magic!r}, not {MAGIC!r}")
         return info
 
     def get_page(self, page: int, start: int = 0, mask: int = 0, token: int = 0) -> bytes:
@@ -875,64 +909,52 @@ class HostLightingDevice:
             if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
                 return True
             header = decode_page_header(reply)
-            if header['page'] != page or header['start'] != start:
+            if header.page != page or header.start != start:
                 return False
             if reply[2] == STATUS_STALE_TOKEN:
                 return True
             if mask:
-                return not header['groups'] & ~mask
+                return not header.groups & ~mask
             # mask 0: a table page returns every group it defines (only page 0's strings can fail to fit)
             known = (1 << len(PAGE_GROUPS[page])) - 1 if page in PAGE_GROUPS else 0
-            return header['groups'] & known == known
+            return header.groups & known == known
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
         if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
             raise self.rejected(CMD_GET_PAGE, reply)
         return reply
 
-    def read_table(self, page: int, mask: int = 0, attempts: int = 5) -> tuple[list, int]:
+    def read_table(self, page: int, mask: int = 0, token: int = 0, attempts: int = 5) -> PageRead:
         """Read every record of a table page as one coherent snapshot.
 
-        The walk names the state token of its first reply in every later read. If the board's state changes
-        mid-walk, the board answers STALE_TOKEN and the walk starts again, so the records never mix two
-        states.
+        Without a token, the walk names the state token of its first reply in every later read. If the board's
+        state changes mid-walk, the board answers STALE_TOKEN and the walk starts again, so the records never mix
+        two states. With a token, a host that read page 1 or 8 under it reads under the same token, so
+        everything it holds describes one state, and a change raises HostLightingStaleTokenError instead.
 
         :param page: page number
         :param mask: field groups to return, or 0 for every group
-        :param attempts: how many times to start the walk before giving up
-        :return: (the decoded records, the state token they carry)
+        :param token: the state token to read under, or 0 to adopt the first reply's
+        :param attempts: without a token, how many times to start the walk before giving up
+        :return: the decoded records and the state token they carry
+        :raises HostLightingStaleTokenError: with a token, if the board's state no longer matches it
         :raises HostLightingError: if the state keeps changing or the board stops making progress
         """
+        if token:
+            walked = self._walk_table(page, mask, token)
+            if walked is None:
+                raise HostLightingStaleTokenError(page, token)
+            return walked
         for _ in range(attempts):
             walked = self._walk_table(page, mask, 0)
             if walked:
                 return walked
         raise HostLightingError(f"page {page} kept changing during {attempts} walks")
 
-    def read_table_at(self, page: int, token: int, mask: int = 0) -> list:
-        """Read every record of a table page under a state token the caller already holds.
-
-        Unlike read_table, it neither adopts a new token nor starts again. A host that read page 1 or 2 under a
-        token reads the tables under the same token, so everything it holds describes one state.
-
-        :param page: page number
-        :param token: the state token to read under, not 0
-        :param mask: field groups to return, or 0 for every group
-        :return: the decoded records
-        :raises HostLightingStaleTokenError: if the board's state no longer matches the token
-        :raises HostLightingError: if the board stops making progress
-        """
-        if not token:
-            raise ValueError("read_table_at needs the state token to read under")
-        walked = self._walk_table(page, mask, token)
-        if walked is None:
-            raise HostLightingStaleTokenError(page, token)
-        return walked[0]
-
-    def _walk_table(self, page: int, mask: int, token: int) -> Optional[tuple[list, int]]:
+    def _walk_table(self, page: int, mask: int, token: int) -> Optional[PageRead]:
         """Walk a table page from its first record, adopting the first reply's token when token is 0.
 
-        :return: (the decoded records, their state token), or None when the board answers STALE_TOKEN
+        :return: the decoded records and their state token, or None when the board answers STALE_TOKEN
         """
         records: list = []
         while True:
@@ -940,44 +962,45 @@ class HostLightingDevice:
             if reply[2] == STATUS_STALE_TOKEN:
                 return None
             header = decode_page_header(reply)
-            token = header['token']
-            if header['count'] == 0:
-                if len(records) < header['total']:
-                    raise HostLightingError(f"page {page} stalled at {len(records)} of {header['total']} records")
-                return records, token
+            token = header.token
+            if header.count == 0:
+                if len(records) < header.total:
+                    raise HostLightingError(f"page {page} stalled at {len(records)} of {header.total} records")
+                return PageRead(records=tuple(records), token=token)
             records.extend(decode_records(reply))
-            if len(records) >= header['total']:
-                return records, token
+            if len(records) >= header.total:
+                return PageRead(records=tuple(records), token=token)
 
-    def read_record(self, page: int, mask: int = 0) -> tuple[dict, int]:
+    def read_record(self, page: int, mask: int = 0) -> PageRead:
         """Read a one-record page (1 or 8).
 
         :param page: page number
         :param mask: field groups to return, or 0 for every group
-        :return: (the decoded record, the state token)
+        :return: the one record and the state token
         """
         reply = self.get_page(page, 0, mask)
-        return decode_records(reply)[0], decode_page_header(reply)['token']
+        return PageRead(records=decode_records(reply), token=decode_page_header(reply).token)
 
-    def read_identity(self, mask: int = 0) -> dict:
+    def read_identity(self, mask: int = 0) -> Identity:
         """Read page 0's strings, asking separately for the groups that did not fit.
 
-        :param mask: the groups wanted, bit n for IDENTITY_FIELDS[n], or 0 for all eight
-        :return: {group bit: string}
+        :param mask: the groups wanted, bit n for Identity's nth field, or 0 for all eight
+        :return: the strings read, None for the others
         """
         strings: dict = {}
-        missing = mask or (1 << len(IDENTITY_FIELDS)) - 1
+        missing = mask or (1 << IDENTITY_GROUPS) - 1
         while missing:
-            found = decode_identity(self.get_page(PAGE_IDENTITY, 0, missing))
+            identity = decode_identity(self.get_page(PAGE_IDENTITY, 0, missing))
+            found = {name: getattr(identity, name) for name in _IDENTITY_NAMES if getattr(identity, name) is not None}
             if not found:
                 break
             strings.update(found)
-            for group in found:
-                missing &= ~(1 << group)
-        return strings
+            for name in found:
+                missing &= ~(1 << _IDENTITY_NAMES.index(name))
+        return Identity(**strings)
 
     def claim(self, action: int, token: int, name: bytes = b'', flags: int = 0,
-              exclusive: bool = False) -> dict:
+              exclusive: bool = False) -> Controller:
         """Claim the board, take it over or give it up.
 
         The reply echoes the action and token, which tells it apart from another application's CLAIM reply.
@@ -1008,12 +1031,12 @@ class HostLightingDevice:
 
         reply = self.request_ok(CMD_CLAIM, payload, flags, accept=echoes)
         holder = decode_controller(bytes(reply[8:8 + CONTROLLER_SIZE]))
-        held = holder['holder_token'] == token
-        self.generation = holder['claim_generation'] if held else 0
+        held = holder.held_by(token)
+        self.generation = holder.claim_generation if held else 0
         self.holding_exclusive = held and exclusive
         return holder
 
-    def configure(self, overlay: bool = False, keepalive_ms: int = 0, brightness: bool = True) -> dict:
+    def configure(self, overlay: bool = False, keepalive_ms: int = 0, brightness: bool = True) -> Settings:
         """Set the takeover mode, keepalive timeout and brightness scaling.
 
         :param overlay: True for overlay takeover, False for whole-frame
@@ -1022,8 +1045,7 @@ class HostLightingDevice:
         :return: the settings the board applied
         """
         reply = self.request_ok(CMD_CONFIGURE, struct.pack('<BHB', int(overlay), keepalive_ms, int(brightness)))
-        return {'overlay': reply[3] == TAKEOVER_OVERLAY, 'keepalive_ms': _u16(reply, 4),
-                'brightness_applied': bool(reply[6])}
+        return _settings(bytes(reply[3:7]))
 
     def subscribe(self, events: int) -> int:
         """Enable events. The subscription is shared by every application on the board, so this only adds.
@@ -1059,22 +1081,24 @@ class HostLightingDevice:
                       commit: bool = False) -> list:
         """Stage entries addressed by light, pin, action or kind, chunked to the report capacity.
 
+        Each report is answered, for its outcome mask.
+
         :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
         :param entries: (address, colour) pairs, each colour as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
-        :return: one (applied, skipped, outcome mask) tuple per report sent
+        :return: a StageOutcome per report sent
         """
         payloads = stage_entries_payloads(addressing, entries, pixel_format)
         outcomes = []
         for index, payload in enumerate(payloads):
             last = index == len(payloads) - 1
             reply = self.request_ok(CMD_STAGE, payload, FLAG_COMMIT_AFTER if commit and last else 0)
-            outcomes.append((reply[3], reply[4], _u32(reply, 5)))
+            outcomes.append(StageOutcome(applied=reply[3], skipped=reply[4], outcome=_u32(reply, 5)))
         return outcomes
 
     def stage_run(self, addressing: int, first: int, colours: list, pixel_format: int = PIXEL_RGB,
-                  commit: bool = False) -> tuple[int, int, int]:
+                  commit: bool = False) -> StageOutcome:
         """Stage consecutive LEDs or lights from a first index, as a streaming host does.
 
         The colours are chunked to the report capacity. Every report but the last goes with NO_REPLY. The last
@@ -1086,13 +1110,13 @@ class HostLightingDevice:
         :param colours: one colour per LED or light, as for encode_pixel
         :param pixel_format: PIXEL_RGB, PIXEL_RGBW or PIXEL_RGB565
         :param commit: publish the staged frame with the last report (COMMIT_AFTER)
-        :return: the last report's (applied, skipped, outcome mask)
+        :return: the last report's StageOutcome
         """
         payloads = stage_run_payloads(addressing, first, colours, pixel_format)
         for payload in payloads[:-1]:
             self.send(CMD_STAGE, payload, FLAG_NO_REPLY)
         reply = self.request_ok(CMD_STAGE, payloads[-1], FLAG_COMMIT_AFTER if commit else 0)
-        return reply[3], reply[4], _u32(reply, 5)
+        return StageOutcome(applied=reply[3], skipped=reply[4], outcome=_u32(reply, 5))
 
     def fill(self, colour: tuple, pixel_format: int = PIXEL_RGB, commit: bool = False) -> None:
         """Stage one colour on every LED below the addressable LED limit.
@@ -1129,7 +1153,7 @@ class LightsClaim:
         self.settings: dict = {}
         self.report = report or logger.info
 
-    def configure(self, overlay: bool = False, keepalive_ms: int = 2000, brightness: bool = True) -> dict:
+    def configure(self, overlay: bool = False, keepalive_ms: int = 2000, brightness: bool = True) -> Settings:
         """Send CONFIGURE and remember the settings, which renew() sends again once it retakes a lapsed claim.
 
         :param overlay: True for overlay takeover, False for whole-frame
@@ -1150,8 +1174,8 @@ class LightsClaim:
         """
         generation = self.device.generation
         holder = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE, self.exclusive)
-        if holder['holder_token'] != self.token:
-            self.report(f"'{holder['holder_name']}' took the lights over")
+        if not holder.held_by(self.token):
+            self.report(f"'{holder.application_name}' took the lights over")
             self.held = False
         elif self.device.generation != generation and self.settings:
             self.device.configure(**self.settings)
@@ -1193,8 +1217,8 @@ class LightsClaim:
         self.held = False
         try:
             holder = self.device.claim(CLAIM_GIVE_UP, self.token)
-            if holder['holder_token']:
-                self.report(f"'{holder['holder_name']}' took the lights over")
+            if holder.holder_token:
+                self.report(f"'{holder.application_name}' took the lights over")
                 return False
             return True
         except (HostLightingError, OSError):
@@ -1239,11 +1263,11 @@ def _probe(info: dict, board_id_prefix: str) -> Optional[tuple[str, HostLighting
     except (HostLightingError, OSError):
         device.close()
         return None
-    if hello['major'] != PROTOCOL_MAJOR:
+    if hello.major != PROTOCOL_MAJOR:
         logger.warning("skipping a board speaking protocol %d.%d. These tools need %d.x",
-                       hello['major'], hello['minor'], PROTOCOL_MAJOR)
-    elif hello['board_id'].startswith(board_id_prefix.upper()):
-        return hello['board_id'], device
+                       hello.major, hello.minor, PROTOCOL_MAJOR)
+    elif hello.board_id.startswith(board_id_prefix.upper()):
+        return hello.board_id, device
     device.close()
     return None
 
