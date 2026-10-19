@@ -6,7 +6,7 @@ the claim lease and generation, shared and exclusive claims, unsaved brightness,
 board-feature argument checks, delivery of replies to a second handle, then round trip and throughput.
 hlp-bench runs the round trip and frame-rate measurements on their own,
 at length. Both hold the claim while they run,
-so other applications leave the lights alone, and hand the lights back at the end.
+so other applications leave the lights alone, and give it up at the end.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -14,10 +14,21 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import statistics
 import time
 
-from gp2040ce_hostlighting.conformance import (Checks, _Lease, _paced, _reports, _round_trips, _run_checks, _TakenOver,
-                                               _unthrottled)
-from gp2040ce_hostlighting.protocol import PAGE_SUMMARY, HostLightingDevice, HostLightingError, LightsClaim, open_device
-from gp2040ce_hostlighting.tools.commands import add_claim_arguments, device_parser, hlp_command, holding_lights, ranged
+from gp2040ce_hostlighting.claim import LightsClaim
+from gp2040ce_hostlighting.conformance import (CheckResult, Checks, _reports, measure_paced_frames, measure_round_trips,
+                                               measure_unthrottled_frames, run_checks)
+from gp2040ce_hostlighting.protocol import PAGE_SUMMARY, HostLightingClaimedError, HostLightingDevice, open_device
+from gp2040ce_hostlighting.records import Settings
+from gp2040ce_hostlighting.tools.commands import add_claim_arguments, device_parser, hlp_command, ranged
+
+
+def _line(result: CheckResult) -> str:
+    """Show one result as the report prints it."""
+    if result.passed is None:
+        return f"        {result.what}"
+    if result.passed:
+        return f"  PASS  {result.what}"
+    return f"  FAIL  {result.what}" + (f"  ({result.detail})" if result.detail else '')
 
 
 @hlp_command
@@ -35,15 +46,15 @@ def conformance():
     add_claim_arguments(parser)
     args, _ = parser.parse_known_args()
     device = open_device(args.board_id)
-    checks = Checks(report=print)
-    start = time.monotonic()
+    checks = Checks()
+    start, section = time.monotonic(), ''
     try:
-        with holding_lights(device, 'hlp-conformance', args.force, args.exclusive) as claim:
-            try:
-                _run_checks(device, checks, _Lease(claim), args.settings, args.quick,
-                            lambda: open_device(args.board_id))
-            except (_TakenOver, HostLightingError, OSError) as error:
-                checks.check(False, 'the checks ran to the end', str(error))
+        with LightsClaim(device, 'hlp-conformance').take(args.exclusive, args.force) as claim:
+            for result in run_checks(device, claim, args.settings, args.quick, lambda: open_device(args.board_id)):
+                if result.section != section:
+                    section = result.section
+                    print(f"{section}:")
+                print(_line(checks.add(result)))
     finally:
         device.close()
     print(f"elapsed: {time.monotonic() - start:.1f} s")
@@ -52,31 +63,21 @@ def conformance():
         raise SystemExit(1)
 
 
-def _keeper(claim: LightsClaim):
-    """Build a function that renews the claim each second and raises _TakenOver once it is lost."""
-    renewed = [time.monotonic()]
-
-    def keep():
-        if time.monotonic() - renewed[0] >= 1.0:
-            renewed[0] = time.monotonic()
-            if not claim.renew():
-                raise _TakenOver()
-    return keep
-
-
-def _bench(device: HostLightingDevice, leds: int, quick: bool, keep) -> None:
+def _bench(device: HostLightingDevice, claim: LightsClaim, leds: int, quick: bool) -> None:
+    """Run hlp-bench's measurements, maintaining the claim between them."""
     count = 100 if quick else 300
-    trips = sorted(_round_trips(device, count))
-    keep()
+    trips = sorted(measure_round_trips(device, count))
+    claim.maintain()
     if trips:
         print(f"round trip: median {statistics.median(trips):.2f} ms, p95 {trips[int(len(trips) * 0.95) - 1]:.2f} ms "
               f"({len(trips)} of {count} answered)")
     frames = 60 if quick else 300
-    acknowledged = _paced(device, leds, frames, keep)
+    acknowledged = measure_paced_frames(device, claim, leds, frames)
     print(f"60 fps: {acknowledged} of {frames} frames acknowledged ({leds} LEDs, {_reports(leds)} reports per frame)")
     seconds = 1.0 if quick else 3.0
     for pipelined, name in ((False, 'every report answered'), (True, 'pipelined')):
-        print(f"unthrottled, {name}: {_unthrottled(device, leds, seconds, pipelined, keep):.0f} frames/s")
+        rate = measure_unthrottled_frames(device, claim, leds, seconds, pipelined)
+        print(f"unthrottled, {name}: {rate:.0f} frames/s")
 
 
 @hlp_command
@@ -92,10 +93,11 @@ def bench():
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        try:
-            with holding_lights(device, 'hlp-bench', args.force, args.exclusive, brightness=False) as claim:
-                _bench(device, leds, args.quick, _keeper(claim))
-        except _TakenOver:
-            pass
+        claim = LightsClaim(device, 'hlp-bench', Settings(brightness_applied=False))
+        with claim.take(args.exclusive, args.force):
+            try:
+                _bench(device, claim, leds, args.quick)
+            except HostLightingClaimedError:
+                pass            # the claim printed who took the lights over
     finally:
         device.close()

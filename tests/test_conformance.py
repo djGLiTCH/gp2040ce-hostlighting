@@ -3,14 +3,16 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
-import logging
 import struct
+from types import SimpleNamespace
 
 import pytest
 
+from gp2040ce_hostlighting import claim as claim_module
 from gp2040ce_hostlighting import conformance as hl_conformance
 from gp2040ce_hostlighting import protocol as hl
-from gp2040ce_hostlighting.testing import control_record, hello_reply, light_record, summary_record
+from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
+from gp2040ce_hostlighting.testing import control_record, fake_device, hello_reply, light_record, summary_record
 from gp2040ce_hostlighting.tools import conformance
 
 
@@ -53,7 +55,7 @@ def test_conformance_reports_a_board_that_breaks_a_rule(hlp_run_on_model_board, 
 
 
 def test_conformance_holds_the_claim_while_it_runs(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that every command that drives the LEDs or configures is sent under the claim, but the hand-back."""
+    """Test that every command that drives the LEDs or configures is sent under the claim, but the give up."""
     answer, sent = hlp_model_board.answer, []
 
     def record(command, sequence, request):
@@ -73,7 +75,7 @@ def test_conformance_holds_the_claim_while_it_runs(hlp_run_on_model_board, hlp_m
     # under its own claim, or under the other token the claim checks take over with
     other = token ^ 0xFFFFFFFF
     assert set(driving) == {token, other} and driving.count(token) > 10 * driving.count(other)
-    assert sent[-1] == (hl.CMD_CLAIM, token)                # the give up hands back: nothing follows it
+    assert sent[-1] == (hl.CMD_CLAIM, token)                # the give up: nothing follows it
 
 
 def test_conformance_catches_a_claim_that_keeps_the_takeover(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -164,7 +166,7 @@ def test_conformance_catches_a_take_over_with_flags_that_do_not_act(hlp_run_on_m
 
 
 def test_conformance_passes_holding_an_exclusive_claim(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test hlp-conformance --exclusive: every check passes under its own exclusive claim, handed back after."""
+    """Test hlp-conformance --exclusive: every check passes under its own exclusive claim, given up after."""
     hlp_run_on_model_board(conformance.conformance, '--quick', '--exclusive')
     out = capsys.readouterr().out
     assert 'FAIL' not in out and 'RESULT: ALL PASS (159 passed, 0 failed)' in out
@@ -433,7 +435,7 @@ def test_conformance_takes_over_with_force(hlp_run_on_model_board, hlp_model_boa
 
 
 def test_conformance_stops_when_taken_over(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that the run ends as a failed check, handing nothing back, once another application takes over."""
+    """Test that the run ends as a failed check, giving nothing up, once another application takes over."""
     hlp_model_board.steal_at = 0.5
     with pytest.raises(SystemExit) as exited:
         hlp_run_on_model_board(conformance.conformance, '--quick')
@@ -451,7 +453,7 @@ def test_conformance_counts_a_lost_board_as_a_failure(hlp_run_on_model_board, hl
     lost = ('FAIL  the checks ran to the end  (the board is no longer connected (sending command 0x21 failed with '
             'device disconnected))')
     assert exited.value.code == 1 and lost in out
-    assert 'could not hand the lights back' not in caplog.text and hlp_model_board.holder == 0
+    assert 'could not give the claim up' not in caplog.text and hlp_model_board.holder == 0
     assert hlp_model_board.requests[-1][0] == hl.CMD_CLAIM and hlp_model_board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
 
@@ -498,13 +500,13 @@ def test_conformance_passes_a_board_with_a_light_of_no_leds(hlp_run_on_model_boa
 
 
 def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test hlp-bench: round trip, paced and unthrottled frame rates under a renewed claim, then hand back."""
+    """Test hlp-bench: round trip, paced and unthrottled frame rates under a renewed claim, then the give up."""
     hlp_run_on_model_board(conformance.bench, '--quick')
     out = capsys.readouterr().out
     assert 'round trip: median 1.00 ms, p95 1.00 ms (100 of 100 answered)' in out
     assert '60 fps: 60 of 60 frames acknowledged (4 LEDs, 1 reports per frame)' in out
     assert 'unthrottled, every report answered: ' in out and 'unthrottled, pipelined: ' in out
-    assert out.endswith('released, on-board animations restored\n')
+    assert out.endswith('claim given up, on-board animations restored\n')
     renewals = [claim[2] & 0x0F for claim in hlp_model_board.sent(hl.CMD_CLAIM)]
     assert renewals.count(hl.FLAG_KEEPALIVE) >= 2
     assert [configure[6] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)] == [0]
@@ -522,21 +524,21 @@ def test_bench_frame_size_and_refused_frames(hlp_run_on_model_board, hlp_model_b
 
 
 def test_bench_stops_when_taken_over(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that hlp-bench stops, and hands nothing back, when another application takes the lights over."""
+    """Test that hlp-bench stops, and gives nothing up, when another application takes the lights over."""
     hlp_model_board.steal_at = 0.5
     hlp_run_on_model_board(conformance.bench, '--quick')
     assert "'Other' took the lights over" in capsys.readouterr().out
     assert not hlp_model_board.sent(hl.CMD_RELEASE) and hlp_model_board.holder == 0xB2
 
 
-def test_bench_hands_back_on_interrupt(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch):
+def test_bench_gives_up_on_interrupt(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch):
     """Test that a Ctrl-C during hlp-bench gives the claim up, which restores the CONFIGURE defaults."""
     def interrupt(seconds):
         raise KeyboardInterrupt
     monkeypatch.setattr(hlp_model_board, 'sleep', interrupt)
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_model_board(conformance.bench, '--quick')
-    assert 'released, on-board animations restored' in capsys.readouterr().out
+    assert 'claim given up, on-board animations restored' in capsys.readouterr().out
     assert hlp_model_board.holder == 0 and not hlp_model_board.live
     assert (hlp_model_board.overlay, hlp_model_board.keepalive_ms, hlp_model_board.brightness) == (0, 2000, 1)
 
@@ -685,31 +687,66 @@ def test_conformance_catches_a_first_claim_that_keeps_the_settings(hlp_run_on_mo
     assert 'FAIL  and each puts the CONFIGURE settings back to their defaults' in capsys.readouterr().out
 
 
-def test_round_trips_stop_once_another_application_holds_the_claim():
-    """Test that hlp-bench takes a HELLO refused under its generation as the claim lost, not as a lost reply."""
+def test_round_trips_count_only_the_answered(hlp_model_board):
+    """Test that a HELLO refused, as after a change of holder, is not timed, and a lost board still raises."""
     class Device:
+        replies = [None, hl.HostLightingRejectedError(hl.CMD_HELLO, hl.STATUS_CLAIMED, 0, hl.Controller(
+            holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=3)), None]
+
         def request_ok(self, command):
-            raise hl.HostLightingRejectedError(command, hl.STATUS_CLAIMED, 0, hl.Controller(
-                holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=3))
+            reply = self.replies.pop(0)
+            if reply:
+                raise reply
 
-    with pytest.raises(hl_conformance._TakenOver):
-        hl_conformance._round_trips(Device(), 3)
-
-
-def test_checks_report_through_the_callable_and_keep_each_result():
-    """Test that Checks gives each line to its report callable and keeps every result."""
-    lines: list = []
-    checks = hl_conformance.Checks(report=lines.append)
-    checks.section('Pages')
-    assert checks.check(True, 'page 8 read') and not checks.check(0, 'page 9 read', 'status 5')
-    checks.note('3 profiles')
-    assert lines == ['Pages:', '  PASS  page 8 read', '  FAIL  page 9 read  (status 5)', '        3 profiles']
-    assert (checks.passed, checks.failed) == (1, 1)
-    assert checks.results == [(True, 'page 8 read', ''), (False, 'page 9 read', 'status 5')]
+    assert len(hl_conformance.measure_round_trips(Device(), 3)) == 2
+    Device.replies = [hl.HostLightingDisconnectedError('gone')]
+    with pytest.raises(hl.HostLightingDisconnectedError):
+        hl_conformance.measure_round_trips(Device(), 1)
 
 
-def test_checks_log_without_a_report(caplog, capsys):
-    """Test that Checks logs each line at INFO when given no report callable, and prints nothing."""
-    with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.conformance'):
-        hl_conformance.Checks().check(False, 'page 9 read')
-    assert '  FAIL  page 9 read' in caplog.text and not capsys.readouterr().out
+def test_checks_collect_and_count_the_results():
+    """Test that Checks keeps every result, counting passes and failures but not notes."""
+    checks = hl_conformance.Checks()
+    passed = hl_conformance.CheckResult(section='Pages', what='page 8 read', passed=True)
+    assert checks.add(passed) is passed
+    checks.add(hl_conformance.CheckResult(section='Pages', what='page 9 read', passed=False, detail='status 5'))
+    checks.add(hl_conformance.CheckResult(section='Pages', what='3 profiles', passed=None))
+    assert (checks.passed, checks.failed, len(checks.results)) == (1, 1, 3)
+
+
+def claimed_on_the_board_clock(board, monkeypatch):
+    """Open the model board with time on its clock, and take a claim on it."""
+    timing = SimpleNamespace(sleep=board.sleep, monotonic=board.time, perf_counter=board.time)
+    for module in (hl, hl_conformance, claim_module):
+        monkeypatch.setattr(module, 'time', timing)
+    device = fake_device(board)
+    return device, LightsClaim(device, 'host').take()
+
+
+def test_run_checks_yields_each_result_as_it_is_made(hlp_model_board, monkeypatch):
+    """Test the library's run: results in their sections, KEEPALIVE off while it runs, and the claim still held."""
+    device, claim = claimed_on_the_board_clock(hlp_model_board, monkeypatch)
+    results = hl_conformance.run_checks(device, claim, quick=True)
+    first = next(results)
+    assert first.section == 'HELLO' and first.passed and not claim.keepalive
+    rest = list(results)
+    assert all(result.passed is not False for result in rest) and rest[-1].section == 'Timing'
+    assert claim.keepalive and claim.state is ClaimState.HELD and hlp_model_board.holder == claim.token
+
+
+def test_measurements_stop_once_the_claim_is_lost(hlp_model_board, monkeypatch):
+    """Test that a frame refused after a takeover ends the measurement with the holder, as does a claim ended."""
+    device, claim = claimed_on_the_board_clock(hlp_model_board, monkeypatch)
+    assert hl_conformance.measure_paced_frames(device, claim, 4, 3) == 3
+    assert hl_conformance.measure_unthrottled_frames(device, claim, 40, 0.1, False) > 0
+    hlp_model_board.take_over()
+    with pytest.raises(hl.HostLightingClaimedError, match="'Other' holds the lights"):
+        hl_conformance.measure_paced_frames(device, claim, 4, 3)
+    assert claim.state is ClaimState.LOST
+    hlp_model_board.let_go()
+    claim.take().give_up()
+    with pytest.raises(hl.HostLightingError, match='the claim is no longer held'):
+        hl_conformance.measure_unthrottled_frames(device, claim, 4, 0.1, True)
+    hlp_model_board.disconnect_on = {hl.CMD_STAGE}
+    with pytest.raises(hl.HostLightingDisconnectedError):
+        hl_conformance.measure_paced_frames(device, claim, 4, 1)

@@ -3,37 +3,37 @@
 hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light,
 hlp-stream, hlp-buttons, hlp-input-mode, hlp-reboot-webconfig and
 hlp-reboot-bootsel. Given GP2040-CE's .proto files (`-P`), they print enum
-names beside the values. tools.conformance shares hlp_command, device_parser,
-ranged and holding_lights.
+names beside the values. The commands that drive the LEDs hold a LightsClaim,
+and print its INFO lines as part of their output. tools.conformance shares
+hlp_command, device_parser, add_claim_arguments and ranged.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
 import colorsys
-import contextlib
 import functools
 import logging
 import os
 import pathlib
 import re
-import secrets
 import sys
 import time
 from dataclasses import fields
 from importlib import metadata
-from typing import Callable, Iterator, Optional
+from typing import Callable, Optional
 
+from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_HELLO,
-                                            EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE, KIND_PLAYERS, PAGE_ANIMATIONS,
-                                            PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE,
-                                            PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_WEBCONFIG,
-                                            SPEED_UNCHANGED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME, HostLightingDevice,
+                                            BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
+                                            KIND_PLAYERS, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_INPUT_MODES, PAGE_LIGHTS,
+                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
+                                            REBOOT_BOOTSEL, REBOOT_WEBCONFIG, SPEED_UNCHANGED, TAKEOVER_OVERLAY,
+                                            TAKEOVER_WHOLE_FRAME, HostLightingClaimedError, HostLightingDevice,
                                             HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
-                                            LightsClaim, decode_state_changed, key_name, open_device, stage_capacity)
-from gp2040ce_hostlighting.records import Hello, StateRecord
+                                            decode_state_changed, key_name, open_device, stage_capacity)
+from gp2040ce_hostlighting.records import Hello, Settings, StateRecord
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +59,35 @@ common_parser.add_argument('-P', '--proto-files-path', type=pathlib.Path, action
 common_options = argparse.Namespace(debug=False, proto_files_path=[])
 
 
+class _ClaimLines(logging.Handler):
+    """Print a LightsClaim's INFO lines, what changed and the give up, as part of a command's output."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Print one INFO line. The other levels go to the log alone."""
+        if record.levelno == logging.INFO:
+            print(record.getMessage())
+
+
 class CommandParser(argparse.ArgumentParser):
     """An hlp-* command's parser: applies the common options once the command line is parsed."""
 
     def parse_known_args(self, args=None, namespace=None):
-        """Parse the command line, then set up logging and the .proto paths."""
+        """Parse the command line, then set up logging and the .proto paths.
+
+        The log goes to stderr, at WARNING or with -d at DEBUG. The claim's INFO lines are printed instead.
+        """
         parsed, unknown = super().parse_known_args(args, namespace)
         common_options.debug = parsed.debug
         common_options.proto_files_path = parsed.proto_files_path or []
-        logging.basicConfig(level=logging.DEBUG if parsed.debug else logging.WARNING, stream=sys.stderr,
-                            format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
+        level = logging.DEBUG if parsed.debug else logging.WARNING
+        if not logging.root.handlers:
+            logging.basicConfig(level=level, stream=sys.stderr,
+                                format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
+            logging.root.handlers[0].setLevel(level)
+        claim_log = logging.getLogger('gp2040ce_hostlighting.claim')
+        claim_log.setLevel(min(level, logging.INFO))
+        if not any(isinstance(handler, _ClaimLines) for handler in claim_log.handlers):
+            claim_log.addHandler(_ClaimLines())
         return parsed, unknown
 
 
@@ -129,6 +148,8 @@ def hlp_command(function):
         """Run the command."""
         try:
             function()
+        except HostLightingClaimedError as error:
+            raise SystemExit(f"error: {error}. Add --force to take them over") from error
         except BrokenPipeError:
             # The reader of the output has exited. Python flushes stdout again at exit, so it is pointed at
             # devnull first: the method of the note on SIGPIPE in Python's signal module documentation.
@@ -155,7 +176,7 @@ def add_claim_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the flags of a command that holds the lights: --force and --exclusive."""
     parser.add_argument('--force', action='store_true', help="take the lights over from another application")
     parser.add_argument('--exclusive', action='store_true',
-                        help="claim the lights exclusively: until they are handed back, the board refuses changes "
+                        help="claim the lights exclusively: until the claim is given up, the board refuses changes "
                              "from applications that do not hold the claim (default: a shared claim)")
 
 
@@ -187,37 +208,6 @@ def _parse_colour(text: str) -> tuple:
     if len(text) not in (6, 8) or not set(text) <= set('0123456789abcdefABCDEF'):
         raise SystemExit(f"colour must be six or eight hex digits: {text}")
     return tuple(bytes.fromhex(text))
-
-
-@contextlib.contextmanager
-def holding_lights(device: HostLightingDevice, name: str, force: bool, exclusive: bool = False,
-                   brightness: bool = True) -> Iterator[LightsClaim]:
-    """Claim a board's lights for a command and hand them back however the block ends.
-
-    The command claims the board, then sets whole-frame takeover and a 2 s keepalive. An application holding
-    the claim keeps it, and the command exits, unless force takes it over. The lights are handed back when the
-    block ends, Ctrl-C and errors included, unless another application took them over.
-
-    :param device: an opened HostLightingDevice
-    :param name: the command's name, shown in page 1 while it holds the claim
-    :param force: take the claim over from another application
-    :param exclusive: claim exclusively: until the lights are handed back, the board refuses other applications'
-        changes
-    :param brightness: scale the command's pixels by the board's brightness
-    :return: the LightsClaim, which renews the claim
-    """
-    token = secrets.randbits(32) or 1
-    holder = device.claim(CLAIM_TAKE_OVER if force else CLAIM_TAKE, token, name.encode(), exclusive=exclusive)
-    if not holder.held_by(token):
-        raise SystemExit(f"'{holder.application_name}' holds the lights (claim 0x{holder.holder_token:08X}). "
-                         "Add --force to take them over")
-    claim = LightsClaim(device, name, token, exclusive, report=print)
-    try:
-        claim.configure(overlay=False, keepalive_ms=2000, brightness=brightness)
-        yield claim
-    finally:
-        if claim.held and claim.hand_back():
-            print("released, on-board animations restored")
 
 
 def _hue(index: float, count: int) -> tuple:
@@ -464,12 +454,12 @@ def _checked_options(args: argparse.Namespace) -> tuple:
 
 def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: float, force: bool,
                              exclusive: bool) -> None:
-    """Show a brightness step unsaved while holding the claim. The hand-back ends it and the saved step returns.
+    """Show a brightness step unsaved while holding the claim. The give up ends it and the saved step returns.
 
-    Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without handing back,
+    Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without giving up,
     the step would end at the keepalive timeout.
     """
-    with holding_lights(device, 'hlp-settings', force, exclusive) as claim:
+    with LightsClaim(device, 'hlp-settings').take(exclusive, force) as claim:
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds)
@@ -576,7 +566,7 @@ def fill():
     kinds = {'buttons': (KIND_BUTTON,), 'case': (KIND_CASE,), 'pleds': KIND_PLAYERS}
     device = open_device(args.board_id)
     try:
-        with holding_lights(device, 'hlp-fill', args.force, args.exclusive) as claim:
+        with LightsClaim(device, 'hlp-fill').take(args.exclusive, args.force) as claim:
             if args.scope == 'all':
                 device.fill(colour, pixel_format, commit=True)
             else:
@@ -619,7 +609,7 @@ def set_light():
     pixel_format = PIXEL_RGBW if any(len(colour) == 4 for _, colour in entries) else PIXEL_RGB
     device = open_device(args.board_id)
     try:
-        with holding_lights(device, 'hlp-set-light', args.force, args.exclusive) as claim:
+        with LightsClaim(device, 'hlp-set-light').take(args.exclusive, args.force) as claim:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome.applied for outcome in outcomes)
             skipped = sum(outcome.skipped for outcome in outcomes)
@@ -640,7 +630,7 @@ def set_light():
 def stream():
     """Stream whole frames, as a worked example of a streaming host."""
     parser = device_parser("Take a GP2040-CE board's lights over and stream whole frames: red, green and blue "
-                           "fills, then a rainbow at 60 fps, then hand the lights back. Each frame is LED runs "
+                           "fills, then a rainbow at 60 fps, then give the claim up. Each frame is LED runs "
                            "sent with NO_REPLY, COMMIT_AFTER on the last report, which alone is answered.")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long the rainbow runs (default: 5)")
     parser.add_argument('--leds', type=ranged(1, 0xFFFF), help="LEDs per frame (default: the LED extent)")
@@ -651,7 +641,7 @@ def stream():
     device = open_device(args.board_id)
     try:
         leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        with holding_lights(device, 'hlp-stream', args.force, args.exclusive) as claim:
+        with LightsClaim(device, 'hlp-stream').take(args.exclusive, args.force) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:
         device.close()
@@ -664,18 +654,20 @@ def _stream(claim: LightsClaim, leds: int, seconds: float, timeout_test: bool) -
         print(f"filled {name}")
         if not claim.keep(1.0):
             return
-    if _rainbow(claim, leds, seconds) and timeout_test and claim.renew():
-        claim.let_lapse()       # renewed just now: the keepalive and the claim's lease lapse together
-        _time_expiry(claim.device)
+    if _rainbow(claim, leds, seconds) and timeout_test:
+        claim.renew()
+        if claim.state is ClaimState.HELD:
+            claim.let_lapse()       # renewed just now: the keepalive and the claim's lease lapse together
+            _time_expiry(claim.device)
 
 
 def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
-    """Stream a moving rainbow at about 60 fps, renewing the claim each second.
+    """Stream a moving rainbow at about 60 fps, renewing the claim when due.
 
     :return: False when another application took the lights over
     """
     frames = max(1, int(seconds * 60))
-    start = renewed = time.monotonic()
+    start = time.monotonic()
     acknowledged = 0
     failure: Optional[HostLightingError] = None
     for frame in range(frames):
@@ -685,12 +677,14 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
             acknowledged += 1
         except HostLightingDisconnectedError:
             raise
+        except HostLightingRejectedError as error:
+            failure = failure or error
+            claim.refused(error)        # a status 4 refusal shows a change of holder
         except HostLightingError as error:
             failure = failure or error
-        if time.monotonic() - renewed >= 1.0:
-            renewed = time.monotonic()
-            if not claim.renew():
-                return False
+        claim.maintain()
+        if claim.state is not ClaimState.HELD:
+            return False
         time.sleep(max(0.0, start + (frame + 1) / 60 - time.monotonic()))
     print(f"rainbow: {acknowledged} of {frames} frames acknowledged ({leds} LEDs)")
     if failure:
@@ -732,7 +726,7 @@ def buttons():
     parser = device_parser("Take a GP2040-CE board's lights over: every lit control its own hue (staged by "
                            "action), then every light its own hue (one light run), then the lit buttons among "
                            "B1-B4, L1, R1, L2 and R2 white over the running animations (overlay takeover), then "
-                           "hand the lights back.")
+                           "give the claim up.")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long each phase holds (default: 5)")
     add_claim_arguments(parser)
     args, _ = parser.parse_known_args()
@@ -740,7 +734,7 @@ def buttons():
     try:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
-        with holding_lights(device, 'hlp-buttons', args.force, args.exclusive) as claim:
+        with LightsClaim(device, 'hlp-buttons').take(args.exclusive, args.force) as claim:
             _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names()))
     finally:
         device.close()
@@ -749,7 +743,7 @@ def buttons():
 def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float, overlay: list) -> None:
     """Run hlp-buttons' three phases, stopping if another application takes the lights over.
 
-    The hand-back restores the CONFIGURE defaults, whole-frame takeover included.
+    The give up restores the CONFIGURE defaults, whole-frame takeover included.
     """
     device = claim.device
     actions = sorted({control.input.action for control in controls if control.input.lit})
@@ -766,7 +760,7 @@ def _buttons(claim: LightsClaim, controls: tuple, lights: tuple, seconds: float,
         if not claim.keep(seconds):
             return
     device.clear()
-    claim.configure(overlay=True, keepalive_ms=2000, brightness=True)
+    claim.configure(Settings(takeover=TAKEOVER_OVERLAY))
     if overlay:
         outcomes = device.stage_entries(ADDRESSING_ACTION, [(action, (255, 255, 255)) for _, action in overlay],
                                         commit=True)

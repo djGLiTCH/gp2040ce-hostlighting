@@ -49,38 +49,33 @@ A host drives the lights in these steps:
    in the page, and one attribute per field group, named after the specification's, such as `light.owner.pin`.
    Reading a group the reply did not return raises `HostLightingGroupNotReadError`, and `record.has(group)`
    says whether it was returned.
-3. Take the claim with `claim(CLAIM_TAKE, token, name)`, where the name is up to 16 bytes. The claim is held
-   when the holder it returns is `held_by()` the token.
-4. Keep the claim in a `LightsClaim` and send the settings with its `configure()`.
-5. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
-6. Renew the claim within each keepalive timeout with `renew()`, or wait and renew with `keep()`.
-7. Hand the lights back with `hand_back()`, then close the device.
+3. Take the claim with `LightsClaim(device, name, settings).take()`, where the name is up to 16 bytes.
+   `take()` claims, then sends the CONFIGURE settings. While another application holds the claim it raises
+   `HostLightingClaimedError`, unless it is to take the claim over (`force=True`) or wait for it (`wait=True`).
+4. Stage pixels with `stage_run()` or `stage_entries()`, and publish them with `commit=True`.
+5. Call the claim's `maintain()` often. It renews the claim when a renewal is due and returns a `ClaimChange`.
+   When the change's `restage` is true, the claim started again with nothing staged, so stage the whole frame
+   again. `keep(seconds)` maintains the claim for a while, sleeping between renewals.
+6. Give the claim up with `give_up()`, which a `with` block does, then close the device.
 
 The example lights every LED red for 3 s:
 
 ```python
-import secrets
+from gp2040ce_hostlighting.claim import LightsClaim
+from gp2040ce_hostlighting.protocol import (
+    ADDRESSING_LED_RUN, PAGE_SUMMARY, open_device)
 
-from gp2040ce_hostlighting.protocol import ADDRESSING_LED_RUN, CLAIM_TAKE, PAGE_SUMMARY, LightsClaim, open_device
-
-device = open_device()
-try:
+with open_device() as device:
     leds = device.read_record(PAGE_SUMMARY).records[0].summary.led_extent
-    token = secrets.randbits(32) or 1
-    holder = device.claim(CLAIM_TAKE, token, b'my-host')
-    if not holder.held_by(token):
-        raise SystemExit(f"'{holder.application_name}' holds the lights")
-    claim = LightsClaim(device, 'my-host', token)
-    claim.configure(keepalive_ms=2000)
-    device.stage_run(ADDRESSING_LED_RUN, 0, [(255, 0, 0)] * leds, commit=True)
-    if claim.keep(3):
-        claim.hand_back()
-finally:
-    device.close()
+    with LightsClaim(device, 'my-host').take() as claim:
+        red = [(255, 0, 0)] * leds
+        device.stage_run(ADDRESSING_LED_RUN, 0, red, commit=True)
+        claim.keep(3)
 ```
 
-`LightsClaim` passes a takeover by another application to its `report` callable, or logs it at INFO without
-one. `renew()` and `keep()` then return `False`, and the lights belong to the new holder.
+`LightsClaim` logs each change at INFO. Once another application takes the lights over, `maintain()` returns
+a change of kind `LOST`, `keep()` returns `False`, and the lights belong to the new holder. `observe()` applies
+the holders that `STATE_CHANGED` events show, and `refused()` applies a status 4 refusal to the claim.
 
 A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
 `drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
@@ -98,8 +93,10 @@ animations go idle, and `frames` keeps every frame it published. `attach()` puts
 
 ### Conformance checks
 
-`gp2040ce_hostlighting.conformance` holds the checks `hlp-conformance` runs. `Checks` counts them, keeps each
-result in `results` and passes each line of the report to its `report` callable.
+`gp2040ce_hostlighting.conformance` holds the checks `hlp-conformance` runs. `run_checks()` runs them under a
+`LightsClaim` and yields each `CheckResult` as it is made, and `Checks` collects and counts them.
+`measure_round_trips()`, `measure_paced_frames()` and `measure_unthrottled_frames()` take the measurements
+`hlp-bench` prints.
 
 ## The hlp-* commands
 

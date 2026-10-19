@@ -26,8 +26,8 @@ the board and lists its capabilities. GET_PAGE reads the pages:
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
 
-LightsClaim keeps a claim on the lights. It renews the claim, sends CONFIGURE
-again after a lapse and hands the lights back.
+gp2040ce_hostlighting.claim keeps a claim on the lights: it renews the claim,
+sends CONFIGURE again after a lapse and gives the claim up.
 
 See docs/host-lighting.md for the full protocol reference. The hlp-*
 commands are in gp2040ce_hostlighting.tools.commands, and hlp-conformance
@@ -42,7 +42,7 @@ import secrets
 import struct
 import time
 from dataclasses import fields
-from typing import Callable, Iterable, Optional
+from typing import Iterable, Optional
 
 from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, Controller,
                                            ControlLights, ControlRecord, Effects, GridCell, Hello, Identity,
@@ -84,9 +84,9 @@ __all__ = [
     # errors
     'HostLightingError', 'HostLightingRejectedError', 'HostLightingTimeoutError', 'HostLightingStaleTokenError',
     'HostLightingDisconnectedError', 'HostLightingUnansweredError', 'HostLightingIncompatibleError',
-    'HostLightingGroupNotReadError',
+    'HostLightingGroupNotReadError', 'HostLightingClaimedError',
     # the device, discovery and capabilities
-    'HostLightingDevice', 'LightsClaim', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
+    'HostLightingDevice', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
     'list_boards', 'missing_capabilities', 'require_capabilities',
     # the records, from gp2040ce_hostlighting.records
     'BoardListing', 'Controller', 'Hello', 'Identity', 'PageHeader', 'PageRead', 'Requirements', 'Settings',
@@ -606,8 +606,9 @@ _PAGE_RECORDS: dict = {
 def decode_records(reply: bytes) -> tuple:
     """Decode the records of a GET_PAGE reply, field group by field group.
 
-    Each record holds the groups the reply echoes, and None for the others, with `ordinal`, the record's
-    position in the page (the reply's start plus its index in the reply).
+    Each record holds the groups the reply echoes, with `ordinal`, the record's position in the page (the
+    reply's start plus its index in the reply). Reading a group the reply did not echo raises
+    HostLightingGroupNotReadError.
 
     :param reply: the reply report of a table page (1, 2, 8-12)
     :return: the records
@@ -763,6 +764,19 @@ class HostLightingGroupNotReadError(HostLightingError, AttributeError):
         self.group = group
         self.ordinal = ordinal
         super().__init__(f"page {page} record {ordinal}: the {group} group was not read")
+
+
+class HostLightingClaimedError(HostLightingError):
+    """Another application holds the claim, which was neither to be taken over nor waited for.
+
+    LightsClaim.take() raises it, and so do the conformance checks and measurements once the claim is lost.
+    """
+
+    def __init__(self, holder: Controller):
+        """Record the holder, as the board showed it."""
+        self.holder = holder
+        super().__init__(f"'{holder.application_name}' holds the lights (claim 0x{holder.holder_token:08X}, "
+                         f"generation {holder.claim_generation})")
 
 
 class HostLightingDevice:
@@ -1415,104 +1429,6 @@ class HostLightingDevice:
             raise
         except HostLightingError:
             logger.debug("no acknowledgement before the disconnect. The reboot is proceeding")
-            return False
-
-
-class LightsClaim:
-    """Keep a claim on a board's lights, renew it and hand it back."""
-
-    def __init__(self, device: HostLightingDevice, name: str, token: int, exclusive: bool = False,
-                 report: Optional[Callable[[str], None]] = None):
-        """Record a claim the application holds.
-
-        :param device: an opened HostLightingDevice
-        :param name: the application's name, up to 16 bytes, shown in page 1 while it holds the claim
-        :param token: the claim token
-        :param exclusive: whether the claim is exclusive. Each renewal claims the same way
-        :param report: called with one line of text when another application has taken the lights over,
-            which is logged at INFO when no callable is given
-        :raises ValueError: for a name over 16 bytes
-        """
-        _check_claim_name(name.encode())
-        self.device = device
-        self.name = name
-        self.token = token
-        self.exclusive = exclusive
-        self.held = True
-        self.settings: dict = {}
-        self.report = report or logger.info
-
-    def configure(self, overlay: bool = False, keepalive_ms: int = 2000, brightness: bool = True) -> Settings:
-        """Send CONFIGURE and remember the settings, which renew() sends again once it retakes a lapsed claim.
-
-        :param overlay: True for overlay takeover, False for whole-frame
-        :param keepalive_ms: keepalive timeout in ms
-        :param brightness: scale host pixels by the board's brightness
-        :return: the settings the board applied
-        """
-        self.settings = {'takeover': TAKEOVER_OVERLAY if overlay else TAKEOVER_WHOLE_FRAME,
-                         'keepalive_ms': keepalive_ms, 'brightness_applied': brightness}
-        return self.device.configure(**self.settings)
-
-    def renew(self) -> bool:
-        """Renew the claim and, with KEEPALIVE, the takeover.
-
-        A new generation means the claim had lapsed and this renewal took it again: that change of holder put
-        the CONFIGURE settings back to their defaults, so the claim's settings are sent again.
-
-        :return: False, having reported it, once another application has taken the lights over
-        """
-        generation = self.device.generation
-        holder = self.device.claim(CLAIM_TAKE, self.token, self.name.encode(), FLAG_KEEPALIVE, self.exclusive)
-        if not holder.held_by(self.token):
-            self.report(f"'{holder.application_name}' took the lights over")
-            self.held = False
-        elif self.device.generation != generation and self.settings:
-            self.device.configure(**self.settings)
-        return self.held
-
-    def keep(self, seconds: float) -> bool:
-        """Keep the lights for a while, renewing them each second.
-
-        :param seconds: how long to keep them
-        :return: False as soon as another application takes them over
-        """
-        remaining = seconds
-        while remaining > 0:
-            step = min(1.0, remaining)
-            time.sleep(step)
-            remaining -= step
-            if not self.renew():
-                return False
-        return True
-
-    def let_lapse(self) -> None:
-        """Stop holding without handing back: the takeover and the claim end at the keepalive timeout.
-
-        The application's requests then carry neither the claim generation nor FLAG_HOLDER, as those of an
-        application that holds no claim: once the claim has lapsed, its generation would be refused.
-        """
-        self.held = False
-        self.device.generation = 0
-        self.device.holding_exclusive = False
-
-    def hand_back(self) -> bool:
-        """Give up the claim, which restores the on-board animations and the CONFIGURE defaults.
-
-        Giving up ends the takeover and an unsaved brightness step and puts the settings back. When another
-        application holds the claim (the lease lapsed unnoticed and it claimed), nothing changes.
-
-        :return: True when the lights were handed back
-        """
-        self.held = False
-        try:
-            holder = self.device.claim(CLAIM_GIVE_UP, self.token)
-            if holder.holder_token:
-                self.report(f"'{holder.application_name}' took the lights over")
-                return False
-            return True
-        except (HostLightingError, OSError):
-            logger.warning("could not hand the lights back. The keepalive timeout restores the animations")
             return False
 
 

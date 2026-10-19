@@ -3,7 +3,6 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
-import logging
 import struct
 from dataclasses import fields
 from types import SimpleNamespace
@@ -339,12 +338,10 @@ def test_rejected_builds_the_error_from_a_reply():
 
 
 def test_a_claim_name_over_16_bytes_is_refused(hlp_fake_device, hlp_fake_board):
-    """Test that claim() and LightsClaim refuse a name the board would cut short, sending nothing."""
+    """Test that claim() refuses a name the board would cut short, sending nothing."""
     assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'x' * 16).application_name == 'x' * 16
     with pytest.raises(ValueError, match='17 bytes, over the 16'):
         hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'x' * 17)
-    with pytest.raises(ValueError, match='18 bytes'):
-        hl.LightsClaim(hlp_fake_device, 'caf\u00e9-' + 'x' * 12, 0x51)       # 17 characters, 18 bytes
     assert len(hlp_fake_board.sent(hl.CMD_CLAIM)) == 1
 
 
@@ -715,27 +712,6 @@ def test_a_claimed_page_read_names_the_holder(hlp_fake_device, hlp_fake_board):
         holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=5)
 
 
-def test_a_lights_claim_reports_a_takeover(hlp_fake_device, hlp_fake_board):
-    """Test that LightsClaim gives its report callable the line naming the new holder, and prints nothing."""
-    hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'app')
-    lines: list = []
-    claim = hl.LightsClaim(hlp_fake_device, 'app', 0x51, report=lines.append)
-    assert claim.renew() and not lines
-    hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
-    assert not claim.renew() and not claim.held
-    assert lines == ["'Other' took the lights over"]
-
-
-def test_a_lights_claim_logs_without_a_report(hlp_fake_device, hlp_fake_board, caplog, capsys):
-    """Test that LightsClaim logs at INFO when given no report callable, and hands back when it holds."""
-    hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'app')
-    assert hl.LightsClaim(hlp_fake_device, 'app', 0x51).hand_back() and hlp_fake_board.holder == 0
-    hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
-    with caplog.at_level(logging.INFO, logger='gp2040ce_hostlighting.protocol'):
-        assert not hl.LightsClaim(hlp_fake_device, 'app', 0x51).hand_back()
-    assert "'Other' took the lights over" in caplog.text and not capsys.readouterr().out
-
-
 def test_a_device_needs_a_path_or_a_handle():
     """Test that HostLightingDevice refuses to start with neither a path nor a handle."""
     with pytest.raises(ValueError, match="path or an open handle"):
@@ -752,7 +728,7 @@ def test_a_fake_board_refuses_a_report_framed_wrongly(hlp_fake_board, hlp_model_
 
 
 def test_the_readme_example_runs(hlp_run_on_model_board, hlp_model_board, monkeypatch):
-    """Test that the README's library example lights every LED on the model board, then hands the lights back."""
+    """Test that the README's library example lights every LED on the model board, then gives the claim up."""
     import pathlib
     import re
     readme = (pathlib.Path(__file__).parent.parent / 'README.md').read_text(encoding='utf-8')

@@ -33,15 +33,15 @@ def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
 
 
 def test_fill_scopes(hlp_run_on_fake_board, hlp_fake_board, capsys):
-    """Test hlp-fill: FILL for all, STAGE by kind for a scope, the renewals, then the hand-back."""
+    """Test hlp-fill: FILL for all, STAGE by kind for a scope, a renewal each third of 2 s, then the give up."""
     hlp_run_on_fake_board(tools.fill, '--seconds', '2', 'FF8000')
     (fill,) = hlp_fake_board.sent(hl.CMD_FILL)
     generation = 2 << hl.FLAG_GENERATION_SHIFT                # the claim's, on every request once it is held
     assert fill[2] == hl.FLAG_COMMIT_AFTER | generation and fill[3:7] == bytes([0, 0xFF, 0x80, 0x00])
     claims = hlp_fake_board.sent(hl.CMD_CLAIM)
-    assert [(claim[2], claim[3]) for claim in claims] == [
-        (0, hl.CLAIM_TAKE), (hl.FLAG_KEEPALIVE | generation, hl.CLAIM_TAKE),
-        (hl.FLAG_KEEPALIVE | generation, hl.CLAIM_TAKE), (generation, hl.CLAIM_GIVE_UP)]
+    renewal = (hl.FLAG_KEEPALIVE | generation, hl.CLAIM_TAKE)
+    assert [(claim[2], claim[3]) for claim in claims] == [(0, hl.CLAIM_TAKE), renewal, renewal, renewal,
+                                                          (generation, hl.CLAIM_GIVE_UP)]
     assert claims[0][8:24].rstrip(b'\x00') == b'hlp-fill' and hlp_fake_board.holder == 0
     # the give up hands everything back: no RELEASE follows, nor a CONFIGURE after the claim's own
     assert hlp_fake_board.requests[-1] is claims[-1] and not hlp_fake_board.sent(hl.CMD_RELEASE)
@@ -57,13 +57,13 @@ def test_fill_claims_exclusively_with_exclusive(hlp_run_on_fake_board, hlp_fake_
     hlp_run_on_fake_board(tools.fill, '--seconds', '2', '--exclusive', 'FF8000')
     claims = hlp_fake_board.sent(hl.CMD_CLAIM)
     holder = hl.FLAG_HOLDER | 2 << hl.FLAG_GENERATION_SHIFT
+    renewal = (hl.FLAG_KEEPALIVE | holder, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE)
     assert [(claim[2], claim[3], claim[24]) for claim in claims] == [
-        (0, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE), (hl.FLAG_KEEPALIVE | holder, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE),
-        (hl.FLAG_KEEPALIVE | holder, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE), (holder, hl.CLAIM_GIVE_UP, 0)]
+        (0, hl.CLAIM_TAKE, hl.CLAIM_EXCLUSIVE), renewal, renewal, renewal, (holder, hl.CLAIM_GIVE_UP, 0)]
     (fill,) = hlp_fake_board.sent(hl.CMD_FILL)
     assert fill[2] == hl.FLAG_COMMIT_AFTER | holder and hlp_fake_board.holder == 0
     hlp_run_on_fake_board(tools.fill, 'FF8000')
-    shared = hlp_fake_board.sent(hl.CMD_CLAIM)[4:]
+    shared = hlp_fake_board.sent(hl.CMD_CLAIM)[5:]
     assert [(claim[2] & hl.FLAG_HOLDER, claim[24]) for claim in shared] == [(0, 0)] * len(shared)
     # a claim, a give up and a claim later: generation 4, carried without HOLDER
     assert hlp_fake_board.sent(hl.CMD_FILL)[-1][2] == hl.FLAG_COMMIT_AFTER | 4 << hl.FLAG_GENERATION_SHIFT
@@ -137,7 +137,7 @@ def test_tools_leave_another_applications_lights_alone(hlp_run_on_fake_board, hl
 
 
 def test_hold_stops_when_taken_over(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
-    """Test that a tool with its claim taken over neither releases nor gives up."""
+    """Test that a tool with its claim taken over prints the new holder, and neither releases nor gives up."""
     def sleep(seconds):
         hlp_fake_board.holder, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
     monkeypatch.setattr(tools.time, 'sleep', sleep)
@@ -146,7 +146,7 @@ def test_hold_stops_when_taken_over(hlp_run_on_fake_board, hlp_fake_board, capsy
     assert not hlp_fake_board.sent(hl.CMD_RELEASE) and hlp_fake_board.holder == 0xB2
 
 
-def test_hold_hands_back_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
+def test_hold_gives_up_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
     """Test that the give up follows a Ctrl-C during the hold."""
     def sleep(seconds):
         raise KeyboardInterrupt
@@ -154,10 +154,10 @@ def test_hold_hands_back_on_interrupt(hlp_run_on_fake_board, hlp_fake_board, cap
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
-    assert hlp_fake_board.holder == 0 and 'released, on-board animations restored' in capsys.readouterr().out
+    assert hlp_fake_board.holder == 0 and 'claim given up, on-board animations restored' in capsys.readouterr().out
 
 
-def test_hand_back_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
+def test_give_up_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
     """Test that a hold ending after another application claimed the lapsed lease sends no RELEASE or CONFIGURE."""
     def sleep(seconds):
         hlp_fake_board.holder, hlp_fake_board.holder_name = 0xC3, b'MESH'.ljust(16, b'\x00')
@@ -166,19 +166,19 @@ def test_hand_back_leaves_a_new_holder_alone(hlp_run_on_fake_board, hlp_fake_boa
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_fake_board(tools.fill, 'FF0000')
     out = capsys.readouterr().out
-    assert "'MESH' took the lights over" in out and 'released' not in out
+    assert "'MESH' took the lights over" in out and 'given up' not in out
     # the give up's reply names MESH
     assert (hlp_fake_board.requests[-1][0], hlp_fake_board.requests[-1][3]) == (hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)
     assert not hlp_fake_board.sent(hl.CMD_RELEASE) and len(hlp_fake_board.sent(hl.CMD_CONFIGURE)) == 1
     assert hlp_fake_board.holder == 0xC3
 
 
-def test_hand_back_failure_is_a_warning(hlp_run_on_fake_board, hlp_fake_board, capsys, caplog):
-    """Test that a board lost during the hand-back leaves a warning, since the keepalive timeout restores it."""
+def test_a_failed_give_up_is_a_warning(hlp_run_on_fake_board, hlp_fake_board, capsys, caplog):
+    """Test that a board lost during the give up leaves a warning, since the keepalive timeout restores it."""
     hlp_fake_board.disconnect_on = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP)}
     hlp_run_on_fake_board(tools.fill, '--seconds', '0', 'FF0000')
     assert 'released' not in capsys.readouterr().out
-    assert 'could not hand the lights back. The keepalive timeout restores the animations' in caplog.text
+    assert 'could not give the claim up. The keepalive timeout restores the animations' in caplog.text
 
 
 @pytest.mark.parametrize('action, flags', [(hl.CLAIM_TAKE, 0), (hl.CLAIM_TAKE, hl.FLAG_KEEPALIVE),
@@ -200,7 +200,7 @@ def test_another_applications_claim_reply_is_passed_over(hlp_run_on_fake_board, 
     monkeypatch.setattr(hlp_fake_board, 'answer', with_another_applications_reply)
     hlp_run_on_fake_board(tools.fill, '--seconds', '1', 'FF0000')
     out = capsys.readouterr().out
-    assert injected and 'app-b' not in out and out.endswith('released, on-board animations restored\n')
+    assert injected and 'app-b' not in out and out.endswith('claim given up, on-board animations restored\n')
     assert not hlp_fake_board.sent(hl.CMD_GET_PAGE) and hlp_fake_board.holder == 0
 
 
@@ -333,7 +333,7 @@ def test_settings_holds_an_unsaved_brightness_step(hlp_run_on_fake_board, hlp_fa
     (brightness,) = hlp_fake_board.sent(hl.CMD_SET_BRIGHTNESS)
     assert brightness[3:5] == bytes([2, 0]) and brightness[2] == hl.FLAG_HOLDER | 2 << hl.FLAG_GENERATION_SHIFT
     claims = hlp_fake_board.sent(hl.CMD_CLAIM)
-    assert [claim[2] & hl.FLAG_KEEPALIVE for claim in claims] == [0, hl.FLAG_KEEPALIVE, hl.FLAG_KEEPALIVE, 0]
+    assert [claim[2] & hl.FLAG_KEEPALIVE for claim in claims] == [0] + [hl.FLAG_KEEPALIVE] * 3 + [0]
     assert claims[0][24] == hl.CLAIM_EXCLUSIVE and claims[-1][3] == hl.CLAIM_GIVE_UP and hlp_fake_board.holder == 0
     assert 'brightness step 2 shown, unsaved, for 2.0 s' in out and 'brightness step 5 of 0-10 (maximum 255)\n' in out
     for arguments, message in ((('--unsaved',), '--unsaved takes --brightness alone'),
@@ -369,12 +369,12 @@ def test_watch_prints_what_each_event_changes(hlp_run_on_fake_board, hlp_fake_bo
 
 # -- streaming ------------------------------------------------------------------
 
-def test_stream_fills_streams_and_hands_back(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test hlp-stream: three fills and a rainbow of LED runs under a renewed claim, then the hand-back."""
+def test_stream_fills_streams_and_gives_up(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test hlp-stream: three fills and a rainbow of LED runs under a renewed claim, then the give up."""
     hlp_run_on_model_board(tools.stream, '--seconds', '2')
     out = capsys.readouterr().out
     assert 'filled red\nfilled green\nfilled blue\n' in out
-    assert 'rainbow: 120 of 120 frames acknowledged (4 LEDs)' in out and 'released' in out
+    assert 'rainbow: 120 of 120 frames acknowledged (4 LEDs)' in out and 'given up' in out
     held = 2 << hl.FLAG_GENERATION_SHIFT                      # the claim's generation, on every request
     frames = [stage for stage in hlp_model_board.sent(hl.CMD_STAGE) if stage[2] == hl.FLAG_COMMIT_AFTER | held]
     assert len(frames) == 120 and frames[0][3:7] == bytes([hl.ADDRESSING_LED_RUN, 0, 0, 4])
@@ -394,7 +394,7 @@ def test_stream_timeout_test_times_the_keepalive(hlp_run_on_model_board, hlp_mod
     # then page 1 reads alone, with no generation: the lapsed claim's would be refused
     assert requests[renewal + 1:] and {request[:3:2] for request in requests[renewal + 1:]} == {
         bytes([hl.CMD_GET_PAGE, 0])}
-    assert hlp_model_board.holder == 0 and 'released' not in out
+    assert hlp_model_board.holder == 0 and 'given up' not in out
 
 
 def test_stream_counts_frames_the_board_refuses(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -422,7 +422,7 @@ def test_buttons_runs_three_phases(hlp_run_on_model_board, hlp_model_board, caps
     out = capsys.readouterr().out
     assert 'phase 1: 1 of 1 lit actions, one hue each' in out
     assert 'phase 2: 2 lights, one hue each' in out
-    assert 'phase 3: overlay, the board lights none of B1-B4, L1, R1, L2 and R2' in out and 'released' in out
+    assert 'phase 3: overlay, the board lights none of B1-B4, L1, R1, L2 and R2' in out and 'given up' in out
     overlays = [configure[3] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)]
     assert overlays == [0, 1] and hlp_model_board.overlay == 0
     stages = hlp_model_board.sent(hl.CMD_STAGE)
@@ -453,13 +453,13 @@ def test_overlay_buttons_follow_the_proto_names_when_given():
     assert tools.overlay_buttons(controls, names) == [('B1', 40), ('B2', 6)]
 
 
-@pytest.mark.parametrize('command', ['stream', 'buttons'])
-def test_streaming_tools_stop_when_taken_over(hlp_run_on_model_board, hlp_model_board, capsys, command):
-    """Test that hlp-stream and hlp-buttons stop, and hand nothing back, when another application takes over."""
-    hlp_model_board.steal_at = 0.5
+@pytest.mark.parametrize('command, steal_at', [('stream', 0.5), ('stream', 3.5), ('buttons', 0.5)])
+def test_streaming_tools_stop_when_taken_over(hlp_run_on_model_board, hlp_model_board, capsys, command, steal_at):
+    """Test that hlp-stream, in its fills or its rainbow, and hlp-buttons stop, giving nothing up, when taken over."""
+    hlp_model_board.steal_at = steal_at
     hlp_run_on_model_board(getattr(tools, command), '--seconds', '3')
     out = capsys.readouterr().out
-    assert "'Other' took the lights over" in out and 'released' not in out
+    assert "'Other' took the lights over" in out and 'given up' not in out
     assert not hlp_model_board.sent(hl.CMD_RELEASE) and hlp_model_board.holder == 0xB2
 
 
@@ -473,9 +473,9 @@ def test_streaming_tools_leave_another_holder_alone(hlp_run_on_model_board, hlp_
     assert hlp_model_board.holder == 0xA1
 
 
-@pytest.mark.parametrize('command, after, overlays', [('stream', 3.5, [0]), ('buttons', 1.5, [0, 1])])
-def test_streaming_tools_hand_back_on_interrupt(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch,
-                                                command, after, overlays):
+@pytest.mark.parametrize('command, after, overlays', [('stream', 3.5, [0]), ('buttons', 2.5, [0, 1])])
+def test_streaming_tools_give_up_on_interrupt(hlp_run_on_model_board, hlp_model_board, capsys, monkeypatch,
+                                              command, after, overlays):
     """Test that a Ctrl-C in either phase gives up, restoring the animations and the CONFIGURE defaults."""
     sleep = hlp_model_board.sleep
 
@@ -486,35 +486,10 @@ def test_streaming_tools_hand_back_on_interrupt(hlp_run_on_model_board, hlp_mode
     monkeypatch.setattr(hlp_model_board, 'sleep', interrupt)
     with pytest.raises(KeyboardInterrupt):
         hlp_run_on_model_board(getattr(tools, command), '--seconds', '1')
-    assert 'released, on-board animations restored' in capsys.readouterr().out
+    assert 'claim given up, on-board animations restored' in capsys.readouterr().out
     assert hlp_model_board.holder == 0 and not hlp_model_board.live
     assert [configure[3] for configure in hlp_model_board.sent(hl.CMD_CONFIGURE)] == overlays
     assert (hlp_model_board.overlay, hlp_model_board.keepalive_ms, hlp_model_board.brightness) == (0, 2000, 1)
-
-
-def test_a_retaken_claim_gets_its_settings_again():
-    """Test that a renewal which took a lapsed claim again sends the settings last set through the claim."""
-    class Device:
-        generation = 2
-        retaken = 0
-        configured: list = []
-
-        def claim(self, action, token, name, flags, exclusive):
-            self.generation = self.retaken or self.generation
-            return hl.Controller(holder_token=token, application_name='', exclusive=False,
-                                 claim_generation=self.generation)
-
-        def configure(self, **settings):
-            self.configured.append(settings)
-
-    device = Device()
-    claim = hl.LightsClaim(device, 'hlp-test', 0x51)
-    claim.configure(overlay=False, keepalive_ms=2000, brightness=False)
-    overlay = {'takeover': hl.TAKEOVER_OVERLAY, 'keepalive_ms': 2000, 'brightness_applied': True}
-    claim.configure(overlay=True, keepalive_ms=2000, brightness=True)
-    assert claim.renew() and len(device.configured) == 2      # the same generation: nothing sent again
-    device.retaken = 4                                        # the claim lapsed: this renewal takes it again
-    assert claim.renew() and device.configured[2:] == [overlay]
 
 
 def test_a_closed_output_pipe_ends_quietly(monkeypatch, capsys):
