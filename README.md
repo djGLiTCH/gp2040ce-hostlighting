@@ -82,6 +82,10 @@ sends it with `publish_frame()`. Every report but the last goes with `NO_REPLY`,
 `COMMIT_AFTER`, which alone is answered and is sent once more when its answer does not come. The `FrameResult`
 says whether the frame was acknowledged.
 
+A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the Summary, then each page with a
+moved change counter, under the Summary's state token, and returns the pages it read again. A host calls it
+after each change of the state token, and calls `clear()` after a reconnect.
+
 A host that sends with `send()` and waits with `wait_reply()` reads the reports already received with
 `drain()` before each send, takes the events received with `take_events()`, and builds the error for a refused
 reply with `HostLightingDevice.rejected()`. The error's `holder` is the holder as `claim()` returns it.
