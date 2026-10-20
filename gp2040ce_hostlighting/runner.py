@@ -1,0 +1,394 @@
+"""Run sessions on threads of their own: one board from a GUI or an asyncio program, or every board on the bus.
+
+A device belongs to one thread, and every call on it blocks. A SessionRunner gives a Session a thread that owns
+its device: the host posts the latest frame and new settings from any thread, and receives each SessionUpdate
+through a callback and a queue. AsyncSession puts a runner behind awaitables. BoardWatcher follows the boards on
+the bus by board ID, and SessionGroup keeps a runner for each.
+
+SPDX-FileCopyrightText: © 2026 Jacob Simpson
+SPDX-License-Identifier: GPL-3.0-or-later
+"""
+import asyncio
+import logging
+import queue
+import threading
+from typing import Callable, Optional
+
+from gp2040ce_hostlighting.claim import ClaimChangeKind
+from gp2040ce_hostlighting.frames import Frame, FrameResult
+from gp2040ce_hostlighting.protocol import (HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
+                                            _probe, find_board, find_devices)
+from gp2040ce_hostlighting.records import Settings
+from gp2040ce_hostlighting.session import Session, SessionUpdate
+
+__all__ = ['AsyncSession', 'BoardWatcher', 'SessionGroup', 'SessionRunner', 'POLL_SECONDS', 'RECONNECT_SECONDS',
+           'UPDATES_KEPT']
+
+logger = logging.getLogger(__name__)
+
+POLL_SECONDS = 0.01             # between a runner's polls
+RECONNECT_SECONDS = 1.0         # between a runner's looks for a board that left the bus
+UPDATES_KEPT = 64               # a runner's queue of updates, the oldest dropped first
+
+
+def _worth_telling(update: SessionUpdate) -> bool:
+    """Say whether an update carries anything: a claim change, changed page 1 fields, pages read or a restage."""
+    return (update.claim.kind is not ClaimChangeKind.UNCHANGED or bool(update.changed) or bool(update.pages_read)
+            or update.restage)
+
+
+class SessionRunner:
+    """A Session on a thread of its own, which alone uses the session's device.
+
+    The thread starts the session, then polls it, sends the settings and frame posted last, and shows the latest
+    frame again whenever an update asks for a restage. A board that leaves the bus is looked for again by its board
+    ID every RECONNECT_SECONDS, unless reconnect is off, when the runner ends. Any other error ends the runner, and
+    `error` keeps it. close() ends the session from any thread and waits for the thread.
+    """
+
+    def __init__(self, session: Session, on_update: Optional[Callable[[SessionUpdate], None]] = None,
+                 on_end: Optional[Callable[[Optional[BaseException]], None]] = None,
+                 poll_seconds: float = POLL_SECONDS, reconnect: bool = True,
+                 reconnect_seconds: float = RECONNECT_SECONDS) -> None:
+        """Describe the runner. Nothing runs until start().
+
+        :param session: a session not yet started, with a device no other thread uses from now on
+        :param on_update: called on the runner's thread with each update that carries anything
+        :param on_end: called on the runner's thread when it ends, with the error that ended it or None
+        :param poll_seconds: the wait between polls
+        :param reconnect: look for a board that left the bus again, rather than end
+        :param reconnect_seconds: the wait between looks
+        """
+        self.session = session
+        self.on_update = on_update
+        self.on_end = on_end
+        self.poll_seconds = poll_seconds
+        self.reconnect = reconnect
+        self.reconnect_seconds = reconnect_seconds
+        # the updates that carry anything, for a host that reads them rather than take the callback
+        self.updates: queue.Queue[SessionUpdate] = queue.Queue(UPDATES_KEPT)
+        self.error: Optional[BaseException] = None      # what ended the runner, if anything did
+        self.result: Optional[FrameResult] = None       # what became of the last frame shown
+        self._lock = threading.Lock()
+        self._frame: Optional[Frame] = None             # posted, not yet shown
+        self._settings: Optional[Settings] = None       # posted, not yet sent
+        self._stop = threading.Event()
+        self._started = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> 'SessionRunner':
+        """Start the thread, and wait for the session's start.
+
+        :return: the runner
+        :raises HostLightingError: when the session does not start, as Session.start() raises it
+        """
+        if self._thread is not None:
+            raise HostLightingError("the runner has already started")
+        self._thread = threading.Thread(target=self._run, name=f"hlp-{self.session.name or 'session'}", daemon=True)
+        self._thread.start()
+        self._started.wait()
+        if self.error is not None:
+            raise self.error
+        return self
+
+    @property
+    def running(self) -> bool:
+        """Say whether the runner's thread is running."""
+        return self._thread is not None and self._thread.is_alive()
+
+    def show(self, frame: Frame) -> None:
+        """Post a whole frame, to be shown at the next poll in place of any frame posted and not yet shown.
+
+        :raises ValueError: for an LED run past the board's addressable LED limit, once the session has read it
+        """
+        cache = self.session.cache
+        summary = cache.summary if cache is not None else None
+        if summary is not None:
+            frame.check_led_limit(summary.led_limit)
+        with self._lock:
+            self._frame = frame
+
+    def configure(self, settings: Settings) -> None:
+        """Post new CONFIGURE settings, sent at the next poll."""
+        with self._lock:
+            self._settings = settings
+
+    def close(self, timeout: float = 5.0) -> None:
+        """End the session and wait up to timeout seconds for the thread."""
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout)
+
+    def __enter__(self) -> 'SessionRunner':
+        """Start the runner for a with block, which closes it."""
+        return self.start()
+
+    def __exit__(self, *exception: object) -> None:
+        """Close the runner."""
+        self.close()
+
+    def _tell(self, update: SessionUpdate) -> None:
+        if not _worth_telling(update):
+            return
+        if self.updates.full():
+            try:
+                self.updates.get_nowait()       # the oldest goes first
+            except queue.Empty:
+                pass
+        self.updates.put_nowait(update)
+        if self.on_update is not None:
+            self.on_update(update)
+
+    def _taken(self) -> tuple[Optional[Frame], Optional[Settings]]:
+        with self._lock:
+            frame, settings, self._frame, self._settings = self._frame, self._settings, None, None
+        return frame, settings
+
+    def _run(self) -> None:
+        try:
+            self.session.start()
+        except BaseException as error:  # noqa: B902 handed to start()'s caller
+            self.error = error
+            self._started.set()
+            self._ended()
+            return
+        self._started.set()
+        latest: Optional[Frame] = None      # the last frame posted, shown again when an update asks
+        try:
+            while not self._stop.is_set():
+                try:
+                    latest = self._cycle(latest)
+                except HostLightingDisconnectedError:
+                    if not self.reconnect:
+                        raise
+                    self._rejoin(latest)
+                self._stop.wait(self.poll_seconds)
+        except BaseException as error:  # noqa: B902 kept for the host
+            self.error = error
+            logger.debug("the runner ended", exc_info=True)
+        finally:
+            try:
+                self.session.close()
+            except (HostLightingError, OSError):
+                logger.debug("closing the session failed", exc_info=True)
+            self._ended()
+
+    def _cycle(self, latest: Optional[Frame]) -> Optional[Frame]:
+        """Poll, send the settings posted, show the frame posted or the latest again on a restage, then tell."""
+        update = self.session.poll()
+        frame, settings = self._taken()
+        if settings is not None:
+            self.session.configure(settings)
+        if frame is not None:
+            latest = frame
+        if latest is not None and (frame is not None or update.restage):
+            self.result = self.session.show(latest)
+        self._tell(update)
+        return latest
+
+    def _rejoin(self, latest: Optional[Frame]) -> None:
+        """Look for the board that left until it is back or the runner closes, then show the latest frame on it."""
+        while not self._stop.is_set() and not self.session.reconnect():
+            self._stop.wait(self.reconnect_seconds)
+        if latest is not None and not self._stop.is_set():
+            self.result = self.session.show(latest)
+
+    def _ended(self) -> None:
+        if self.on_end is not None:
+            self.on_end(self.error)
+
+
+class AsyncSession:
+    """A SessionRunner behind awaitables, for an asyncio program.
+
+    start() and close() run in the loop's executor. show() and configure() post at once. update() waits for the
+    next update that carries anything, and `async for` takes them until the runner ends.
+    """
+
+    def __init__(self, session: Session, poll_seconds: float = POLL_SECONDS, reconnect: bool = True,
+                 reconnect_seconds: float = RECONNECT_SECONDS) -> None:
+        """Describe the session's runner. Nothing runs until start()."""
+        self.runner = SessionRunner(session, self._deliver, self._end, poll_seconds, reconnect, reconnect_seconds)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._queue: Optional[asyncio.Queue[Optional[SessionUpdate]]] = None
+
+    async def start(self) -> 'AsyncSession':
+        """Start the runner and wait for the session's start.
+
+        :raises HostLightingError: when the session does not start
+        """
+        self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue()
+        await self._loop.run_in_executor(None, self.runner.start)
+        return self
+
+    def show(self, frame: Frame) -> None:
+        """Post a whole frame to the runner, checked against the LED limit at once."""
+        self.runner.show(frame)
+
+    def configure(self, settings: Settings) -> None:
+        """Post new CONFIGURE settings."""
+        self.runner.configure(settings)
+
+    async def update(self) -> SessionUpdate:
+        """Wait for the next update that carries anything.
+
+        :raises HostLightingError: once the runner has ended, with the error that ended it when there was one
+        """
+        if self._queue is None:
+            raise HostLightingError("the session has not started")
+        update = await self._queue.get()
+        if update is None:
+            self._queue.put_nowait(None)        # every later call ends too
+            error = self.runner.error
+            if isinstance(error, HostLightingError):
+                raise error
+            raise HostLightingError("the session has ended") from error
+        return update
+
+    async def close(self) -> None:
+        """End the session and wait for the runner's thread."""
+        if self._loop is not None:
+            await self._loop.run_in_executor(None, self.runner.close)
+
+    async def __aenter__(self) -> 'AsyncSession':
+        """Start for an async with block, which closes."""
+        return await self.start()
+
+    async def __aexit__(self, *exception: object) -> None:
+        """Close."""
+        await self.close()
+
+    def __aiter__(self) -> 'AsyncSession':
+        """Take updates with async for, until the runner ends."""
+        return self
+
+    async def __anext__(self) -> SessionUpdate:
+        """Wait for the next update, ending the iteration once the runner has ended."""
+        try:
+            return await self.update()
+        except HostLightingError:
+            raise StopAsyncIteration from None
+
+    def _deliver(self, update: SessionUpdate) -> None:
+        if self._loop is not None and self._queue is not None:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, update)
+
+    def _end(self, error: Optional[BaseException]) -> None:
+        if self._loop is not None and self._queue is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+
+
+class BoardWatcher:
+    """Follow the protocol 2 boards on the bus by board ID.
+
+    Each poll enumerates the interfaces, which sends nothing, and opens only an interface not seen before, for
+    its HELLO's board ID. One that does not answer yet is tried again at the next poll.
+    """
+
+    def __init__(self) -> None:
+        """Start knowing no board."""
+        self.boards: dict[str, bytes] = {}          # board ID -> interface path
+        self._paths: dict[bytes, str] = {}           # interface path -> board ID
+
+    def poll(self) -> tuple[frozenset[str], frozenset[str]]:
+        """Look at the bus once.
+
+        :return: (the board IDs that arrived, the board IDs that left) since the last poll
+        """
+        infos = {bytes(info['path']): info for info in find_devices()}
+        left = {self._paths.pop(path) for path in list(self._paths) if path not in infos}
+        for board_id in left:
+            self.boards.pop(board_id, None)
+        arrived = set()
+        for path, info in infos.items():
+            if path in self._paths:
+                continue
+            found = _probe(info)
+            if not found:
+                continue
+            hello, device = found
+            device.close()
+            self._paths[path], self.boards[hello.board_id] = hello.board_id, path
+            arrived.add(hello.board_id)
+        return frozenset(arrived - left), frozenset(left - arrived)
+
+    def forget(self, board_id: str) -> None:
+        """Forget a board, so that the next poll opens its interface again and reports it arrived."""
+        path = self.boards.pop(board_id, None)
+        if path is not None:
+            self._paths.pop(path, None)
+
+
+class SessionGroup:
+    """A SessionRunner for each board on the bus, started when the board arrives and closed when it leaves.
+
+    A runner that fails to start its session, or that ends, is dropped, and its board is reported again at the next
+    poll that finds it, when a runner starts for it again.
+    """
+
+    def __init__(self, make_session: Callable[[HostLightingDevice], Session],
+                 on_update: Optional[Callable[[str, SessionUpdate], None]] = None,
+                 watcher: Optional[BoardWatcher] = None, poll_seconds: float = POLL_SECONDS) -> None:
+        """Describe the group. Nothing runs until poll().
+
+        :param make_session: builds a session, not yet started, on a board's opened device
+        :param on_update: called on a runner's thread with the board ID and each update that carries anything
+        :param watcher: the board watcher, by default a new one
+        :param poll_seconds: each runner's wait between polls
+        """
+        self.make_session = make_session
+        self.on_update = on_update
+        self.watcher = watcher or BoardWatcher()
+        self.poll_seconds = poll_seconds
+        self.runners: dict[str, SessionRunner] = {}
+
+    def poll(self) -> tuple[frozenset[str], frozenset[str]]:
+        """Look at the bus once: start a runner for each board that arrived, close each for a board that left.
+
+        :return: (the board IDs a runner started for, the board IDs with a runner that closed)
+        """
+        for board_id in [board_id for board_id, runner in self.runners.items() if not runner.running]:
+            self.runners.pop(board_id)
+            self.watcher.forget(board_id)
+        arrived, left = self.watcher.poll()
+        closed = set()
+        for board_id in left:
+            runner = self.runners.pop(board_id, None)
+            if runner is not None:
+                runner.close()
+                closed.add(board_id)
+        started = set()
+        for board_id in arrived:
+            device = find_board(board_id)
+            if device is None:
+                self.watcher.forget(board_id)
+                continue
+            tell = None if self.on_update is None else self._teller(board_id, self.on_update)
+            runner = SessionRunner(self.make_session(device), tell, poll_seconds=self.poll_seconds, reconnect=False)
+            try:
+                runner.start()
+            except HostLightingError:
+                logger.warning("board %s: the session did not start", board_id)
+                self.watcher.forget(board_id)
+                continue
+            self.runners[board_id] = runner
+            started.add(board_id)
+        return frozenset(started), frozenset(closed)
+
+    def show(self, board_id: str, frame: Frame) -> None:
+        """Post a frame to one board's runner.
+
+        :raises KeyError: for a board without a runner
+        """
+        self.runners[board_id].show(frame)
+
+    def close(self) -> None:
+        """Close every runner."""
+        for runner in self.runners.values():
+            runner.close()
+        self.runners.clear()
+
+    @staticmethod
+    def _teller(board_id: str, on_update: Callable[[str, SessionUpdate], None]) -> Callable[[SessionUpdate], None]:
+        return lambda update: on_update(board_id, update)

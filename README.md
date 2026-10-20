@@ -35,6 +35,8 @@ package, Python and hidapi.
 | `gp2040ce_hostlighting/frames.py` | `Frame` and `publish_frame()`, a streaming host's frames |
 | `gp2040ce_hostlighting/cache.py` | `ConfigurationCache`, the configuration pages read again when they change |
 | `gp2040ce_hostlighting/session.py` | `Session`, the specification's whole host flow |
+| `gp2040ce_hostlighting/runner.py` | `SessionRunner` and `AsyncSession`, a session on a thread of its own, and `BoardWatcher` and `SessionGroup`, every board on the bus |
+| `gp2040ce_hostlighting/layout.py` | `lights_by_cell()` and `Canvas`, the LED layout grid |
 | `gp2040ce_hostlighting/enums.py` | GP2040-CE's enum names, read from its `.proto` files |
 | `gp2040ce_hostlighting/conformance.py` | The conformance checks and the round trip and frame-rate measurements |
 | `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
@@ -176,6 +178,22 @@ with Session(open_device(), 'my-host') as session:
         session.show(frame)
         time.sleep(1 / 60)
 ```
+
+A device belongs to one thread and every call on it blocks. A `SessionRunner`
+gives a session a thread that owns its device, for a GUI or any program that
+must not block. `show()` posts the latest frame and `configure()` new settings
+from any thread. The runner shows the frame posted last, again whenever an
+update asks for a restage, and finds the board again by its board ID after it
+leaves the bus. Each update that carries anything goes to `on_update`, called
+on the runner's thread, and to the `updates` queue. `AsyncSession` puts a runner
+behind awaitables for an `asyncio` program: `await update()`, or `async for`.
+`BoardWatcher` reports boards arriving and leaving by board ID, opening only an
+interface it has not seen. `SessionGroup` keeps a runner for each board on the
+bus, built by a function the host gives.
+
+`lights_by_cell()` maps each cell of the LED layout grid to its lights. A
+`Canvas` of the grid's size, `Canvas.for_summary(summary)`, holds a colour per
+cell, and its `frame()` colours each light with its cell's colour.
 
 A host that sends with `send()` and waits with `wait_reply()` reads the reports
 already received with `drain()` before each send, takes the events received
