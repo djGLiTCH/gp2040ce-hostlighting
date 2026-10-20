@@ -3,6 +3,8 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import struct
+
 import pytest
 
 from gp2040ce_hostlighting import protocol as hl
@@ -63,6 +65,14 @@ def test_a_board_answers_page_0_stale_or_past_its_record(board_type):
     assert (stale.page, stale.groups, stale.count) == (hl.PAGE_IDENTITY, 0, 0)
     past = hl.decode_page_header(device.get_page(hl.PAGE_IDENTITY, start=1))
     assert (past.start, past.total, past.count, past.groups) == (1, 1, 0, 0)
+
+
+@pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
+def test_an_unknown_page_is_refused_before_the_token_is_checked(board_type):
+    """Test GET_PAGE of a page the board does not list under a stale token: status 2 at [3], as the firmware."""
+    device = fake_device(board_type())
+    reply = device.request(hl.CMD_GET_PAGE, struct.pack('<BHIH', 13, 0, 1, 0))
+    assert reply[2:4] == bytes([hl.STATUS_INVALID, 3])
 
 
 def test_another_application_takes_over_and_lets_go():

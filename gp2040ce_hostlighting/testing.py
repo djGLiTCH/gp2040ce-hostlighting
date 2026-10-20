@@ -531,8 +531,14 @@ class FakeBoard:
         self.frames.append(dict(self.staged))
 
     def _page(self, sequence: int, request: bytes) -> bytes:
-        """Answer GET_PAGE, with the expected-token check."""
+        """Answer GET_PAGE: a page the board lists, then the expected-token check, as the firmware orders them."""
         page, start, token, mask = struct.unpack_from('<BHIH', request, 3)
+        state = [self.state[0], self._controller()] + self.state[2:]
+        tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_SUMMARY: [self.summary],
+                  hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
+                  hl.PAGE_ANIMATIONS: self.animations}
+        if page != hl.PAGE_IDENTITY and page not in tables:
+            return bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3]) + bytes(60)
         if self.stale_once_at is not None and start == self.stale_once_at:
             self.stale_once_at = None
             self.token += 1
@@ -540,12 +546,6 @@ class FakeBoard:
             return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE_TOKEN)
         if page == hl.PAGE_IDENTITY:
             return identity_reply(self.identity, mask or 0xFF, sequence, start)
-        state = [self.state[0], self._controller()] + self.state[2:]
-        tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_SUMMARY: [self.summary],
-                  hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
-                  hl.PAGE_ANIMATIONS: self.animations}
-        if page not in tables:
-            return bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3]) + bytes(60)
         records, widths = tables[page], hl.PAGE_GROUPS[page]
         if page in self.later_groups:
             later = self.later_groups[page]
