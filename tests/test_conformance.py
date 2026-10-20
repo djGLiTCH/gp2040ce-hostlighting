@@ -551,13 +551,14 @@ def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsy
 
 
 def test_bench_frame_size_and_refused_frames(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test --leds: 40 LEDs are three reports. 120 reach past the limit, so every frame is refused."""
+    """Test --leds: 40 LEDs are three reports. 120 reach past the limit of 100: refused, nothing sent."""
     hlp_run_on_model_board(conformance.bench, '--quick', '--leds', '40')
     assert '(40 LEDs, 3 reports per frame)' in capsys.readouterr().out
-    hlp_run_on_model_board(conformance.bench, '--quick', '--leds', '120')
-    out = capsys.readouterr().out
-    assert '60 fps: 0 of 60 frames acknowledged (120 LEDs, 7 reports per frame)' in out
-    assert 'unthrottled, pipelined: 0 frames/s' in out
+    sent = len(hlp_model_board.requests)
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.bench, '--quick', '--leds', '120')
+    assert "--leds is at most the board's addressable LED limit, 100" in capsys.readouterr().err
+    assert not [r for r in hlp_model_board.requests[sent:] if r[0] in (hl.CMD_CLAIM, hl.CMD_STAGE)]
 
 
 def test_bench_stops_when_taken_over(hlp_run_on_model_board, hlp_model_board, capsys):

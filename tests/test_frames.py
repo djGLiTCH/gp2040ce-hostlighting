@@ -53,6 +53,21 @@ def test_frames_compare_by_what_they_stage_and_refuse_wrong_calls():
             call()
 
 
+def test_an_led_run_past_the_limit_is_refused_before_anything_is_sent(hlp_model_board):
+    """Test check_led_limit() and publish_frame(led_limit=): the run that reaches past it, nothing sent."""
+    frame = Frame()
+    frame.run(hl.ADDRESSING_LED_RUN, 98, [(1, 2, 3)] * 2)
+    frame.run(hl.ADDRESSING_LIGHT_RUN, 98, [(1, 2, 3)] * 5)             # a light run past the lights is skipped
+    frame.check_led_limit(100)
+    frame.run(hl.ADDRESSING_LED_RUN, 99, [(1, 2, 3)] * 2)
+    with pytest.raises(ValueError, match="an LED run of 2 from 99 reaches past the board's addressable LED limit "
+                                         'of 100'):
+        frame.check_led_limit(100)
+    with pytest.raises(ValueError, match='limit of 100'):
+        publish_frame(fake_device(hlp_model_board), frame, led_limit=100)
+    assert not hlp_model_board.sent(hl.CMD_STAGE) and not hlp_model_board.sent(hl.CMD_CLEAR)
+
+
 def test_publish_frame_sends_one_answered_report(hlp_model_board):
     """Test that every report but the last goes with NO_REPLY, the last with COMMIT_AFTER, and the frame shows."""
     device = fake_device(hlp_model_board)

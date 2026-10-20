@@ -92,7 +92,10 @@ def bench() -> None:
     args = parser.parse_args()
     device = open_device(args.board_id)
     try:
-        leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
+        summary = device.read_record(PAGE_SUMMARY).records[0].summary
+        if args.leds and args.leds > summary.led_limit:
+            parser.error(f"--leds is at most the board's addressable LED limit, {summary.led_limit}")
+        leds = args.leds or summary.led_extent or 1
         claim = LightsClaim(device, 'hlp-bench', Settings(brightness_applied=False), wait_when_taken_over=False)
         with claim.take(args.exclusive, args.force):
             try:

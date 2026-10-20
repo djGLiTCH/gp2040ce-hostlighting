@@ -314,8 +314,12 @@ class Session:
         :raises HostLightingRejectedError: when the board refuses the frame with a status other than 4
         :raises HostLightingDisconnectedError: when the board has left the bus
         :raises HostLightingError: before start()
+        :raises ValueError: for an LED run reaching past the board's addressable LED limit, before anything is
+            sent
         """
         self._started()
+        if self.cache is not None and self.cache.summary is not None:
+            frame.check_led_limit(self.cache.summary.led_limit)
         # the events received so far are older than the frame, so they are applied before it
         self._pending = _later(self._pending, self._counted(self._take_events))
         if not self._may_show():

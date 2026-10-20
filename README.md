@@ -124,6 +124,11 @@ alone is answered and is sent once more when its answer does not come. The
 When it was not, a host sends `HELLO` before taking the board as lost, and
 passes a status 4 reply to `claim.refused()`, as `Session.show()` does.
 
+The board refuses an LED run that reaches past the Summary's `led_limit`, and
+in a report sent with `NO_REPLY` the refusal is silent. `publish_frame()` with
+`led_limit=`, and `Session.show()` always, raise `ValueError` for such a run
+before anything is sent. `Frame.check_led_limit()` makes the same check.
+
 A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the
 Summary, then each page with a moved change counter, under the Summary's state
 token, and returns the pages it read again. Its `moved` names every page with a
@@ -239,6 +244,15 @@ and plugged back, reconfigured, taken over by another application or have its
 animations go idle, and `frames` keeps every frame it published. `attach()`
 puts fake boards on a fake bus, so `open_device()`, `find_board()` and the rest
 find them.
+
+A fake board's `HELLO` comes from its attributes: `magic`, `version`,
+`request_flags`, `commands`, `pages`, `addressing_modes`, `pixel_formats` and
+`events`, by default what the firmware lists. A command or page left out
+answers as one the firmware lacks. `drop` discards the commands it names,
+neither run nor answered, and `reject` answers each it names with a status and
+runs nothing. Both take a command or a (command, `[3]`) pair and can change
+mid-test. Each of `hooks` is called with the board and the request before every
+request. Setting `summary` to `None` derives the Summary from the pages.
 
 ### Conformance checks
 

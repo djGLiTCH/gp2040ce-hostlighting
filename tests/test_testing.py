@@ -8,7 +8,8 @@ import struct
 import pytest
 
 from gp2040ce_hostlighting import protocol as hl
-from gp2040ce_hostlighting.testing import FakeBoard, ModelBoard, attach, control_record, fake_device, light_record
+from gp2040ce_hostlighting.testing import (HELLO_COMMANDS, FakeBoard, ModelBoard, attach, control_record, fake_device,
+                                           light_record)
 
 
 @pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
@@ -91,6 +92,86 @@ def test_a_claims_flags_act_only_when_it_leaves_the_sender_holding(exclusive):
     assert device.request(hl.CMD_CLAIM, own, hl.FLAG_COMMIT_AFTER)[2] == hl.STATUS_OK
     state = device.read_record(hl.PAGE_STATE).records[0].state
     assert state.takeover_live and state.takeover_number == number + 1
+
+
+@pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
+def test_hello_lists_what_the_board_lists_and_the_rest_answers_as_absent(board_type):
+    """Test HELLO from the attributes: magic, version and bitmaps; an unlisted command and page answer as absent."""
+    board = board_type()
+    device = fake_device(board)
+    hello = device.hello()
+    assert (hello.major, hello.minor, hello.commands) == (2, 0, frozenset(HELLO_COMMANDS))
+    board.version = (2, 3)
+    board.commands.discard(hl.CMD_SET_PROFILE)
+    board.pages.discard(hl.PAGE_ANIMATIONS)
+    board.events.clear()
+    board.addressing_modes.discard(hl.ADDRESSING_ACTION)
+    hello = device.hello()
+    assert hello.minor == 3 and hl.CMD_SET_PROFILE not in hello.commands and not hello.events
+    assert hl.PAGE_ANIMATIONS not in hello.pages and hl.ADDRESSING_ACTION not in hello.addressing_modes
+    assert device.request(hl.CMD_SET_PROFILE, bytes([1]))[2] == hl.STATUS_UNSUPPORTED
+    page = device.request(hl.CMD_GET_PAGE, struct.pack('<BHIH', hl.PAGE_ANIMATIONS, 0, 0, 0))
+    assert page[2:4] == bytes([hl.STATUS_INVALID, 3])
+    board.magic = b'NOPE'
+    with pytest.raises(hl.HostLightingMagicError):
+        device.hello()
+
+
+@pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
+def test_drop_and_reject_run_nothing(board_type):
+    """Test drop (neither run nor answered) and reject (the status named, not run), by command and by [3]."""
+    board = board_type()
+    device = fake_device(board)
+    stage = bytes([hl.ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes([1, 2, 3])
+    board.drop.add(hl.CMD_STAGE)
+    device.send(hl.CMD_STAGE, stage, hl.FLAG_COMMIT_AFTER)
+    assert not board.frames and not board.staged
+    board.drop.clear()
+    board.reject[hl.CMD_STAGE] = hl.STATUS_INVALID
+    assert device.request(hl.CMD_STAGE, stage, hl.FLAG_COMMIT_AFTER)[2:4] == bytes([hl.STATUS_INVALID, 3])
+    assert not board.frames and not board.staged
+    device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    board.reject = {(hl.CMD_CLAIM, hl.CLAIM_GIVE_UP): hl.STATUS_INVALID}
+    reply = device.request(hl.CMD_CLAIM, bytes([hl.CLAIM_GIVE_UP]) + struct.pack('<I', 0x51))
+    assert reply[2:4] == bytes([hl.STATUS_INVALID, 3])
+    assert board.holder_token == 0x51
+    board.reject.clear()
+    assert device.request(hl.CMD_STAGE, stage, hl.FLAG_COMMIT_AFTER)[2] == hl.STATUS_OK and board.frames
+
+
+def test_hooks_run_before_each_request():
+    """Test that a hook sees each request first and can change the board at that point."""
+    board = ModelBoard()
+    device = fake_device(board)
+    seen = []
+
+    def hook(on, request):
+        seen.append(request[0])
+        if request[0] == hl.CMD_CONFIGURE:
+            on.take_over()
+    board.hooks.append(hook)
+    device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    with pytest.raises(hl.HostLightingRejectedError) as refused:
+        device.configure(keepalive_ms=500)
+    assert refused.value.status == hl.STATUS_CLAIMED and refused.value.holder.holder_token == 0xB2
+    assert seen == [hl.CMD_CLAIM, hl.CMD_CONFIGURE]
+
+
+@pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
+def test_a_summary_set_to_none_follows_the_pages(board_type):
+    """Test the derived Summary: extent and grid from the lights, totals from the pages, counters kept apart."""
+    board = board_type()
+    board.summary = None
+    device = fake_device(board)
+    summary = device.read_record(hl.PAGE_SUMMARY).records[0].summary
+    cells = [light[4] for light in board.lights]
+    assert (summary.led_extent, summary.grid_width, summary.grid_height) == (
+        4, max(cell[0] for cell in cells) + 1, max(cell[1] for cell in cells) + 1)
+    assert (summary.controls, summary.lights, summary.profiles) == (len(board.controls), 2, 1)
+    board.reconfigure(lights=board.lights + [light_record(4, 6, x=4, y=3)])
+    record = device.read_record(hl.PAGE_SUMMARY).records[0]
+    assert (record.summary.led_extent, record.summary.grid_width, record.summary.grid_height) == (10, 5, 4)
+    assert record.summary.lights == 3 and record.changes.counter(hl.PAGE_LIGHTS) == 1
 
 
 def test_another_application_takes_over_and_lets_go():

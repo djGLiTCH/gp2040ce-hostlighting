@@ -12,8 +12,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, CMD_CLEAR, CMD_STAGE, FLAG_COMMIT_AFTER, FLAG_NO_REPLY,
-                                            PIXEL_RGB, PIXEL_RGBW, PIXEL_SIZES, STATUS_OK, Controller,
+from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, ADDRESSING_LED_RUN, CMD_CLEAR, CMD_STAGE, FLAG_COMMIT_AFTER,
+                                            FLAG_NO_REPLY, PIXEL_RGB, PIXEL_RGBW, PIXEL_SIZES, STATUS_OK, Controller,
                                             HostLightingDevice, HostLightingTimeoutError, _check_colour, _check_run,
                                             encode_address, stage_entry_payloads, stage_run_payloads)
 
@@ -149,6 +149,18 @@ class Frame:
                 named.update((part.addressing, part.first + index) for index in range(len(part.items)))
         return frozenset(named)
 
+    def check_led_limit(self, limit: int) -> None:
+        """Refuse an LED run reaching past the board's addressable LED limit, which the board refuses whole.
+
+        :param limit: the Summary's led_limit
+        :raises ValueError: naming the run and the limit
+        """
+        for part in self._parts:
+            if part.addressing == ADDRESSING_LED_RUN and part.first is not None and \
+                    part.first + len(part.items) > limit:
+                raise ValueError(f"an LED run of {len(part.items)} from {part.first} reaches past the board's "
+                                 f"addressable LED limit of {limit}")
+
     def payloads(self) -> list[bytes]:
         """Build the frame's STAGE payloads, in order, and none for an empty frame."""
         payloads = []
@@ -161,7 +173,7 @@ class Frame:
 
 
 def publish_frame(device: HostLightingDevice, frame: Frame, clear_first: bool = False,
-                  timeout: float = ACKNOWLEDGEMENT_TIMEOUT) -> FrameResult:
+                  timeout: float = ACKNOWLEDGEMENT_TIMEOUT, led_limit: Optional[int] = None) -> FrameResult:
     """Stage a whole frame and publish it.
 
     The reports already received are read first. Every report but the last goes with NO_REPLY, and the last
@@ -176,12 +188,16 @@ def publish_frame(device: HostLightingDevice, frame: Frame, clear_first: bool = 
     :param frame: the frame
     :param clear_first: send CLEAR first, which unstages every pixel
     :param timeout: seconds to wait for the acknowledgement, at least the specification's 250 ms
+    :param led_limit: the Summary's led_limit. An LED run reaching past it is refused before anything is sent,
+        since the board refuses it, and silently in a report sent with NO_REPLY
     :return: whether the frame was acknowledged, and whether its last report was sent again
-    :raises ValueError: for a timeout under 250 ms
+    :raises ValueError: for a timeout under 250 ms, or an LED run reaching past led_limit
     :raises HostLightingRejectedError: when the board refuses the last report, with the holder for status 4
     """
     if timeout < ACKNOWLEDGEMENT_TIMEOUT:
         raise ValueError(f"the acknowledgement timeout is {timeout} s, under the specification's 250 ms")
+    if led_limit is not None:
+        frame.check_led_limit(led_limit)
     requests = [(CMD_STAGE, payload) for payload in frame.payloads()]
     if clear_first or not requests:
         requests.insert(0, (CMD_CLEAR, b''))

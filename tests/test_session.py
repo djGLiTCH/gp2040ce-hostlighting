@@ -33,6 +33,18 @@ def session_on(board, name='host', **options) -> Session:
     return Session(fake_device(board), name, clock=board.time, **options)
 
 
+def test_show_refuses_an_led_run_past_the_limit_before_sending(board):
+    """Test that show() raises ValueError for an LED run past the Summary's limit, and sends no STAGE."""
+    session = session_on(board)
+    session.start()
+    frame = Frame()
+    frame.run(hl.ADDRESSING_LED_RUN, 0, [(255, 0, 0)] * (board.led_limit() + 1))
+    with pytest.raises(ValueError, match='addressable LED limit'):
+        session.show(frame)
+    assert not board.sent(hl.CMD_STAGE)
+    session.close()
+
+
 def frame_of(*lights) -> Frame:
     """Build a frame that colours lights by ordinal."""
     frame = Frame()
@@ -447,12 +459,11 @@ def test_a_page_1_read_refused_goes_to_the_claim(board, monkeypatch):
     board.take_over()
     board.sleep(1.0)
     assert session.poll().claim.kind is ClaimChangeKind.LOST
-    frame = Frame()
-    frame.run(hl.ADDRESSING_LED_RUN, 200, [(1, 2, 3)])
     board.let_go()
     session.claim.take()
+    board.reject[hl.CMD_STAGE] = hl.STATUS_INVALID
     with pytest.raises(hl.HostLightingRejectedError, match='INVALID_ARG'):
-        session.show(frame)
+        session.show(frame_of(0))
 
 
 def test_reconnect_edges_and_a_session_never_started(board, monkeypatch):
@@ -744,10 +755,10 @@ def test_a_frame_that_fails_has_the_next_clear_first(board):
     """Test that a frame refused with another status leaves the next to clear what it staged."""
     session = session_on(board).start()
     session.show(frame_of(0))
-    bad = frame_of(1)
-    bad.run(hl.ADDRESSING_LED_RUN, board.led_limit() - 1, [(0, 255, 0)] * 2)
+    board.reject[hl.CMD_STAGE] = hl.STATUS_INVALID
     with pytest.raises(hl.HostLightingRejectedError, match='INVALID_ARG'):
-        session.show(bad)
+        session.show(frame_of(1))
+    board.reject.clear()
     session.show(frame_of(0))
     assert board.frames[-1] == {0: (255, 0, 0)}
 

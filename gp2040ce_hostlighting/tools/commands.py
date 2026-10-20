@@ -645,7 +645,10 @@ def stream() -> None:
     args = parser.parse_args()
     device = open_device(args.board_id)
     try:
-        leds = args.leds or device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
+        summary = device.read_record(PAGE_SUMMARY).records[0].summary
+        if args.leds and args.leds > summary.led_limit:
+            parser.error(f"--leds is at most the board's addressable LED limit, {summary.led_limit}")
+        leds = args.leds or summary.led_extent or 1
         with LightsClaim(device, 'hlp-stream', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:

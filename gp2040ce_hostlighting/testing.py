@@ -11,7 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 import struct
 import zlib
-from typing import Any, Iterable, Optional, Sequence, Union
+from typing import Any, Callable, Iterable, Optional, Sequence, Union
 
 from gp2040ce_hostlighting import protocol as hl
 # bound at import, so a test that replaces protocol.HostLightingDevice still gets real devices here
@@ -119,14 +119,29 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
     return header + area[:hl.RECORD_AREA].ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
 
 
+# what this firmware's HELLO lists, the fakes' defaults
+HELLO_REQUEST_FLAGS = frozenset(range(7))
+HELLO_COMMANDS = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x30, 0x31, 0x32,
+                            0x33, 0x70, 0x71))
+HELLO_PAGES = frozenset((0, 1, 2, 8, 9, 10, 11, 12))
+HELLO_ADDRESSING_MODES = frozenset((0, 1, 4, 5, 6, 7))
+HELLO_PIXEL_FORMATS = frozenset((0, 1, 2))
+HELLO_EVENTS = frozenset((0,))
+
+
+def _bitmap(members: Iterable[int], size: int) -> bytes:
+    return sum(1 << member for member in set(members)).to_bytes(size, 'little')
+
+
 def hello_reply(sequence: int = 1, major: int = 2, board_id: bytes = BOARD_ID, events_enabled: int = 0,
-                reply_queue_limit: int = 16) -> bytes:
-    """Build a HELLO reply with this firmware's capabilities."""
-    commands = sum(1 << c for c in (0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21,
-                                    0x30, 0x31, 0x32, 0x33, 0x70, 0x71))
-    pages = sum(1 << p for p in (0, 1, 2, 8, 9, 10, 11, 12))
-    body = b'GPHL' + bytes([major, 0]) + board_id + bytes([reply_queue_limit, 0x7F]) + commands.to_bytes(16, 'little')
-    body += struct.pack('<IHHHH', pages, 0xF3, 0x07, 0x01, events_enabled)
+                reply_queue_limit: int = 16, *, magic: bytes = hl.MAGIC, minor: int = 0,
+                request_flags: Iterable[int] = HELLO_REQUEST_FLAGS, commands: Iterable[int] = HELLO_COMMANDS,
+                pages: Iterable[int] = HELLO_PAGES, addressing_modes: Iterable[int] = HELLO_ADDRESSING_MODES,
+                pixel_formats: Iterable[int] = HELLO_PIXEL_FORMATS, events: Iterable[int] = HELLO_EVENTS) -> bytes:
+    """Build a HELLO reply, by default with this firmware's magic, version and capabilities."""
+    body = (magic + bytes([major, minor]) + board_id + bytes([reply_queue_limit]) + _bitmap(request_flags, 1) +
+            _bitmap(commands, 16) + _bitmap(pages, 4) + _bitmap(addressing_modes, 2) + _bitmap(pixel_formats, 2) +
+            _bitmap(events, 2) + struct.pack('<H', events_enabled))
     return (bytes([hl.CMD_HELLO | hl.REPLY_FLAG, sequence, 0]) + body).ljust(hl.REPORT_SIZE, b'\x00')
 
 
@@ -206,6 +221,22 @@ class FakeBoard:
         """Set up a small board: three controls (one an expander pin), a button light and a case strip."""
         self.state = state_record()
         self.summary = summary_record()
+        # what HELLO lists. A command or page left out answers as one the firmware lacks
+        self.magic = hl.MAGIC
+        self.version = (2, 0)
+        self.request_flags = set(HELLO_REQUEST_FLAGS)
+        self.commands = set(HELLO_COMMANDS)
+        self.pages = set(HELLO_PAGES)
+        self.addressing_modes = set(HELLO_ADDRESSING_MODES)
+        self.pixel_formats = set(HELLO_PIXEL_FORMATS)
+        self.events = set(HELLO_EVENTS)
+        # commands, or (command, [3]) pairs, discarded: neither run nor answered, as a full reply queue does
+        self.drop: set[Union[int, tuple[int, int]]] = set()
+        # commands, or (command, [3]) pairs, answered with this status and not run. Status 2 names [3],
+        # status 4 shows the holder
+        self.reject: dict[Union[int, tuple[int, int]], int] = {}
+        # called with (board, request) before each request is taken, to change the board at an exact point
+        self.hooks: list[Callable[['FakeBoard', bytes], None]] = []
         self.controls = [control_record(2, 1), control_record(12, 13, lit=0),
                          control_record(hl.KEY_EXPANDER + 3, 5, lit=0, light_count=0)]
         self.lights = [light_record(0, pin=2, action=1, instance=1, instances=1),
@@ -250,11 +281,17 @@ class FakeBoard:
         if self.departed:
             return -1                   # as hidapi reports a write the device did not take
         request = bytes(data[1:])
+        for hook in list(self.hooks):
+            hook(self, request)
         self.requests.append(request)
         command, sequence, flags = request[0], request[1], request[2]
         if command in self.disconnect_on or (command, request[3]) in self.disconnect_on:
             raise OSError("device disconnected")
-        reply = self.answer(command, sequence, request)
+        if self._listed(self.drop, request):
+            return len(data)            # discarded, neither run nor answered
+        rejection = self._rejection(request)
+        reply = (self.answer(command, sequence, request) if rejection is None else
+                 self._rejected(command, sequence, rejection))
         publishes = command == hl.CMD_COMMIT or flags & hl.FLAG_COMMIT_AFTER
         if reply is not None and reply[2] == hl.STATUS_OK and publishes:
             self._record_frame()
@@ -265,16 +302,37 @@ class FakeBoard:
         self.outbox.extend(self.after.pop(command, []))
         return len(data)
 
+    @staticmethod
+    def _listed(entries: Iterable[Union[int, tuple[int, int]]], request: bytes) -> bool:
+        """Say whether a request's command, or its command and [3], is among the entries."""
+        entries = set(entries)
+        return request[0] in entries or (request[0], request[3]) in entries
+
+    def _rejection(self, request: bytes) -> Optional[int]:
+        """Return the status reject names for this request, or None."""
+        return self.reject.get(request[0], self.reject.get((request[0], request[3])))
+
+    def _rejected(self, command: int, sequence: int, status: int) -> bytes:
+        """Build a reply with a status reject named: status 2 names [3], status 4 shows the holder."""
+        detail = b''
+        if status == hl.STATUS_CLAIMED:
+            detail = self._controller()
+        elif status == hl.STATUS_INVALID:
+            detail = bytes([3])
+        return (bytes([command | hl.REPLY_FLAG, sequence, status]) + detail).ljust(hl.REPORT_SIZE, b'\x00')
+
     def answer(self, command: int, sequence: int, request: bytes) -> Optional[bytes]:
         """Build the reply to one request as the firmware does, or None when the request gets none."""
         if command == 0 or command & hl.REPLY_FLAG:
             return None
         ok = bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_OK])
-        if command not in self.COMMANDS:
+        if command not in self.COMMANDS or command not in self.commands:
             return ok[:2] + bytes([hl.STATUS_UNSUPPORTED]) + bytes(61)
         if command == hl.CMD_HELLO:
-            return hello_reply(sequence, board_id=self.board_id, events_enabled=self.subscribed,
-                               reply_queue_limit=self.queue_limit)
+            return hello_reply(sequence, self.version[0], self.board_id, self.subscribed, self.queue_limit,
+                               magic=self.magic, minor=self.version[1], request_flags=self.request_flags,
+                               commands=self.commands, pages=self.pages, addressing_modes=self.addressing_modes,
+                               pixel_formats=self.pixel_formats, events=self.events)
         if command == hl.CMD_GET_PAGE:
             return self._page(sequence, request)
         handlers = {hl.CMD_CLAIM: self._claim, hl.CMD_CONFIGURE: self._configure, hl.CMD_SUBSCRIBE: self._subscribe,
@@ -537,7 +595,7 @@ class FakeBoard:
         tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_SUMMARY: [self.summary],
                   hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
                   hl.PAGE_ANIMATIONS: self.animations}
-        if page != hl.PAGE_IDENTITY and page not in tables:
+        if page not in self.pages or (page != hl.PAGE_IDENTITY and page not in tables):
             return bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3]) + bytes(60)
         if self.stale_once_at is not None and start == self.stale_once_at:
             self.stale_once_at = None
@@ -596,6 +654,40 @@ class FakeBoard:
         """Have the LED idle timeout turn the animations off, or a button press wake them."""
         self.set_state(0, bytes([self.state[0][0] & ~hl.STATE_IDLE | (hl.STATE_IDLE if idle else 0)]))
 
+    @property
+    def summary(self) -> list[bytes]:
+        """Page 8's record: the Summary group, derived from the pages while none is set, and the counters."""
+        return [self._summary if self._summary is not None else self.derived_summary(), self._counters]
+
+    @summary.setter
+    def summary(self, record: Optional[Sequence[bytes]]) -> None:
+        """Set page 8's record as summary_record() builds it, or None to derive the Summary from the pages."""
+        if record is None:
+            self._summary = None
+            self._counters = getattr(self, '_counters', bytes(8))
+        else:
+            self._summary, self._counters = bytes(record[0]), bytes(record[1])
+
+    def _put_summary(self, summary: bytes, counters: bytes) -> None:
+        """Store the Summary group, unless it is derived, and the counters."""
+        if self._summary is not None:
+            self._summary = bytes(summary)
+        self._counters = bytes(counters)
+
+    def derived_summary(self) -> bytes:
+        """Build the Summary group the pages give: the LED extent and grid from the lights, the totals from the pages.
+
+        The other fields take summary_record()'s defaults.
+        """
+        ends = [sum(struct.unpack_from('<HH', light[0])) for light in self.lights]
+        lit = sum(1 for control in self.controls if control[0][3] & 0x02)
+        return summary_record(led_extent=max(ends, default=0),
+                              grid_width=max((light[4][0] + 1 for light in self.lights), default=0),
+                              grid_height=max((light[4][1] + 1 for light in self.lights), default=0),
+                              profiles=len(self.profiles), controls=len(self.controls), lit_controls=lit,
+                              unlit_controls=len(self.controls) - lit, lights=len(self.lights),
+                              animations=len(self.animations))[0]
+
     def reconfigure(self, lights: Optional[list[list[bytes]]] = None,
                     controls: Optional[list[list[bytes]]] = None) -> None:
         """Change the Lights or Controls page, as a profile switch or a change of add-on input does.
@@ -613,7 +705,7 @@ class FakeBoard:
             lit = sum(1 for control in self.controls if control[0][3] & 0x02)
             struct.pack_into('<HHH', summary, _SUMMARY_CONTROLS, len(self.controls), lit, len(self.controls) - lit)
             changes[_CHANGES_CONTROLS] = (changes[_CHANGES_CONTROLS] + 1) & 0xFF
-        self.summary = [bytes(summary), bytes(changes)]
+        self._put_summary(bytes(summary), bytes(changes))
         self.token = (self.token + 1) & 0xFFFFFFFF or 1
         if self.subscribed & (1 << hl.EVENT_STATE_CHANGED):
             self.outbox.append(state_event(self.token))
@@ -636,7 +728,7 @@ class FakeBoard:
         self.subscribed = 0
         self.holder_token, self.holder_name, self.holder_flags = 0, bytes(16), 0
         self.generation = 1
-        self.summary = [self.summary[0], bytes(8)]
+        self._put_summary(self.summary[0], bytes(8))
 
     def _serve(self) -> None:
         """Send what waits on the board to every open handle. FakeBoard keeps nothing waiting."""
@@ -774,6 +866,8 @@ class ModelBoard(FakeBoard):
         if self.departed:
             return -1                   # as hidapi reports a write the device did not take
         request = bytes(data[1:])
+        for hook in list(self.hooks):
+            hook(self, request)
         self.requests.append(request)
         command, sequence, flags = request[0], request[1], request[2]
         if command in self.disconnect_on or (command, request[3]) in self.disconnect_on:
@@ -781,16 +875,19 @@ class ModelBoard(FakeBoard):
         self.now += 0.001
         self._tick()
         queued = [report for report in self.queue if report[0] != hl.EVENT_MARKER]
-        if not flags & hl.FLAG_NO_REPLY and len(queued) >= self.queue_limit:
+        if (not flags & hl.FLAG_NO_REPLY and len(queued) >= self.queue_limit) or self._listed(self.drop, request):
             return len(data)            # discarded, neither executed nor answered
         generation = (flags & hl.FLAG_GENERATION) >> hl.FLAG_GENERATION_SHIFT
         # a request other than CLAIM under a generation that is no longer current, since the holder has changed
-        outdated = (command in self.COMMANDS and command != hl.CMD_CLAIM and
+        outdated = (command in self.commands and command != hl.CMD_CLAIM and
                     generation not in (0, self.generation))
         guarded = self.holder_token and self.holder_flags & hl.CLAIM_EXCLUSIVE and not (
             flags & hl.FLAG_HOLDER and generation == self.generation)
         reply: Optional[bytes]
-        if outdated or (guarded and self._refused(command, flags)):
+        rejection = self._rejection(request)
+        if rejection is not None:
+            reply = self._rejected(command, sequence, rejection)
+        elif outdated or (guarded and self._refused(command, flags)):
             reply = self._claimed(command, sequence)
         else:
             reply = self.answer(command, sequence, request)
@@ -837,7 +934,7 @@ class ModelBoard(FakeBoard):
         It refuses every command but HELLO, GET_PAGE, CLAIM and SUBSCRIBE, and those with COMMIT_AFTER or
         KEEPALIVE but CLAIM, which is never refused. An unknown command is status 1.
         """
-        if command not in self.COMMANDS or command == hl.CMD_CLAIM:
+        if command not in self.commands or command == hl.CMD_CLAIM:
             return False
         reads = (hl.CMD_HELLO, hl.CMD_GET_PAGE, hl.CMD_SUBSCRIBE)
         return command not in reads or bool(flags & (hl.FLAG_COMMIT_AFTER | hl.FLAG_KEEPALIVE))
@@ -904,7 +1001,7 @@ class ModelBoard(FakeBoard):
             self.controls = list(controls)
             lit = sum(1 for control in self.controls if control[0][3] & 0x02)
             struct.pack_into('<HHH', summary, _SUMMARY_CONTROLS, len(self.controls), lit, len(self.controls) - lit)
-        self.summary = [bytes(summary), self.summary[1]]
+        self._put_summary(bytes(summary), self.summary[1])
         self._note()
 
     def replug(self) -> None:
@@ -1020,7 +1117,7 @@ class ModelBoard(FakeBoard):
             if was != now:
                 changes[index] = (changes[index] + 1) & 0xFF
         self._hashes = hashes
-        self.summary = [self.summary[0], bytes(changes)]
+        self._put_summary(self.summary[0], bytes(changes))
         self.token = zlib.crc32(repr(hashes).encode()) or 1
 
     def _note(self) -> None:
