@@ -756,7 +756,7 @@ The player number is the one the input mode's driver records.
 
 | Input mode | Player |
 |---|---|
-| XInput | 1-4 |
+| XInput | 1-4, or 0 while the host's LED pattern names no player |
 | SInput | The player byte the host sent |
 | Generic HID, Keyboard | Always 0. The driver records none |
 
@@ -784,8 +784,9 @@ Bit 2 is set while the animations' idle timeout
 (`AnimationOptions.autoDisableTime`) has the on-board animations off. A button
 press, or `SET_ANIMATION` changing the animation to one other than off, wakes
 them and restarts the timeout. Frames, takeovers and other commands do not.
-While the animations are off, an overlay's unstaged pixels are off too. Going
-idle and waking each raise `STATE_CHANGED`.
+While the animations are off, an overlay's unstaged pixels show only the
+board's RGB player and turbo indicators. Going idle and waking each raise
+`STATE_CHANGED`.
 
 **Page 2 - Input modes**, one record per mode `SET_INPUT_MODE` accepts, in
 `InputMode` order. These are every `InputMode` the firmware has a driver for,
@@ -1180,8 +1181,8 @@ An address is skipped, which is not an error, in these cases:
 - its lights all lie at or past the addressable limit
 
 The none values, pin 0xFF and action 0x8000, match no light. Nor does a page 10
-add-on key. A skip on an address that used to apply means the Lights page
-changed. The state token has changed with it.
+I/O-expander key. A skip on an address that used to apply means the Lights
+page changed. The state token has changed with it.
 
 The following are invalid arguments, and nothing is staged or unstaged:
 
