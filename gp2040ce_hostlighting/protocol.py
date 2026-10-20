@@ -49,11 +49,11 @@ from dataclasses import fields
 from typing import Any, Callable, Final, Iterable, Literal, Optional, Protocol, Sequence, overload
 
 from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, ControlInstances,
-                                           Controller, ControlLights, ControlRecord, Effects, GridCell, Hello, Identity,
-                                           InputModeFlags, InputModeRecord, Instances, LedRange, LightKind, LightRecord,
-                                           Owner, PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
-                                           Requirements, Settings, Speeds, StageOutcome, State, StateChanged,
-                                           StateRecord, Summary, SummaryRecord)
+                                           Controller, ControlLights, ControlRecord, Effects, EnumValue, GridCell,
+                                           Hello, Identity, InputModeFlags, InputModeRecord, Instances, LedRange,
+                                           LightKind, LightRecord, NameRecord, Owner, PageHeader, PageRead, PaletteSlot,
+                                           Position, Profile, ProfileRecord, Requirements, Settings, Speeds,
+                                           StageOutcome, State, StateChanged, StateRecord, Summary, SummaryRecord)
 
 __all__ = [
     # the interface, framing and replies
@@ -67,7 +67,8 @@ __all__ = [
     'GENERATION_MAX', 'STATUS_OK', 'STATUS_UNSUPPORTED', 'STATUS_INVALID', 'STATUS_STALE_TOKEN', 'STATUS_CLAIMED',
     'STATUS_NAMES', 'EVENT_STATE_CHANGED',
     # pages
-    'PAGE_IDENTITY', 'PAGE_STATE', 'PAGE_INPUT_MODES', 'PAGE_SUMMARY', 'PAGE_PROFILES', 'PAGE_CONTROLS',
+    'NAMES_GPIO_ACTION', 'NAMES_LIGHT_TYPE', 'NAME_ENUMS',
+    'PAGE_IDENTITY', 'PAGE_STATE', 'PAGE_INPUT_MODES', 'PAGE_NAMES', 'PAGE_SUMMARY', 'PAGE_PROFILES', 'PAGE_CONTROLS',
     'PAGE_LIGHTS', 'PAGE_ANIMATIONS', 'PAGE_RANGES', 'PAGE_GROUPS', 'HEADER_RECORDS', 'RECORD_AREA', 'HEADER_TOKEN',
     'IDENTITY_GROUPS', 'IDENTITY_STRING_MAX', 'STATE_LIVE', 'STATE_UNSAVED', 'STATE_IDLE', 'SUMMARY_WHITE_CHANNEL',
     'KEY_SOURCES', 'KEY_TRIGGER', 'KEY_EXPANDER', 'KEY_PREFIXES', 'PIN_NONE', 'SLOT_NONE', 'INDEX_NONE',
@@ -163,6 +164,7 @@ EVENT_STATE_CHANGED = 0
 PAGE_IDENTITY: Final = 0
 PAGE_STATE: Final = 1
 PAGE_INPUT_MODES: Final = 2
+PAGE_NAMES: Final = 3
 PAGE_SUMMARY: Final = 8
 PAGE_PROFILES: Final = 9
 PAGE_CONTROLS: Final = 10
@@ -180,6 +182,7 @@ HEADER_TOKEN = 60
 PAGE_GROUPS = {
     PAGE_STATE: (9, 22, 4),
     PAGE_INPUT_MODES: (2, 22),
+    PAGE_NAMES: (3, 40),
     PAGE_SUMMARY: (30, 8),
     PAGE_PROFILES: (18,),
     PAGE_CONTROLS: (4, 4, 6, 4),
@@ -188,6 +191,11 @@ PAGE_GROUPS = {
 }
 IDENTITY_GROUPS = 8
 IDENTITY_STRING_MAX = 48
+
+# page 3's enums, by the name enums.proto gives each
+NAMES_GPIO_ACTION = 0
+NAMES_LIGHT_TYPE = 1
+NAME_ENUMS = {NAMES_GPIO_ACTION: 'GpioAction', NAMES_LIGHT_TYPE: 'LightType'}
 
 # page 1's State flags and page 8's Summary flags
 STATE_LIVE = 0x01
@@ -575,6 +583,14 @@ def _input_mode_name(data: bytes) -> str:
     return _string(data[:22])
 
 
+def _enum_value(data: bytes) -> EnumValue:
+    return EnumValue(enum=data[0], value=struct.unpack_from('<h', data, 1)[0])
+
+
+def _enum_name(data: bytes) -> str:
+    return _string(data[:40])
+
+
 def _summary(data: bytes) -> Summary:
     return Summary(led_extent=_u16(data, 0), led_limit=_u16(data, 2), render_hz=_u16(data, 4), colour_format=data[6],
                    white_channel=bool(data[7] & SUMMARY_WHITE_CHANNEL), brightness_maximum=data[8],
@@ -669,6 +685,7 @@ def _speeds(data: bytes) -> Speeds:
 _PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], ...]]] = {
     PAGE_STATE: (StateRecord, (('state', _state), ('controller', decode_controller), ('settings', _settings))),
     PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name))),
+    PAGE_NAMES: (NameRecord, (('entry', _enum_value), ('name', _enum_name))),
     PAGE_SUMMARY: (SummaryRecord, (('summary', _summary), ('changes', _changes))),
     PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
     PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _control_instances),
@@ -1293,6 +1310,10 @@ class HostLightingDevice:
                    attempts: int = 5) -> PageRead[InputModeRecord]: ...
 
     @overload
+    def read_table(self, page: Literal[3], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[NameRecord]: ...
+
+    @overload
     def read_table(self, page: Literal[8], mask: int = 0, token: int = 0,
                    attempts: int = 5) -> PageRead[SummaryRecord]: ...
 
@@ -1383,6 +1404,20 @@ class HostLightingDevice:
         """
         reply = self.get_page(page, 0, mask)
         return PageRead(records=decode_records(reply), token=decode_page_header(reply).token)
+
+    def read_names(self) -> dict[str, dict[int, str]]:
+        """Read page 3: the names the board's firmware gives its GpioAction and LightType values.
+
+        :return: {enum name: {value: name}}, as read_enum_names() returns them, an enum this library does
+            not know left out
+        :raises HostLightingRejectedError: when the board does not list page 3
+        """
+        names: dict[str, dict[int, str]] = {}
+        for record in self.read_table(PAGE_NAMES).records:
+            enum = NAME_ENUMS.get(record.entry.enum)
+            if enum is not None:
+                names.setdefault(enum, {})[record.entry.value] = record.name
+        return names
 
     def read_identity(self, mask: int = 0) -> Identity:
         """Read page 0's strings, asking separately for the groups that did not fit.

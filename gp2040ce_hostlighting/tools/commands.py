@@ -29,11 +29,11 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
                                             KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY,
-                                            PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG,
-                                            SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
-                                            HostLightingClaimedError, HostLightingDevice, HostLightingError,
-                                            HostLightingRejectedError, HostLightingTimeoutError,
+                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_STATE,
+                                            PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD,
+                                            REBOOT_WEBCONFIG, SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY,
+                                            TAKEOVER_WHOLE_FRAME, HostLightingClaimedError, HostLightingDevice,
+                                            HostLightingError, HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
                                             stage_capacity)
 from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord, jsonable
@@ -110,16 +110,19 @@ class CommandParser(argparse.ArgumentParser):
         return parsed, unknown
 
 
-def enum_names() -> dict[str, dict[int, str]]:
-    """Name GP2040-CE's enum values from its enums.proto, when the command was given it with -P.
+def enum_names(device: Optional[HostLightingDevice] = None) -> dict[str, dict[int, str]]:
+    """Name GP2040-CE's enum values from its enums.proto given with -P, else from the board's page 3.
 
     -P takes the file or the directory that holds it. A directory without enums.proto is skipped.
 
-    :return: {enum name: {value: value name}}, empty unless -P was given and a file reads
+    :param device: the board, with page 3 naming its actions and light kinds when -P names nothing
+    :return: {enum name: {value: value name}}, empty when neither gives a name
     """
     names = read_enum_names(common_options.proto_files_path)
     if common_options.proto_files_path and not names:
         logger.warning("no enum names found in the -P paths")
+    if not names and device is not None and PAGE_NAMES in device.hello().pages:
+        names = device.read_names()
     return names
 
 
@@ -240,10 +243,10 @@ def caps() -> None:
     parser.add_argument('--json', action='store_true',
                         help="print HELLO and every page the library decodes as JSON, the records' fields by name")
     args = parser.parse_args()
-    names = enum_names()
     device = open_device(args.board_id)
     try:
         hello = device.hello()
+        names = enum_names(device)
         if args.json:
             print(json.dumps(_caps_json(device, hello), indent=1))
             return
@@ -252,6 +255,7 @@ def caps() -> None:
                  (PAGE_IDENTITY, lambda: _print_identity(device)),
                  (PAGE_STATE, lambda: _print_state(device, names)),
                  (PAGE_INPUT_MODES, lambda: _print_input_modes(device)),
+                 (PAGE_NAMES, lambda: _print_names(device)),
                  (PAGE_SUMMARY, lambda: _print_summary(device, names)),
                  (PAGE_PROFILES, lambda: _print_profiles(device)),
                  (PAGE_CONTROLS, lambda: _print_controls(device, names)),
@@ -270,10 +274,16 @@ def _caps_json(device: HostLightingDevice, hello: Hello) -> dict[str, Any]:
         PAGE_IDENTITY: device.read_identity,
         PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
         PAGE_SUMMARY: lambda: device.read_record(PAGE_SUMMARY).records}
-    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
+    for page in (PAGE_INPUT_MODES, PAGE_NAMES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
         readers[page] = functools.partial(lambda number: device.read_table(number).records, page)
     return {'hello': jsonable(hello),
             'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages) if page in readers}}
+
+
+def _print_names(device: HostLightingDevice) -> None:
+    """Read and print page 3, counted by enum."""
+    names = device.read_names()
+    print('page 3 (names): ' + (', '.join(f"{len(values)} {enum}" for enum, values in names.items()) or 'none'))
 
 
 def _print_identity(device: HostLightingDevice) -> None:
@@ -441,9 +451,9 @@ def settings() -> None:
     add_claim_arguments(parser)
     args = parser.parse_args()
     speeds = _checked_options(args)
-    names = enum_names()
     device = open_device(args.board_id)
     try:
+        names = enum_names(device)
         if args.unsaved:
             _hold_unsaved_brightness(device, args.brightness, args.seconds, args.force, args.exclusive)
         if args.profile is not None:
@@ -778,7 +788,7 @@ def buttons() -> None:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
         with LightsClaim(device, 'hlp-buttons', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
-            _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names()))
+            _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names(device)))
     finally:
         device.close()
 

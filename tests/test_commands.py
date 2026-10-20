@@ -17,11 +17,10 @@ from gp2040ce_hostlighting.tools import commands as tools
 
 def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
     """Test hlp-caps' output, with enum names when the .proto files supply them."""
-    monkeypatch.setattr(tools, 'enum_names', lambda: {'GpioAction': {1: 'BUTTON_PRESS_UP'},
-                                                      'LightType': {1: 'Case'},
-                                                      'InputMode': {0: 'INPUT_MODE_XINPUT'},
-                                                      'AnimationNonPressedEffects': {2: 'EFFECT_RAINBOW_ROTATE'},
-                                                      'AnimationPressedEffects': {1: 'PRESSEDEFFECT_RANDOM'}})
+    names = {'GpioAction': {1: 'BUTTON_PRESS_UP'}, 'LightType': {1: 'Case'}, 'InputMode': {0: 'INPUT_MODE_XINPUT'},
+             'AnimationNonPressedEffects': {2: 'EFFECT_RAINBOW_ROTATE'},
+             'AnimationPressedEffects': {1: 'PRESSEDEFFECT_RANDOM'}}
+    monkeypatch.setattr(tools, 'enum_names', lambda device=None: names)
     hlp_run_on_fake_board(tools.caps)
     out = capsys.readouterr().out
     assert 'protocol 2.0, board ID 433030343237362E, reply queue limit 16' in out
@@ -323,8 +322,9 @@ def test_commands_apply_the_common_options(monkeypatch, capsys):
 
 def test_settings_shows_and_changes(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
     """Test hlp-settings: the display with names, each change's payload, and the board's refusal."""
-    monkeypatch.setattr(tools, 'enum_names', lambda: {'AnimationNonPressedEffects': {2: 'EFFECT_RAINBOW_ROTATE'},
-                                                      'AnimationPressedEffects': {1: 'PRESSEDEFFECT_RANDOM'}})
+    names = {'AnimationNonPressedEffects': {2: 'EFFECT_RAINBOW_ROTATE'},
+             'AnimationPressedEffects': {1: 'PRESSEDEFFECT_RANDOM'}}
+    monkeypatch.setattr(tools, 'enum_names', lambda device=None: names)
     hlp_fake_board.profiles.append([bytes([2, 0]) + b'Alt'.ljust(16, b'\x00')])
     hlp_run_on_fake_board(tools.settings)
     out = capsys.readouterr().out
@@ -616,6 +616,14 @@ def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_
     hlp_run_on_fake_board(tools.caps, '--json')
     data = json.loads(capsys.readouterr().out)
     assert data['hello']['major'] == 2 and data['hello']['board_id'] == hlp_fake_board.board_id.hex().upper()
-    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12'}
+    assert set(data['pages']) == {'0', '1', '2', '3', '8', '9', '10', '11', '12'}
     assert data['pages']['11'][0]['leds'] == {'first_led': 0, 'led_count': 1}
     assert data['pages']['1'][0]['controller']['holder_token'] == 0 and data['pages']['0']['board_config']
+
+
+def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fake_board, capsys):
+    """Test that without -P the board's page 3 names actions and kinds, and hlp-caps counts it."""
+    hlp_run_on_fake_board(tools.caps)
+    out = capsys.readouterr().out
+    assert 'page 3 (names): 6 GpioAction, 7 LightType' in out
+    assert 'action 1 (BUTTON_PRESS_UP)' in out and 'kind 1 (Case)' in out

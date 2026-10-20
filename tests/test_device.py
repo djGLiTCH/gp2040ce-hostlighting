@@ -174,10 +174,10 @@ def test_capabilities_are_named_and_required():
     """Test missing_capabilities() and require_capabilities() against HELLO's bitmaps."""
     hello = hl.decode_hello(hello_reply())
     needs = hl.Requirements(commands=frozenset({hl.CMD_UNSTAGE, 0x06}), request_flags=frozenset({7}),
-                            pages=frozenset({3}), addressing_modes=frozenset({hl.ADDRESSING_PIN, 2}),
+                            pages=frozenset({4}), addressing_modes=frozenset({hl.ADDRESSING_PIN, 2}),
                             pixel_formats=frozenset({hl.PIXEL_RGB565, 5}), events=frozenset({0, 1}))
     assert hl.missing_capabilities(hello, needs) == [
-        'command 0x06', 'request flag bit 7', 'page 3', 'addressing mode 2', 'pixel format 5', 'event 1']
+        'command 0x06', 'request flag bit 7', 'page 4', 'addressing mode 2', 'pixel format 5', 'event 1']
     assert hl.missing_capabilities(hello, hl.Requirements(commands=frozenset({hl.CMD_STAGE}))) == []
     hl.require_capabilities(hello, hl.Requirements(events=frozenset({hl.EVENT_STATE_CHANGED})))
     with pytest.raises(hl.HostLightingIncompatibleError, match=r'does not offer command 0x06, request flag bit 7'):

@@ -14,8 +14,9 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
 __all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
-           'ControlRecord', 'Controller', 'Effects', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
-           'InputModeRecord', 'Instances', 'LedRange', 'LightKind', 'LightRecord', 'Owner', 'PageHeader', 'PageRead',
+           'ControlRecord', 'Controller', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
+           'InputModeRecord', 'Instances', 'LedRange', 'LightKind', 'LightRecord', 'NameRecord', 'Owner', 'PageHeader',
+           'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
            'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord', 'jsonable']
 
@@ -230,6 +231,30 @@ class InputModeRecord(_Record):
     def __init__(self, *, ordinal: int, mode: Optional[InputModeFlags] = None, name: Optional[str] = None) -> None:
         """Hold the groups a read returned, None for the others."""
         super().__init__(ordinal, {'mode': mode, 'name': name})
+
+
+# page 3, Names
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EnumValue:
+    """Page 3's first group: which GP2040-CE enum, and the value."""
+
+    enum: int                               # NAMES_GPIO_ACTION or NAMES_LIGHT_TYPE
+    value: int
+
+
+class NameRecord(_Record):
+    """A page 3 record: an enum value and its name in GP2040-CE's enums.proto."""
+
+    PAGE = 3
+    GROUPS = ('entry', 'name')
+    __slots__ = ('_entry', '_name')
+    entry = _Group[EnumValue]()
+    name = _Group[str]()
+
+    def __init__(self, *, ordinal: int, entry: Optional[EnumValue] = None, name: Optional[str] = None) -> None:
+        """Hold the groups a read returned, None for the others."""
+        super().__init__(ordinal, {'entry': entry, 'name': name})
 
 
 # page 8, Summary

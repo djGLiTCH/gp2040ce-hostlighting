@@ -14,8 +14,8 @@ import pytest
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting import records
 from gp2040ce_hostlighting.testing import (FakeBoard, control_record, fake_device, hello_reply, identity_reply,
-                                           light_record, other_event, page_reply, state_event, state_record,
-                                           summary_record)
+                                           light_record, name_record, other_event, page_reply, state_event,
+                                           state_record, summary_record)
 
 
 def test_build_request_frames_flags_and_payload():
@@ -83,7 +83,7 @@ def test_decode_hello():
     assert hello.board_id == '433030343237362E' and hello.reply_queue_limit == 16
     assert hello.request_flags == {0, 1, 2, 3, 4, 5, 6}     # four flags and the claim generation's three bits
     assert 0x33 in hello.commands and 0x71 in hello.commands and 0x06 not in hello.commands
-    assert hello.pages == {0, 1, 2, 8, 9, 10, 11, 12} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
+    assert hello.pages == {0, 1, 2, 3, 8, 9, 10, 11, 12} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
     assert hello.pixel_formats == {0, 1, 2} and hello.events == {0} and hello.events_enabled == frozenset()
 
 
@@ -989,3 +989,14 @@ def test_jsonable_turns_records_and_groups_into_json_values(hlp_fake_device):
     record = jsonable(hlp_fake_device.read_table(hl.PAGE_LIGHTS, mask=0b1).records[0])
     assert record == {'ordinal': 0, 'leds': {'first_led': 0, 'led_count': 1}}
     assert jsonable({1: (2, bytes([10]))}) == {'1': [2, '0a']}
+
+
+def test_read_names_gives_page_3_as_read_enum_names_does(hlp_fake_device, hlp_fake_board):
+    """Test page 3: the records decoded, and read_names() in read_enum_names()'s shape, an unknown enum left out."""
+    record = hlp_fake_device.read_table(hl.PAGE_NAMES).records[0]
+    assert record.entry == records.EnumValue(enum=hl.NAMES_GPIO_ACTION, value=-10) and record.name == 'NONE'
+    hlp_fake_board.names = hlp_fake_board.name_records() + [name_record(7, 1, 'LATER')]
+    names = hlp_fake_device.read_names()
+    assert set(names) == {'GpioAction', 'LightType'} and names['GpioAction'][1] == 'BUTTON_PRESS_UP'
+    assert names['LightType'] == {0: 'ActionButton', 1: 'Case', 2: 'Turbo', 3: 'Player1Light', 4: 'Player2Light',
+                                  5: 'Player3Light', 6: 'Player4Light'}

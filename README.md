@@ -257,7 +257,10 @@ lost.
 The pages carry GP2040-CE's enum values verbatim, such as an action or a light
 type. `read_enum_names()` in `gp2040ce_hostlighting.enums` reads their names
 from GP2040-CE's `enums.proto`, given as the file or its directory, so a host
-can show `BUTTON_PRESS_UP` beside action 1. The library keeps no list of its
+can show `BUTTON_PRESS_UP` beside action 1. The board gives the names of its
+own actions and light kinds on page 3, and `HostLightingDevice.read_names()`
+reads them in the same shape, so a host needs no `.proto` file for those. The
+commands use page 3 when `-P` names nothing. The library keeps no list of its
 own.
 
 ### Testing a host

@@ -13,7 +13,8 @@ from gp2040ce_hostlighting import claim as claim_module
 from gp2040ce_hostlighting import conformance as hl_conformance
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
-from gp2040ce_hostlighting.testing import control_record, fake_device, hello_reply, light_record, summary_record
+from gp2040ce_hostlighting.testing import (control_record, fake_device, hello_reply, light_record, name_record,
+                                           summary_record)
 from gp2040ce_hostlighting.tools import conformance
 
 
@@ -22,7 +23,7 @@ def test_conformance_passes_on_a_conforming_board(hlp_run_on_model_board, hlp_mo
     hlp_model_board.after[0xFF] = [hello_reply(77)]     # another application's reply during the framing checks
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'FAIL' not in out and 'RESULT: ALL PASS (174 passed, 0 failed)' in out
+    assert 'FAIL' not in out and 'RESULT: ALL PASS (180 passed, 0 failed)' in out
     assert 'input modes: 0 XINPUT (lighting once a PC is detected), 3 KEYBOARD (lighting), 4 PS4\n' in out
     assert '1 reports for another application ignored' in out and '20 pipelined: 16 answered' in out
     assert 'expiry seen after 3' in out and 'round trip: median 1.00 ms' in out
@@ -35,7 +36,7 @@ def test_conformance_settings_change_and_restore(hlp_run_on_model_board, hlp_mod
     before = (hlp_model_board.state[0][2:7], list(hlp_model_board.animations))
     hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
     out = capsys.readouterr().out
-    assert 'Settings (writes the settings flash):' in out and 'RESULT: ALL PASS (182 passed, 0 failed)' in out
+    assert 'Settings (writes the settings flash):' in out and 'RESULT: ALL PASS (188 passed, 0 failed)' in out
     hlp_model_board._refresh()
     assert (hlp_model_board.state[0][2:7], list(hlp_model_board.animations)) == before
 
@@ -170,7 +171,7 @@ def test_conformance_passes_holding_an_exclusive_claim(hlp_run_on_model_board, h
     """Test hlp-conformance --exclusive: every check passes under its own exclusive claim, given up after."""
     hlp_run_on_model_board(conformance.conformance, '--quick', '--exclusive')
     out = capsys.readouterr().out
-    assert 'FAIL' not in out and 'RESULT: ALL PASS (174 passed, 0 failed)' in out
+    assert 'FAIL' not in out and 'RESULT: ALL PASS (180 passed, 0 failed)' in out
     assert hlp_model_board.sent(hl.CMD_CLAIM)[0][24] == hl.CLAIM_EXCLUSIVE and hlp_model_board.holder_token == 0
 
 
@@ -217,7 +218,7 @@ def test_conformance_passes_a_board_with_later_additions(hlp_run_on_model_board,
         if command == hl.CMD_HELLO:
             reply = bytearray(reply)
             reply[19] |= 1 << 6                             # commands bitmap: 0x06
-            reply[35] |= 1 << 3                             # pages bitmap: page 3
+            reply[35] |= 1 << 4                             # pages bitmap: page 4
             reply[41] |= 1 << 3                             # pixel formats bitmap: format 3
             reply[43] |= 1 << 1                             # events bitmap: event 1
             reply[45] |= 0b10 if event_1 else 0
@@ -226,10 +227,10 @@ def test_conformance_passes_a_board_with_later_additions(hlp_run_on_model_board,
     hlp_model_board.answer = later
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'RESULT: ALL PASS (174 passed, 0 failed)' in out
-    assert 'commands beyond 2.0: [6]' in out and 'pages beyond 2.0: [3]' in out
+    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'commands beyond 2.0: [6]' in out and 'pages beyond 2.0: [4]' in out
     assert 'pixel formats beyond 2.0: [3]' in out and 'events beyond 2.0: [1]' in out
-    assert 'unlisted command 0x07: status 1' in out and 'unlisted page 4: status 2 at [3]' in out
+    assert 'unlisted command 0x07: status 1' in out and 'unlisted page 5: status 2 at [3]' in out
     formats = [request[3] >> 4 for request in hlp_model_board.sent(hl.CMD_STAGE) + hlp_model_board.sent(hl.CMD_FILL)]
     assert 3 not in formats and 4 in formats and 15 in formats
 
@@ -506,7 +507,7 @@ def test_conformance_on_a_board_without_led_output(hlp_run_on_model_board, hlp_m
     hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
     out = capsys.readouterr().out
     # no lights: the light run, entry and UNSTAGE checks have nothing to address
-    assert 'no LED output, so nothing to change' in out and 'RESULT: ALL PASS (160 passed, 0 failed)' in out
+    assert 'no LED output, so nothing to change' in out and 'RESULT: ALL PASS (166 passed, 0 failed)' in out
 
 
 def test_conformance_passes_a_board_with_lights_past_the_limit(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -521,7 +522,7 @@ def test_conformance_passes_a_board_with_lights_past_the_limit(hlp_run_on_model_
                                    unlit_controls=0, lights=4, animations=1)
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'RESULT: ALL PASS (174 passed, 0 failed)' in out
+    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
     assert 'PASS  light run: every light within the limit applies, the rest are skipped' in out
 
 
@@ -534,7 +535,7 @@ def test_conformance_passes_a_board_with_a_light_of_no_leds(hlp_run_on_model_boa
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert 'PASS  extent = highest LED below the limit + 1' in out
-    assert 'RESULT: ALL PASS (174 passed, 0 failed)' in out
+    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
 
 
 def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -837,7 +838,18 @@ def test_conformance_prints_json_and_the_usual_lines_to_stderr(hlp_run_on_model_
     hlp_run_on_model_board(conformance.conformance, '--quick', '--json')
     captured = capsys.readouterr()
     data = json.loads(captured.out)
-    assert (data['passed'], data['failed'], data['quick'], data['settings']) == (174, 0, True, False)
-    assert sum(1 for result in data['results'] if result['passed']) == 174
+    assert (data['passed'], data['failed'], data['quick'], data['settings']) == (180, 0, True, False)
+    assert sum(1 for result in data['results'] if result['passed']) == 180
     assert {'section', 'what', 'passed', 'detail'} == set(data['results'][0])
-    assert 'RESULT: ALL PASS (174 passed, 0 failed)' in captured.err
+    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in captured.err
+
+
+def test_conformance_fails_an_action_page_3_does_not_name(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test the page 3 checks: an action on page 10 without a name, and a value listed twice."""
+    named = [record for record in hlp_model_board.name_records() if record[0] != name_record(0, 13, '')[0]]
+    hlp_model_board.names = named + [named[0]]
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'FAIL  every action on pages 10 and 11 has a name on page 3  ([13])' in out
+    assert 'FAIL  page 3 lists each value once' in out

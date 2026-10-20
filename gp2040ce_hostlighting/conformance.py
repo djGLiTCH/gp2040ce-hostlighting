@@ -33,11 +33,12 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             CONTROLLER_SIZE, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER, FLAG_GENERATION,
                                             FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE, FLAG_NO_REPLY,
                                             GENERATION_MAX, HEADER_RECORDS, KEY_EXPANDER, KEY_TRIGGER, MAGIC_INPUT_MODE,
-                                            MAGIC_REBOOT, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_PROFILES, PAGE_RANGES, PAGE_STATE,
-                                            PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES,
-                                            PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATE_IDLE, STATE_LIVE,
-                                            STATE_UNSAVED, STATUS_CLAIMED, STATUS_INVALID, STATUS_OK,
+                                            MAGIC_REBOOT, NAME_ENUMS, NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE,
+                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
+                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_RANGES,
+                                            PAGE_STATE, PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW,
+                                            PIXEL_SIZES, PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATE_IDLE,
+                                            STATE_LIVE, STATE_UNSAVED, STATUS_CLAIMED, STATUS_INVALID, STATUS_OK,
                                             STATUS_STALE_TOKEN, STATUS_UNSUPPORTED, SUMMARY_WHITE_CHANNEL,
                                             TAKEOVER_OVERLAY, HostLightingClaimedError, HostLightingDevice,
                                             HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
@@ -415,6 +416,7 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     yield checks.check((summary.grid_width, summary.grid_height) == grid, 'grid size = highest light X, Y + 1')
     yield from _check_controls(checks, controls, lights, _unlit_positions(device))
     yield from _check_lights(checks, controls, lights)
+    yield from _check_names(device, checks, controls, lights)
     yield from _check_ranges(checks, state, summary, tables)
     yield from _check_flags(device, checks)
     yield checks.check(decode_page_header(device.get_page(PAGE_CONTROLS)).token == token,
@@ -1040,6 +1042,25 @@ def _check_staging(device: HostLightingDevice, checks: _Checker, tables: _Tables
     yield checks.check(not wrong, 'FILL unlisted pixel formats: status 2 at [3]', f"not for {wrong}")
     yield checks.check(all(device.request(command)[2] == STATUS_OK for command in (CMD_CLEAR, CMD_COMMIT, CMD_RELEASE)),
                        'CLEAR, COMMIT, RELEASE')
+
+
+def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[ControlRecord, ...],
+                 lights: tuple[LightRecord, ...]) -> Iterator[CheckResult]:
+    records = device.read_table(PAGE_NAMES).records
+    pairs = [(record.entry.enum, record.entry.value) for record in records]
+    yield checks.check({enum for enum, _ in pairs} == set(NAME_ENUMS), 'page 3 lists GpioAction and LightType values',
+                       f"enums {sorted({enum for enum, _ in pairs})}")
+    yield checks.check(len(set(pairs)) == len(pairs), 'page 3 lists each value once')
+    yield checks.check(all(record.name and record.name.isascii() and record.name.isprintable() for record in records),
+                       'page 3 names are printable ASCII')
+    actions = {value for enum, value in pairs if enum == NAMES_GPIO_ACTION}
+    used = {control.input.action for control in controls}
+    used |= {light.owner.action for light in lights if light.owner.action is not None}
+    yield checks.check(used <= actions, 'every action on pages 10 and 11 has a name on page 3',
+                       f"{sorted(used - actions)}")
+    kinds = {value for enum, value in pairs if enum == NAMES_LIGHT_TYPE}
+    shown = {light.kind.value for light in lights}
+    yield checks.check(shown <= kinds, 'every light kind on page 11 has a name on page 3', f"{sorted(shown - kinds)}")
 
 
 def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Tables) -> Iterator[CheckResult]:

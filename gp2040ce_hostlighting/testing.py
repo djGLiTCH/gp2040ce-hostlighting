@@ -82,6 +82,17 @@ def summary_record(led_extent: int = 19, led_limit: int = 100, render_hz: int = 
             bytes(counters)]
 
 
+# names enums.proto gives, for the fakes' page 3: the GpioAction values the fakes use, and every LightType
+_ACTION_NAMES = {-10: 'NONE', -5: 'RESERVED', 0: 'ASSIGNED_TO_ADDON', 1: 'BUTTON_PRESS_UP', 5: 'BUTTON_PRESS_B1',
+                 13: 'BUTTON_PRESS_S1'}
+_KIND_NAMES = ('ActionButton', 'Case', 'Turbo', 'Player1Light', 'Player2Light', 'Player3Light', 'Player4Light')
+
+
+def name_record(enum: int, value: int, name: str) -> list[bytes]:
+    """One page 3 record: the enum (NAMES_GPIO_ACTION or NAMES_LIGHT_TYPE), the value and its name."""
+    return [struct.pack('<Bh', enum, value), name.encode().ljust(40, b'\x00')[:40]]
+
+
 def control_record(key: int, action: int, duplicated: int = 0, lit: int = 1, instance: int = 1,
                    instances: int = 1, first_led: int = 0,
                    grid_rectangle: tuple[int, int, int, int] = (1, 0, 1, 0), first_light: int = 0,
@@ -123,7 +134,7 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
 HELLO_REQUEST_FLAGS = frozenset(range(7))
 HELLO_COMMANDS = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x30, 0x31, 0x32,
                             0x33, 0x70, 0x71))
-HELLO_PAGES = frozenset((0, 1, 2, 8, 9, 10, 11, 12))
+HELLO_PAGES = frozenset((0, 1, 2, 3, 8, 9, 10, 11, 12))
 HELLO_ADDRESSING_MODES = frozenset((0, 1, 4, 5, 6, 7))
 HELLO_PIXEL_FORMATS = frozenset((0, 1, 2))
 HELLO_EVENTS = frozenset((0,))
@@ -221,6 +232,8 @@ class FakeBoard:
         """Set up a small board: three controls (one an expander pin), a button light and a case strip."""
         self.state = state_record()
         self.summary = summary_record()
+        # page 3's records, or None to derive them from the pages (name_record())
+        self.names: Optional[list[list[bytes]]] = None
         # what HELLO lists. A command or page left out answers as one the firmware lacks
         self.magic = hl.MAGIC
         self.version = (2, 0)
@@ -592,7 +605,8 @@ class FakeBoard:
         """Answer GET_PAGE: a page the board lists, then the expected-token check, as the firmware orders them."""
         page, start, token, mask = struct.unpack_from('<BHIH', request, 3)
         state = [self.state[0], self._controller()] + self.state[2:]
-        tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_SUMMARY: [self.summary],
+        tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_NAMES: self.name_records(),
+                  hl.PAGE_SUMMARY: [self.summary],
                   hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
                   hl.PAGE_ANIMATIONS: self.animations}
         if page not in self.pages or (page != hl.PAGE_IDENTITY and page not in tables):
@@ -673,6 +687,20 @@ class FakeBoard:
         if self._summary is not None:
             self._summary = bytes(summary)
         self._counters = bytes(counters)
+
+    def name_records(self) -> list[list[bytes]]:
+        """Page 3's records: those set, else every action the pages carry and every LightType.
+
+        An action without a name enums.proto gives here is named ACTION_ and its value.
+        """
+        if self.names is not None:
+            return self.names
+        actions = {struct.unpack_from('<h', control[0], 1)[0] for control in self.controls}
+        actions |= {struct.unpack_from('<h', light[2], 1)[0] for light in self.lights} - {hl.ACTION_NONE}
+        actions |= set(_ACTION_NAMES)
+        records = [name_record(hl.NAMES_GPIO_ACTION, value, _ACTION_NAMES.get(value, f'ACTION_{value}'))
+                   for value in sorted(actions)]
+        return records + [name_record(hl.NAMES_LIGHT_TYPE, value, name) for value, name in enumerate(_KIND_NAMES)]
 
     def derived_summary(self) -> bytes:
         """Build the Summary group the pages give: the LED extent and grid from the lights, the totals from the pages.

@@ -668,7 +668,8 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | 0 | Identity | The board and its firmware: label, board config, platform, version and build | For display and diagnostics. It changes only with the firmware |
 | 1 | State | What is happening now: input mode, profile, player, animation, brightness, takeover and its `CONFIGURE` settings, the application holding `CLAIM` and the claim generation | To poll, or as the `STATE_CHANGED` payload. It changes at any time |
 | 2 | Input modes | The input modes `SET_INPUT_MODE` accepts: value, name, and whether each presents the lighting interface | Before `SET_INPUT_MODE`. It changes only with the firmware and its settings |
-| 3-7 | - | Free for board pages | - |
+| 3 | Names | The names of the `GpioAction` and `LightType` values the pages carry, as GP2040-CE's `proto/enums.proto` gives them | To name actions and light kinds. It changes only with the firmware |
+| 4-7 | - | Free for board pages | - |
 | | **Configuration (8-15)** | | |
 | 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, each configuration page's record count, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
@@ -827,6 +828,28 @@ mode.
 
 A host that offers a mode switch should list these modes and warn for one
 without flag bit 0.
+
+**Page 3 - Names**, one record per value of the GP2040-CE enums whose values
+the pages carry: `GpioAction` (pages 10 and 11), then `LightType` (page 11),
+each in the order `proto/enums.proto` gives. The records are fixed for the
+firmware.
+
+| Bit | Group | Bytes |
+|---|---|---|
+| 0 | Enum, value | 3 |
+| 1 | Name | 40 |
+
+All groups make a 43-byte record, one per reply. Bit 0 alone gives 16 per
+reply.
+
+| Field | Meaning |
+|---|---|
+| Enum | 0 `GpioAction`, 1 `LightType` |
+| Value | The value, signed 16-bit, verbatim |
+| Name | The value's name in `proto/enums.proto`; up to 40 bytes, NUL-padded |
+
+A host names an action or a light kind from these records. A value with no
+record has no name in the board's firmware.
 
 **Page 8 - Summary**, one record in two field groups:
 
@@ -1265,7 +1288,8 @@ reserved range.
 | Claim flags, bits 0-7 | - | 1-7 |
 | Commands | `0x01-0x0F` session and discovery, `0x10-0x1F` frame staging, `0x20-0x2F` frame lifecycle, `0x30-0x4F` board features, `0x50-0x6F` reserved for new groups, `0x70-0x7F` privileged management; `0x00` is never a command | `0x06-0x0F`, `0x14-0x1F`, `0x22-0x2F`, `0x34-0x4F`, `0x72-0x7F` |
 | `HELLO` reply | `[3..16]` identity, `[17]` limits, `[18..44]` capabilities, `[45..46]` session | `[47..63]` |
-| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 3-7, 13-15, 16-23 |
+| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 4-7, 13-15, 16-23 |
+| Page 3 enums, 0-255 | - | 2-255 |
 | Field groups, bits 0-15 of each page | In the order of the page's record | After each page's last group |
 | Addressing (`STAGE`, `UNSTAGE`), 0-15 | 0-3 runs, 4-15 entries | 2-3, 8-15 |
 | Page 10 keys, 0-254 | `0x00-0x7F` GPIO pins, `0x80-0xBF` Hall-effect triggers, `0xC0-0xDF` I/O-expander pins, `0xE0-0xFE` reserved for new groups; `0xFF` is never a key | `0x30-0x7F`, `0xA0-0xBF`, `0xD0-0xDF` |
