@@ -576,8 +576,10 @@ def test_hello_rejects_other_magic(hlp_fake_device, hlp_fake_board):
     """Test that a reply without the GPHL magic is not taken for a board."""
     hlp_fake_board.answer = lambda command, sequence, request: (bytes([command | hl.REPLY_FLAG, sequence, 0])
                                                                 + b'XXXX' + bytes(57))
-    with pytest.raises(hl.HostLightingError, match='magic'):
+    with pytest.raises(hl.HostLightingMagicError) as raised:
         hlp_fake_device.hello()
+    assert raised.value.magic == b'XXXX' and isinstance(raised.value, hl.HostLightingIncompatibleError)
+    assert str(raised.value) == 'HELLO reply carries magic 58 58 58 58 (XXXX), not GPHL: not a Host Lighting interface'
 
 
 def test_open_device_skips_interfaces_that_fail(monkeypatch):

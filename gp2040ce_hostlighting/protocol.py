@@ -88,6 +88,7 @@ __all__ = [
     # errors
     'HostLightingError', 'HostLightingRejectedError', 'HostLightingTimeoutError', 'HostLightingStaleTokenError',
     'HostLightingDisconnectedError', 'HostLightingUnansweredError', 'HostLightingIncompatibleError',
+    'HostLightingMagicError',
     'HostLightingGroupNotReadError', 'HostLightingBoardSelectionError', 'HostLightingClaimedError',
     # the device, discovery and capabilities
     'HidHandle', 'HostLightingDevice', 'EVENTS_KEPT', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
@@ -843,6 +844,17 @@ class HostLightingIncompatibleError(HostLightingError):
     """The board speaks another protocol major, or lacks a capability the host requires."""
 
 
+class HostLightingMagicError(HostLightingIncompatibleError):
+    """A HELLO reply without the GPHL magic: the interface is not a Host Lighting one."""
+
+    def __init__(self, magic: bytes):
+        """Record the magic the reply carried, and word it in hex and as text."""
+        self.magic = magic
+        text = ''.join(chr(b) if 32 <= b < 127 else '.' for b in magic)
+        super().__init__(f"HELLO reply carries magic {magic.hex(' ').upper()} ({text}), not "
+                         f"{MAGIC.decode()}: not a Host Lighting interface")
+
+
 class HostLightingGroupNotReadError(HostLightingError, AttributeError):
     """A record's field group was read, but the reply had not returned it.
 
@@ -1217,11 +1229,11 @@ class HostLightingDevice:
         """Send HELLO and decode the reply.
 
         :return: the decoded reply (see decode_hello)
-        :raises HostLightingError: if the reply does not carry the GPHL magic
+        :raises HostLightingMagicError: if the reply does not carry the GPHL magic
         """
         info = decode_hello(self.request_ok(CMD_HELLO))
         if info.magic != MAGIC:
-            raise HostLightingError(f"HELLO reply carries magic {info.magic!r}, not {MAGIC!r}")
+            raise HostLightingMagicError(info.magic)
         return info
 
     def get_page(self, page: int, start: int = 0, mask: int = 0, token: int = 0) -> bytes:
