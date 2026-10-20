@@ -99,6 +99,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+# each report written (>) and read (<), in hex without the report ID, at DEBUG
+trace = logging.getLogger('gp2040ce_hostlighting.trace')
 
 # discovery matches the interface by these, never by VID:PID (which varies by input mode)
 USAGE_PAGE = 0xFF47
@@ -1001,6 +1003,8 @@ class HostLightingDevice:
                                                 f"{error})") from error
         if isinstance(written, int) and written < 0:
             raise HostLightingDisconnectedError(f"the board is no longer connected ({_sending(report)} failed)")
+        if trace.isEnabledFor(logging.DEBUG):
+            trace.debug('> %s', report[1:].hex())
 
     def _read(self, timeout_ms: int) -> bytes:
         """Read one report, or nothing within the timeout.
@@ -1011,10 +1015,13 @@ class HostLightingDevice:
         if self.closed:
             raise HostLightingDisconnectedError("the device is closed")
         try:
-            return bytes(self.handle.read(REPORT_SIZE, timeout_ms))
+            report = bytes(self.handle.read(REPORT_SIZE, timeout_ms))
         except (OSError, ValueError) as error:
             raise HostLightingDisconnectedError(f"the board is no longer connected (reading failed with "
                                                 f"{error})") from error
+        if report and trace.isEnabledFor(logging.DEBUG):
+            trace.debug('< %s', report.hex())
+        return report
 
     def send(self, command: int, payload: bytes = b'', flags: int = 0, sequence: Optional[int] = None) -> int:
         """Send one request without waiting for its reply.

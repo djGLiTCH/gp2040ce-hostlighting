@@ -3,6 +3,7 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import json
 import struct
 from types import SimpleNamespace
 
@@ -829,3 +830,14 @@ def test_round_trips_stop_once_the_claim_is_lost(hlp_model_board):
     with pytest.raises(hl.HostLightingClaimedError, match="'Other' holds the lights"):
         hl_conformance.measure_round_trips(claim.device, 5, claim)
     assert claim.state is ClaimState.LOST
+
+
+def test_conformance_prints_json_and_the_usual_lines_to_stderr(hlp_run_on_model_board, capsys):
+    """Test hlp-conformance --json: the results as JSON on stdout, the usual lines on stderr."""
+    hlp_run_on_model_board(conformance.conformance, '--quick', '--json')
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert (data['passed'], data['failed'], data['quick'], data['settings']) == (174, 0, True, False)
+    assert sum(1 for result in data['results'] if result['passed']) == 174
+    assert {'section', 'what', 'passed', 'detail'} == set(data['results'][0])
+    assert 'RESULT: ALL PASS (174 passed, 0 failed)' in captured.err

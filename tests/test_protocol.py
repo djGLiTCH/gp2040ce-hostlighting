@@ -3,6 +3,7 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import logging
 import struct
 import sys
 from dataclasses import fields
@@ -969,3 +970,22 @@ def test_linux_without_the_hidraw_module_falls_back_to_hid(monkeypatch):
     monkeypatch.setitem(sys.modules, 'hidraw', None)
     monkeypatch.setitem(sys.modules, 'hid', SimpleNamespace(name='hid'))
     assert hl._import_hid().name == 'hid'
+
+
+def test_each_report_is_traced_at_debug(hlp_fake_device, caplog):
+    """Test the trace logger: each report written and read, in hex without the report ID."""
+    with caplog.at_level(logging.DEBUG, logger='gp2040ce_hostlighting.trace'):
+        hlp_fake_device.hello()
+    lines = [record.getMessage() for record in caplog.records if record.name == 'gp2040ce_hostlighting.trace']
+    assert lines[0].startswith('> 01') and len(lines[0]) == 2 + 2 * hl.REPORT_SIZE
+    assert any(line.startswith('< 81') for line in lines)
+
+
+def test_jsonable_turns_records_and_groups_into_json_values(hlp_fake_device):
+    """Test jsonable(): a record's ordinal and groups, sets sorted, tuples as lists, bytes as hex."""
+    jsonable = records.jsonable
+    hello = jsonable(hlp_fake_device.hello())
+    assert hello['commands'] == sorted(hello['commands']) and hello['magic'] == '4750484c'
+    record = jsonable(hlp_fake_device.read_table(hl.PAGE_LIGHTS, mask=0b1).records[0])
+    assert record == {'ordinal': 0, 'leds': {'first_led': 0, 'led_count': 1}}
+    assert jsonable({1: (2, bytes([10]))}) == {'1': [2, '0a']}

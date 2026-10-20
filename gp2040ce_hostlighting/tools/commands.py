@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import argparse
 import colorsys
 import functools
+import json
 import logging
 import os
 import pathlib
@@ -35,7 +36,7 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
                                             stage_capacity)
-from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord
+from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord, jsonable
 
 logger = logging.getLogger(__name__)
 
@@ -236,11 +237,16 @@ def ping() -> None:
 def caps() -> None:
     """Print everything a board reports about itself, page by page, each page the board lists."""
     parser = device_parser("Read and decode a GP2040-CE board's Host Lighting capabilities and pages.")
+    parser.add_argument('--json', action='store_true',
+                        help="print HELLO and every page the library decodes as JSON, the records' fields by name")
     args = parser.parse_args()
     names = enum_names()
     device = open_device(args.board_id)
     try:
         hello = device.hello()
+        if args.json:
+            print(json.dumps(_caps_json(device, hello), indent=1))
+            return
         _print_hello(hello)
         pages: tuple[tuple[int, Callable[[], None]], ...] = (
                  (PAGE_IDENTITY, lambda: _print_identity(device)),
@@ -256,6 +262,18 @@ def caps() -> None:
                 show()
     finally:
         device.close()
+
+
+def _caps_json(device: HostLightingDevice, hello: Hello) -> dict[str, Any]:
+    """Read HELLO's pages the library decodes, as hlp-caps --json prints them."""
+    readers: dict[int, Callable[[], Any]] = {
+        PAGE_IDENTITY: device.read_identity,
+        PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
+        PAGE_SUMMARY: lambda: device.read_record(PAGE_SUMMARY).records}
+    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
+        readers[page] = functools.partial(lambda number: device.read_table(number).records, page)
+    return {'hello': jsonable(hello),
+            'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages) if page in readers}}
 
 
 def _print_identity(device: HostLightingDevice) -> None:

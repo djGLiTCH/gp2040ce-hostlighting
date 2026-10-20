@@ -3,6 +3,7 @@
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import json
 import struct
 
 import pytest
@@ -608,3 +609,13 @@ def test_a_stream_hello_refused_goes_to_the_claim(hlp_model_board):
     hlp_model_board.take_over()
     tools._answers_hello(claim)
     assert claim.state is ClaimState.LOST and claim.device.generation == 0
+
+
+def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test hlp-caps --json: HELLO and each page the board lists, the records' groups by field name."""
+    hlp_run_on_fake_board(tools.caps, '--json')
+    data = json.loads(capsys.readouterr().out)
+    assert data['hello']['major'] == 2 and data['hello']['board_id'] == hlp_fake_board.board_id.hex().upper()
+    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12'}
+    assert data['pages']['11'][0]['leds'] == {'first_led': 0, 'led_count': 1}
+    assert data['pages']['1'][0]['controller']['holder_token'] == 0 and data['pages']['0']['board_config']

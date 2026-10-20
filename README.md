@@ -195,6 +195,11 @@ bus, built by a function the host gives.
 `Canvas` of the grid's size, `Canvas.for_summary(summary)`, holds a colour per
 cell, and its `frame()` colours each light with its cell's colour.
 
+`jsonable()` in `records.py` turns any record, field group or HELLO into
+values `json.dumps()` takes. The logger `gp2040ce_hostlighting.trace` logs each
+report written (`>`) and read (`<`) in hex at DEBUG, the commands' `-d`
+included. `hlp-caps --json` and `hlp-conformance --json` print JSON on stdout.
+
 A host that sends with `send()` and waits with `wait_reply()` reads the reports
 already received with `drain()` before each send, takes the events received
 with `take_events()`, and builds the error for a refused reply with

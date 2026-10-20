@@ -10,14 +10,17 @@ they run, so other applications leave the lights alone, and give it up at the en
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
+import contextlib
+import json
 import statistics
+import sys
 import time
 
 from gp2040ce_hostlighting.claim import LightsClaim
 from gp2040ce_hostlighting.conformance import (CheckResult, Checks, _reports, measure_paced_frames, measure_round_trips,
                                                measure_unthrottled_frames, run_checks)
 from gp2040ce_hostlighting.protocol import PAGE_SUMMARY, HostLightingClaimedError, HostLightingDevice, open_device
-from gp2040ce_hostlighting.records import Settings
+from gp2040ce_hostlighting.records import Settings, jsonable
 from gp2040ce_hostlighting.tools.commands import add_claim_arguments, device_parser, hlp_command, ranged
 
 
@@ -42,23 +45,35 @@ def conformance() -> None:
     parser.add_argument('--settings', action='store_true',
                         help="also change and restore brightness, animation and speeds (writes the settings flash)")
     parser.add_argument('--quick', action='store_true', help="shorter timing runs")
+    parser.add_argument('--json', action='store_true',
+                        help="print the results as JSON when the run ends, the usual lines going to stderr")
     add_claim_arguments(parser)
     args = parser.parse_args()
     device = open_device(args.board_id)
     checks = Checks()
-    start, section = time.monotonic(), ''
-    try:
-        claim = LightsClaim(device, 'hlp-conformance', wait_when_taken_over=False)
-        with claim.take(args.exclusive, args.force):
-            for result in run_checks(device, claim, args.settings, args.quick, lambda: open_device(args.board_id)):
-                if result.section != section:
-                    section = result.section
-                    print(f"{section}:")
-                print(_line(checks.add(result)))
-    finally:
-        device.close()
-    print(f"elapsed: {time.monotonic() - start:.1f} s")
-    print(f"RESULT: {'FAIL' if checks.failed else 'ALL PASS'} ({checks.passed} passed, {checks.failed} failed)")
+    start, section, board_id = time.monotonic(), '', ''
+    out = sys.stdout
+    with contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext():
+        try:
+            board_id = device.hello().board_id
+            claim = LightsClaim(device, 'hlp-conformance', wait_when_taken_over=False)
+            with claim.take(args.exclusive, args.force):
+                for result in run_checks(device, claim, args.settings, args.quick,
+                                         lambda: open_device(args.board_id)):
+                    if result.section != section:
+                        section = result.section
+                        print(f"{section}:")
+                    print(_line(checks.add(result)))
+        finally:
+            device.close()
+        elapsed = time.monotonic() - start
+        print(f"elapsed: {elapsed:.1f} s")
+        print(f"RESULT: {'FAIL' if checks.failed else 'ALL PASS'} ({checks.passed} passed, {checks.failed} failed)")
+    if args.json:
+        print(json.dumps({'board_id': board_id, 'settings': args.settings, 'quick': args.quick,
+                          'exclusive': args.exclusive, 'passed': checks.passed, 'failed': checks.failed,
+                          'elapsed_seconds': round(elapsed, 1), 'results': jsonable(checks.results)}, indent=1),
+              file=out)
     if checks.failed:
         raise SystemExit(1)
 

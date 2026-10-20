@@ -10,14 +10,14 @@ groups again. Records are immutable, compare equal when their page, ordinal and 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
 __all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
            'ControlRecord', 'Controller', 'Effects', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
            'InputModeRecord', 'Instances', 'LedRange', 'LightKind', 'LightRecord', 'Owner', 'PageHeader', 'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
-           'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord']
+           'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord', 'jsonable']
 
 # the configuration pages, with change counters in the Summary's Changes group in page order
 _FIRST_CONFIGURATION_PAGE = 8
@@ -121,6 +121,28 @@ class _Record:
             newest = getattr(newer, '_' + name)
             object.__setattr__(record, '_' + name, newest if newest is not None else getattr(self, '_' + name))
         return record
+
+
+def jsonable(value: Any) -> Any:
+    """Turn a record, field group, HELLO or listing, and what they hold, into values json.dumps() takes.
+
+    A record becomes its ordinal and the groups read, a field group or other dataclass a dict of its fields, a
+    set a sorted list, a tuple a list and bytes hex. Anything else is returned as it is.
+    """
+    if isinstance(value, _Record):
+        return {'ordinal': value.ordinal, **{name: jsonable(getattr(value, name)) for name in value.GROUPS
+                                             if value.has(name)}}
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: jsonable(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, (set, frozenset)):
+        return sorted(jsonable(member) for member in value)
+    if isinstance(value, (list, tuple)):
+        return [jsonable(member) for member in value]
+    if isinstance(value, dict):
+        return {str(key): jsonable(member) for key, member in value.items()}
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    return value
 
 
 def _rebuild(record_type: type, ordinal: int, groups: dict[str, Any]) -> Any:
