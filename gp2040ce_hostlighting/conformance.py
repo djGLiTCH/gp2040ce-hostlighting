@@ -676,6 +676,16 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     yield checks.check(_holder(refused)[0] == ours, 'another token is refused, reply OK')
     ignored = _claim(device, CLAIM_GIVE_UP, other)
     yield checks.check(_holder(ignored)[0] == ours, 'give up by another token changes nothing')
+    device.request_ok(CMD_RELEASE)
+    device.fill((0, 0, 1))                  # staged, not shown
+    number = _state(device).state.takeover_number
+    flagged = device.request(CMD_CLAIM, bytes([CLAIM_TAKE]) + struct.pack('<I', other) + b'other'.ljust(16, b'\x00'),
+                             FLAG_COMMIT_AFTER | FLAG_KEEPALIVE)
+    state = _state(device)
+    yield checks.check(_holder(flagged)[0] == ours and not state.state.takeover_live and
+                       state.state.takeover_number == number,
+                       "another token's CLAIM: its COMMIT_AFTER publishes nothing")
+    device.request_ok(CMD_CLEAR)
     reply = _claim(device, CLAIM_GIVE_UP + 1, other)
     yield checks.check(_status(reply) == (STATUS_INVALID, 3) and not any(reply[4:8]),
                        'action 3: status 2 at [3], no echo')

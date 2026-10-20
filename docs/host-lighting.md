@@ -252,6 +252,8 @@ Status: `0` OK, `1` unsupported command, `2` invalid argument, `3` stale token
 
 - A command whose status is not 0 changes nothing, answered or not, and neither
   `COMMIT_AFTER` nor `KEEPALIVE` applies.
+- On `CLAIM` they apply only when it leaves the sender holding the claim
+  (`CLAIM`).
 - A status 2 reply carries at `[3]` the offset of the invalid request byte, the
   lowest when several are invalid.
 - A status 4 reply carries at `[3..24]` the holder, laid out as page 1's
@@ -305,8 +307,18 @@ be another application's. Each reply carries the following to tell them apart.
 |---|---|
 | `GET_PAGE` | Command and sequence; the echoed page, start and field groups (page and start alone in a stale-token reply) |
 | `CLAIM` | Command and sequence; the echoed action and token |
-| Status 4, to any command | Command and sequence; the holder and generation shown (`CLAIM`) |
+| Status 4, to any command | Command and sequence; the holder shown refusing the request (below) |
 | Every other reply | Command and sequence only |
+
+A status 4 reply answers a host's request only when the holder and generation
+it shows refuse that request, in either of these cases:
+
+- the request carried a generation other than 0 and the one shown
+- the claim shown is exclusive, the request carried no `HOLDER` with the
+  generation shown, and it is not `HELLO`, `GET_PAGE` or `SUBSCRIBE` without
+  `COMMIT_AFTER` or `KEEPALIVE`
+
+`CLAIM` is never refused with status 4.
 
 A host may send a request again when its reply does not come, under the same
 sequence or a new one. Every command but two has the same effect sent twice as
@@ -492,9 +504,8 @@ current generation is refused with status 4 unless it is `CLAIM`, or
 `HELLO`, `GET_PAGE` or `SUBSCRIBE` without `COMMIT_AFTER` or `KEEPALIVE`.
 The holder of an exclusive claim must set `HOLDER` on every request.
 
-Under an exclusive claim, the `COMMIT_AFTER` and `KEEPALIVE` of a `CLAIM`
-sent without `HOLDER` and the current generation act only when it leaves the
-sender holding the claim.
+The `COMMIT_AFTER` and `KEEPALIVE` of a `CLAIM` act only when it leaves the
+sender holding the claim, under a shared claim as under an exclusive one.
 
 Under either rule an unknown command still returns status 1, and a refused
 request's arguments are not checked. The board's own hotkeys are not subject
@@ -581,6 +592,8 @@ and under unstaged pixels in overlay. The index is a page 12 ordinal, or 0xFFFF
 for off. Off is the state GP2040-CE's animation hotkeys reach after the last
 enabled animation. In it no animation lights anything, and only the board's RGB
 player and turbo indicators still show. The choice is applied live and saved.
+The index of the animation shown changes nothing, and does not wake the
+animations from the idle timeout.
 Any other index at or above the page's total, or of an animation not enabled
 (page 12 flag bit 0), is an invalid argument.
 

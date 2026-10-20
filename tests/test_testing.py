@@ -75,6 +75,24 @@ def test_an_unknown_page_is_refused_before_the_token_is_checked(board_type):
     assert reply[2:4] == bytes([hl.STATUS_INVALID, 3])
 
 
+@pytest.mark.parametrize('exclusive', [False, True])
+def test_a_claims_flags_act_only_when_it_leaves_the_sender_holding(exclusive):
+    """Test that another token's CLAIM publishes nothing with COMMIT_AFTER, and the holder's does, either claim."""
+    board = ModelBoard()
+    device = fake_device(board)
+    device.claim(hl.CLAIM_TAKE, 0x51, b'app', exclusive=exclusive)
+    device.fill((1, 2, 3))
+    number = device.read_record(hl.PAGE_STATE).records[0].state.takeover_number
+    other = bytes([hl.CLAIM_TAKE]) + struct.pack('<I', 0x52) + b'other'.ljust(16, b'\x00')
+    assert device.request(hl.CMD_CLAIM, other, hl.FLAG_COMMIT_AFTER)[2] == hl.STATUS_OK
+    state = device.read_record(hl.PAGE_STATE).records[0].state
+    assert not state.takeover_live and state.takeover_number == number
+    own = bytes([hl.CLAIM_TAKE]) + struct.pack('<I', 0x51) + b'app'.ljust(16, b'\x00') + bytes([exclusive])
+    assert device.request(hl.CMD_CLAIM, own, hl.FLAG_COMMIT_AFTER)[2] == hl.STATUS_OK
+    state = device.read_record(hl.PAGE_STATE).records[0].state
+    assert state.takeover_live and state.takeover_number == number + 1
+
+
 def test_another_application_takes_over_and_lets_go():
     """Test take_over() and let_go(): the holder, the claim flags and the generation step."""
     for board in (FakeBoard(), ModelBoard()):

@@ -850,10 +850,12 @@ class ModelBoard(FakeBoard):
     def _flags_act(self, command: int, request: bytes, guarded: bool) -> bool:
         """Say whether a request's COMMIT_AFTER and KEEPALIVE act.
 
-        Under an exclusive claim, a request without HOLDER and the current generation has them act only when
-        it is a CLAIM that leaves the sender holding the claim.
+        A CLAIM has them act only when it leaves the sender holding the claim, under either claim. Under an
+        exclusive claim, any other request without HOLDER and the current generation has them ignored.
         """
-        return not guarded or (command == hl.CMD_CLAIM and self.holder_token == struct.unpack_from('<I', request, 4)[0])
+        if command == hl.CMD_CLAIM:
+            return bool(self.holder_token) and self.holder_token == struct.unpack_from('<I', request, 4)[0]
+        return not guarded
 
     def _page(self, sequence: int, request: bytes) -> bytes:
         """Answer GET_PAGE from the pages as they stand now."""
