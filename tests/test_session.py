@@ -1410,3 +1410,15 @@ def test_settings_landed_unseen_are_sent_again_after_a_change_of_holder(board, m
         board.sleep(0.1)
         session.poll()
     assert (board.overlay, board.keepalive_ms) == (1, 1200)
+
+
+def test_an_update_names_the_page_1_fields_that_changed(board):
+    """Test SessionUpdate.changed: every field read at first, then only the fields that moved."""
+    session = session_on(board).start()
+    first = session.poll()
+    assert {'holder_token', 'input_mode', 'keepalive_ms', 'animations_idle'} <= first.changed
+    assert session.poll().changed == frozenset()
+    board.idle()
+    board.sleep(0.1)
+    assert session.poll().changed == {'animations_idle'}
+    session.close()

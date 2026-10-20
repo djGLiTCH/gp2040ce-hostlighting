@@ -12,7 +12,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 """
 from typing import Any, Optional
 
-from gp2040ce_hostlighting.protocol import (PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_LIGHTS, PAGE_PROFILES,
+from gp2040ce_hostlighting.protocol import (ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LIGHT, ADDRESSING_PIN,
+                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_LIGHTS, PAGE_PROFILES,
                                             PAGE_SUMMARY, HostLightingDevice, HostLightingError,
                                             HostLightingIncompatibleError, HostLightingStaleTokenError)
 from gp2040ce_hostlighting.records import AnimationRecord, ControlRecord, Hello, LightRecord, ProfileRecord, Summary
@@ -53,6 +54,50 @@ class ConfigurationCache:
         # the configuration pages with a counter that moved at the last refresh, kept or not
         self.moved: frozenset[int] = frozenset()
         self._tables: dict[int, tuple[Any, ...]] = {}
+
+    def lights_reached(self, addressing: int, address: int) -> Optional[tuple[int, ...]]:
+        """Give the ordinals of the lights a STAGE entry reaches, as the board resolves it.
+
+        A light ordinal reaches that light, a pin (a page 10 key) or an action the lights it owns, and a kind
+        the lights of that kind. A light is reached only with an LED below the Summary's addressable LED limit.
+
+        :param addressing: ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION or ADDRESSING_KIND
+        :param address: the entry's address
+        :return: the ordinals, or None while the Summary or the Lights groups this needs are not read
+        :raises ValueError: for a run's addressing
+        """
+        group = {ADDRESSING_LIGHT: 'leds', ADDRESSING_PIN: 'owner', ADDRESSING_ACTION: 'owner',
+                 ADDRESSING_KIND: 'kind'}.get(addressing)
+        if group is None:
+            raise ValueError(f"addressing {addressing} is a run, not an entry")
+        lights = self.lights
+        if self.summary is None or lights is None or not all(
+                light.has('leds') and light.has(group) for light in lights):
+            return None
+        limit = self.summary.led_limit
+
+        def matches(light: LightRecord) -> bool:
+            if addressing == ADDRESSING_LIGHT:
+                return light.ordinal == address
+            if addressing == ADDRESSING_KIND:
+                return light.kind.value == address
+            owner = light.owner
+            return (owner.pin if addressing == ADDRESSING_PIN else owner.action) == address
+        return tuple(light.ordinal for light in lights
+                     if matches(light) and light.leds.led_count and light.leds.first_led < limit)
+
+    def controls_with(self, key: Optional[int] = None,
+                      action: Optional[int] = None) -> Optional[tuple[ControlRecord, ...]]:
+        """Give the controls with a page 10 key, an action, or both.
+
+        :return: the records, none when the board has no such control, or None while the Controls page's input
+            group is not read
+        """
+        controls = self.controls
+        if controls is None or not all(control.has('input') for control in controls):
+            return None
+        return tuple(control for control in controls if (key is None or control.input.key == key) and
+                     (action is None or control.input.action == action))
 
     @property
     def profiles(self) -> Optional[tuple[ProfileRecord, ...]]:

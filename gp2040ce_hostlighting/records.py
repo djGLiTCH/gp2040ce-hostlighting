@@ -236,6 +236,26 @@ class Summary:
     lights: int
     animations: int
 
+    def brightness_scale(self, step: int) -> float:
+        """Give the scale the board applies at a brightness step: step x (maximum / steps, rounded down) / 255.
+
+        It is the scale for host pixels while CONFIGURE applies the board's brightness, and 0 for a board with
+        no brightness steps.
+        """
+        if not self.brightness_steps:
+            return 0.0
+        return step * (self.brightness_maximum // self.brightness_steps) / 255
+
+    def stream_rate(self, cap: Optional[float] = None) -> Optional[float]:
+        """Give the frame rate a host need not stream faster than: the render rate, held to a cap if given.
+
+        A frame the board does not render before the next arrives is never shown. None when the board states
+        no render rate.
+        """
+        if not self.render_hz:
+            return None
+        return float(min(self.render_hz, cap)) if cap else float(self.render_hz)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Changes:

@@ -10,7 +10,7 @@ import pytest
 
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.cache import ConfigurationCache
-from gp2040ce_hostlighting.testing import control_record, light_record
+from gp2040ce_hostlighting.testing import control_record, light_record, summary_record
 
 
 def reads(board) -> list:
@@ -121,3 +121,29 @@ def test_a_mask_of_0_is_every_group_and_an_undecoded_page_is_refused(hlp_fake_de
     cache.pages = cache.pages | {13}
     with pytest.raises(ValueError, match='not 13'):
         cache.refresh(hlp_fake_device)
+
+
+def test_the_lights_an_entry_reaches_and_the_controls_by_key_or_action(hlp_fake_device, hlp_fake_board):
+    """Test lights_reached(): by ordinal, pin, action and kind, a light at the limit left out; and controls_with()."""
+    cache = ConfigurationCache(hlp_fake_device.hello())
+    assert cache.lights_reached(hl.ADDRESSING_PIN, 2) is None and cache.controls_with(action=1) is None
+    hlp_fake_board.reconfigure(lights=hlp_fake_board.lights + [light_record(100, pin=2, action=1)])
+    cache.refresh(hlp_fake_device)
+    assert cache.lights_reached(hl.ADDRESSING_PIN, 2) == (0,) and cache.lights_reached(hl.ADDRESSING_ACTION, 1) == (0,)
+    assert cache.lights_reached(hl.ADDRESSING_KIND, 1) == (1,) and cache.lights_reached(hl.ADDRESSING_LIGHT, 1) == (1,)
+    assert cache.lights_reached(hl.ADDRESSING_LIGHT, 2) == () and cache.lights_reached(hl.ADDRESSING_PIN, 3) == ()
+    with pytest.raises(ValueError, match='a run'):
+        cache.lights_reached(hl.ADDRESSING_LED_RUN, 0)
+    assert [control.input.key for control in cache.controls_with(action=1)] == [2]
+    assert cache.controls_with(key=12)[0].input.action == 13 and cache.controls_with(key=12, action=1) == ()
+
+
+def test_the_summary_gives_the_brightness_scale_and_a_stream_rate(hlp_fake_device, hlp_fake_board):
+    """Test brightness_scale() as the specification gives it, and stream_rate() from the render rate."""
+    hlp_fake_board.summary = summary_record(brightness_maximum=99, brightness_steps=10, render_hz=40)
+    summary = hlp_fake_device.read_record(hl.PAGE_SUMMARY).records[0].summary
+    assert summary.brightness_scale(10) == 90 / 255 and summary.brightness_scale(0) == 0
+    assert summary.stream_rate() == 40.0 and summary.stream_rate(cap=30) == 30.0
+    hlp_fake_board.summary = summary_record(brightness_steps=0, render_hz=0)
+    summary = hlp_fake_device.read_record(hl.PAGE_SUMMARY).records[0].summary
+    assert summary.brightness_scale(5) == 0.0 and summary.stream_rate() is None

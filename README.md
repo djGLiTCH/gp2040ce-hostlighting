@@ -133,13 +133,19 @@ A `ConfigurationCache` keeps the configuration pages. Its `refresh()` reads the
 Summary, then each page with a moved change counter, under the Summary's state
 token, and returns the pages it read again. Its `moved` names every page with a
 moved counter, kept or not. A host calls it after each change of the state
-token, and calls `clear()` after a reconnect.
+token, and calls `clear()` after a reconnect. `lights_reached()` gives the
+lights a `STAGE` entry reaches, as the board resolves it: by ordinal, pin,
+action or kind, leaving out a light with no LED below the addressable limit.
+`controls_with()` gives the controls with a key or an action. The Summary's
+`brightness_scale()` gives the scale the board applies at a brightness step,
+and `stream_rate()` the render rate, past which frames are not shown.
 
 A `Session` runs the specification's whole host flow on these parts. `start()`,
 or a `with` block, checks the board's capabilities, reads the configuration,
 takes the claim, sends the settings and subscribes to `STATE_CHANGED`. `poll()`
 renews the claim, applies the events, reads changed pages again and returns a
-`SessionUpdate`. Its `restage` says when to stage the whole frame again.
+`SessionUpdate`. Its `restage` says when to stage the whole frame again, and
+its `changed` names the page 1 fields that changed since the last update.
 `show()` publishes a frame, the first after each start clearing first.
 `configure()` changes the settings, `reconnect()` finds the board again after
 it leaves the bus, and `close()` gives the claim up. Before `start()`, `poll()`

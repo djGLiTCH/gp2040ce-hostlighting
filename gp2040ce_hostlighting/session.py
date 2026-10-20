@@ -13,7 +13,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 import functools
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Callable, Iterable, Optional
 
 from gp2040ce_hostlighting.cache import ConfigurationCache
@@ -73,7 +73,9 @@ def _later(earlier: ClaimChange, later: ClaimChange) -> ClaimChange:
 class SessionUpdate:
     """What poll() found.
 
-    `claim` is what changed in the claim. `board_state` is the latest page 1 record. `pages_read` names the
+    `claim` is what changed in the claim. `board_state` is the latest page 1 record, and `changed` names its
+    fields (State, Controller and Settings fields by name) that differ from the record the last update carried,
+    every field read for the first. `pages_read` names the
     configuration pages read again, page 8 among them when the Summary changed. `restage` is true when the host
     has to stage the whole frame again, after the claim was taken again or taken after waiting, the Controls or Lights
     page was read again, or the takeover ended while the claim was held.
@@ -83,6 +85,22 @@ class SessionUpdate:
     board_state: Optional[StateRecord]
     pages_read: frozenset[int] = field(default_factory=frozenset)
     restage: bool = False
+    changed: frozenset[str] = field(default_factory=frozenset)
+
+
+def _changed_fields(before: Optional[StateRecord], after: Optional[StateRecord]) -> frozenset[str]:
+    """Name the page 1 fields that differ between two records, a group read in only one counting as changed."""
+    names: set[str] = set()
+    if after is None:
+        return frozenset()
+    for group in ('state', 'controller', 'settings'):
+        new = getattr(after, group) if after.has(group) else None
+        old = getattr(before, group) if before is not None and before.has(group) else None
+        if new is None:
+            continue
+        names.update(item.name for item in fields(new)
+                     if old is None or getattr(old, item.name) != getattr(new, item.name))
+    return frozenset(names)
 
 
 class Session:
@@ -129,6 +147,7 @@ class Session:
         self.cache: Optional[ConfigurationCache] = None
         self.claim: Optional[LightsClaim] = None
         self.board_state: Optional[StateRecord] = None
+        self._reported: Optional[StateRecord] = None        # the page 1 record the last update carried
         self._events = False            # the board raises STATE_CHANGED
         self._drove = False             # a frame was sent, so a host that does not claim releases at close()
         self._reset()
@@ -297,7 +316,9 @@ class Session:
                    or self._takeover_ended())
         if restage:
             self._shown, self._clear_next = None, True
-        return SessionUpdate(claim=change, board_state=self.board_state, pages_read=pages, restage=restage)
+        changed, self._reported = _changed_fields(self._reported, self.board_state), self.board_state
+        return SessionUpdate(claim=change, board_state=self.board_state, pages_read=pages, restage=restage,
+                             changed=changed)
 
     def show(self, frame: Frame) -> Optional[FrameResult]:
         """Publish a whole frame while the claim is held, or for a host that does not claim, the board unclaimed.
