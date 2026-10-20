@@ -11,12 +11,16 @@ license-files = ["LICENSES/*.txt"]
 authors = [
     {name = "Jacob Simpson", email = "28767380+djGLiTCH@users.noreply.github.com"},
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = ["hidapi"]
 dynamic = ["version"]
 classifiers = [
     "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Operating System :: OS Independent",

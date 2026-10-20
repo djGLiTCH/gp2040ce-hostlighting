@@ -14,6 +14,7 @@ import functools
 import logging
 import os
 import pathlib
+import re
 import sys
 import time
 from dataclasses import fields
@@ -76,6 +77,15 @@ def _not_claim_line(record: logging.LogRecord) -> bool:
 
 class CommandParser(argparse.ArgumentParser):
     """An hlp-* command's parser, which applies the common options once the command line is parsed."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Build the parser.
+
+        An argument that starts with a minus and a digit, such as the entry "-10:00FF00", is a value, as
+        Python 3.14's argparse takes it. Earlier versions take it for an option.
+        """
+        super().__init__(*args, **kwargs)
+        self._negative_number_matcher = re.compile(r'-\.?\d')
 
     def parse_known_args(self, args: Optional[Sequence[str]] = None,  # type: ignore[override]
                          namespace: Optional[argparse.Namespace] = None) -> tuple[argparse.Namespace, list[str]]:

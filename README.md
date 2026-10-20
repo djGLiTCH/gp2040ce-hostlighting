@@ -9,7 +9,7 @@ host software drive a board's RGB LEDs live over a vendor HID interface.
 pip install gp2040ce-hostlighting
 ```
 
-It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
+It needs Python 3.10 or later. hidapi has no wheels for Python 3.15 yet, so on
 3.15 pip builds it from source, which needs a C compiler, and on Linux the
 development packages hidapi's README lists.
 
