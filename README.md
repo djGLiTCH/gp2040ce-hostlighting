@@ -186,7 +186,10 @@ from any thread. The runner shows the frame posted last, again whenever an
 update asks for a restage, and finds the board again by its board ID after it
 leaves the bus. Each update that carries anything goes to `on_update`, called
 on the runner's thread, and to the `updates` queue. `AsyncSession` puts a runner
-behind awaitables for an `asyncio` program: `await update()`, or `async for`.
+behind awaitables for an `asyncio` program: `await update()`, or `async for`,
+which ends when the runner is closed and raises the error that ended it. A
+runner keeps the frame posted, so a host posts a new `Frame` for each change,
+and closes each runner before it exits.
 `BoardWatcher` reports boards arriving and leaving by board ID, opening only an
 interface it has not seen. `SessionGroup` keeps a runner for each board on the
 bus, built by a function the host gives.

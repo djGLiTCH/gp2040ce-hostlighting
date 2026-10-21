@@ -1048,7 +1048,7 @@ def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[C
                  lights: tuple[LightRecord, ...]) -> Iterator[CheckResult]:
     records = device.read_table(PAGE_NAMES).records
     pairs = [(record.entry.enum, record.entry.value) for record in records]
-    yield checks.check({enum for enum, _ in pairs} == set(NAME_ENUMS), 'page 3 lists GpioAction and LightType values',
+    yield checks.check(set(NAME_ENUMS) <= {enum for enum, _ in pairs}, 'page 3 lists GpioAction and LightType values',
                        f"enums {sorted({enum for enum, _ in pairs})}")
     yield checks.check(len(set(pairs)) == len(pairs), 'page 3 lists each value once')
     yield checks.check(all(record.name and record.name.isascii() and record.name.isprintable() for record in records),

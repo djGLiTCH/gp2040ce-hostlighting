@@ -17,18 +17,19 @@ from typing import Callable, Optional
 from gp2040ce_hostlighting.claim import ClaimChangeKind
 from gp2040ce_hostlighting.frames import Frame, FrameResult
 from gp2040ce_hostlighting.protocol import (HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
-                                            _probe, find_board, find_devices)
+                                            HostLightingTimeoutError, _probe, find_board, find_devices)
 from gp2040ce_hostlighting.records import Settings
 from gp2040ce_hostlighting.session import Session, SessionUpdate
 
-__all__ = ['AsyncSession', 'BoardWatcher', 'SessionGroup', 'SessionRunner', 'POLL_SECONDS', 'RECONNECT_SECONDS',
-           'UPDATES_KEPT']
+__all__ = ['AsyncSession', 'BoardWatcher', 'SessionGroup', 'SessionRunner', 'POLL_SECONDS', 'PROBE_TRIES',
+           'RECONNECT_SECONDS', 'UPDATES_KEPT']
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 0.01             # between a runner's polls
 RECONNECT_SECONDS = 1.0         # between a runner's looks for a board that left the bus
 UPDATES_KEPT = 64               # a runner's queue of updates, the oldest dropped first
+PROBE_TRIES = 3                 # a watcher's HELLOs to an interface that does not answer as a board
 
 
 def _worth_telling(update: SessionUpdate) -> bool:
@@ -43,7 +44,9 @@ class SessionRunner:
     The thread starts the session, then polls it, sends the settings and frame posted last, and shows the latest
     frame again whenever an update asks for a restage. A board that leaves the bus is looked for again by its board
     ID every RECONNECT_SECONDS, unless reconnect is off, when the runner ends. Any other error ends the runner, and
-    `error` keeps it. close() ends the session from any thread and waits for the thread.
+    `error` keeps it. Whenever the runner ends, a start that fails included, it closes the session and its device.
+    close() ends the session from any thread and waits for the thread. The thread is a daemon thread, so a host
+    closes each runner before it exits, or the claim lapses at its timeout rather than being given up.
     """
 
     def __init__(self, session: Session, on_update: Optional[Callable[[SessionUpdate], None]] = None,
@@ -99,6 +102,9 @@ class SessionRunner:
     def show(self, frame: Frame) -> None:
         """Post a whole frame, to be shown at the next poll in place of any frame posted and not yet shown.
 
+        The runner keeps the frame and shows it again at each restage, so the host posts a new Frame for a
+        change rather than changing one it posted.
+
         :raises ValueError: for an LED run past the board's addressable LED limit, once the session has read it
         """
         cache = self.session.cache
@@ -113,11 +119,15 @@ class SessionRunner:
         with self._lock:
             self._settings = settings
 
-    def close(self, timeout: float = 5.0) -> None:
-        """End the session and wait up to timeout seconds for the thread."""
+    def close(self, timeout: float = 5.0) -> bool:
+        """End the session and wait up to timeout seconds for the thread.
+
+        :return: whether the thread has ended, which it has not when called from the runner's own thread
+        """
         self._stop.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
+        return not self.running
 
     def __enter__(self) -> 'SessionRunner':
         """Start the runner for a with block, which closes it."""
@@ -149,6 +159,7 @@ class SessionRunner:
             self.session.start()
         except BaseException as error:  # noqa: B902 handed to start()'s caller
             self.error = error
+            self._close_session()
             self._started.set()
             self._ended()
             return
@@ -167,18 +178,25 @@ class SessionRunner:
             self.error = error
             logger.debug("the runner ended", exc_info=True)
         finally:
-            try:
-                self.session.close()
-            except (HostLightingError, OSError):
-                logger.debug("closing the session failed", exc_info=True)
+            self._close_session()
             self._ended()
+
+    def _close_session(self) -> None:
+        try:
+            self.session.close()
+        except (HostLightingError, OSError):
+            logger.debug("closing the session failed", exc_info=True)
 
     def _cycle(self, latest: Optional[Frame]) -> Optional[Frame]:
         """Poll, send the settings posted, show the frame posted or the latest again on a restage, then tell."""
         update = self.session.poll()
         frame, settings = self._taken()
         if settings is not None:
-            self.session.configure(settings)
+            try:
+                self.session.configure(settings)
+            except HostLightingTimeoutError:
+                with self._lock:
+                    self._settings = self._settings or settings      # tried again at the next poll
         if frame is not None:
             latest = frame
         if latest is not None and (frame is not None or update.restage):
@@ -187,11 +205,19 @@ class SessionRunner:
         return latest
 
     def _rejoin(self, latest: Optional[Frame]) -> None:
-        """Look for the board that left until it is back or the runner closes, then show the latest frame on it."""
-        while not self._stop.is_set() and not self.session.reconnect():
+        """Look for the board that left until it is back or the runner closes, then show the latest frame on it.
+
+        A board that leaves again before the frame lands is looked for again.
+        """
+        while not self._stop.is_set():
+            if self.session.reconnect():
+                try:
+                    if latest is not None:
+                        self.result = self.session.show(latest)
+                    return
+                except HostLightingDisconnectedError:
+                    logger.debug("the board left again", exc_info=True)
             self._stop.wait(self.reconnect_seconds)
-        if latest is not None and not self._stop.is_set():
-            self.result = self.session.show(latest)
 
     def _ended(self) -> None:
         if self.on_end is not None:
@@ -201,8 +227,9 @@ class SessionRunner:
 class AsyncSession:
     """A SessionRunner behind awaitables, for an asyncio program.
 
-    start() and close() run in the loop's executor. show() and configure() post at once. update() waits for the
-    next update that carries anything, and `async for` takes them until the runner ends.
+    start() and close() run in the loop's executor, and a start cancelled closes the runner. show() and
+    configure() post at once. update() waits for the next update that carries anything, UPDATES_KEPT of them kept.
+    `async for` takes them until the runner is closed, and raises the error that ended it when one did.
     """
 
     def __init__(self, session: Session, poll_seconds: float = POLL_SECONDS, reconnect: bool = True,
@@ -218,8 +245,12 @@ class AsyncSession:
         :raises HostLightingError: when the session does not start
         """
         self._loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue()
-        await self._loop.run_in_executor(None, self.runner.start)
+        self._queue = asyncio.Queue(UPDATES_KEPT)
+        try:
+            await self._loop.run_in_executor(None, self.runner.start)
+        except asyncio.CancelledError:
+            threading.Thread(target=self.runner.close, daemon=True).start()
+            raise
         return self
 
     def show(self, frame: Frame) -> None:
@@ -260,36 +291,51 @@ class AsyncSession:
         await self.close()
 
     def __aiter__(self) -> 'AsyncSession':
-        """Take updates with async for, until the runner ends."""
+        """Take updates with async for, until the runner is closed."""
         return self
 
     async def __anext__(self) -> SessionUpdate:
-        """Wait for the next update, ending the iteration once the runner has ended."""
+        """Wait for the next update, ending the iteration once the runner is closed.
+
+        :raises HostLightingError: the error that ended the runner, when one did
+        """
         try:
             return await self.update()
         except HostLightingError:
+            if self.runner.error is not None:
+                raise
             raise StopAsyncIteration from None
 
     def _deliver(self, update: SessionUpdate) -> None:
-        if self._loop is not None and self._queue is not None:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, update)
+        if self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._put, update)
 
     def _end(self, error: Optional[BaseException]) -> None:
-        if self._loop is not None and self._queue is not None and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
+        if self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._put, None)
+
+    def _put(self, update: Optional[SessionUpdate]) -> None:
+        """On the loop's thread: queue an update, or the end, the oldest update dropped when full."""
+        if self._queue is None:
+            return
+        if self._queue.full():
+            self._queue.get_nowait()
+        self._queue.put_nowait(update)
 
 
 class BoardWatcher:
     """Follow the protocol 2 boards on the bus by board ID.
 
     Each poll enumerates the interfaces, which sends nothing, and opens only an interface not seen before, for
-    its HELLO's board ID. One that does not answer yet is tried again at the next poll.
+    its HELLO's board ID. One that does not answer as a board is tried again at the next poll, PROBE_TRIES times
+    in all while it stays on the bus.
     """
 
     def __init__(self) -> None:
         """Start knowing no board."""
         self.boards: dict[str, bytes] = {}          # board ID -> interface path
         self._paths: dict[bytes, str] = {}           # interface path -> board ID
+        self._tries: dict[bytes, int] = {}           # interface path -> HELLOs that found no board
 
     def poll(self) -> tuple[frozenset[str], frozenset[str]]:
         """Look at the bus once.
@@ -298,14 +344,16 @@ class BoardWatcher:
         """
         infos = {bytes(info['path']): info for info in find_devices()}
         left = {self._paths.pop(path) for path in list(self._paths) if path not in infos}
+        self._tries = {path: tries for path, tries in self._tries.items() if path in infos}
         for board_id in left:
             self.boards.pop(board_id, None)
         arrived = set()
         for path, info in infos.items():
-            if path in self._paths:
+            if path in self._paths or self._tries.get(path, 0) >= PROBE_TRIES:
                 continue
             found = _probe(info)
             if not found:
+                self._tries[path] = self._tries.get(path, 0) + 1
                 continue
             hello, device = found
             device.close()
@@ -318,6 +366,7 @@ class BoardWatcher:
         path = self.boards.pop(board_id, None)
         if path is not None:
             self._paths.pop(path, None)
+            self._tries.pop(path, None)
 
 
 class SessionGroup:
@@ -360,7 +409,7 @@ class SessionGroup:
                 closed.add(board_id)
         started = set()
         for board_id in arrived:
-            device = find_board(board_id)
+            device = self._open(board_id)
             if device is None:
                 self.watcher.forget(board_id)
                 continue
@@ -388,6 +437,23 @@ class SessionGroup:
         for runner in self.runners.values():
             runner.close()
         self.runners.clear()
+
+    def _open(self, board_id: str) -> Optional[HostLightingDevice]:
+        """Open a board by the interface the watcher found it on, else look for it by board ID."""
+        path = self.watcher.boards.get(board_id)
+        if path is None:
+            return find_board(board_id)
+        try:
+            device = HostLightingDevice(path)
+        except HostLightingError:
+            return None
+        try:
+            if device.hello().board_id == board_id:
+                return device
+        except (HostLightingError, OSError):
+            logger.debug("board %s did not answer on %r", board_id, path, exc_info=True)
+        device.close()
+        return None
 
     @staticmethod
     def _teller(board_id: str, on_update: Callable[[str, SessionUpdate], None]) -> Callable[[SessionUpdate], None]:

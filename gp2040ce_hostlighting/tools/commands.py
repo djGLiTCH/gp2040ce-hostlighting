@@ -246,16 +246,17 @@ def caps() -> None:
     device = open_device(args.board_id)
     try:
         hello = device.hello()
-        names = enum_names(device)
         if args.json:
             print(json.dumps(_caps_json(device, hello), indent=1))
             return
+        board_names = device.read_names() if PAGE_NAMES in hello.pages else {}
+        names = enum_names() or board_names
         _print_hello(hello)
         pages: tuple[tuple[int, Callable[[], None]], ...] = (
                  (PAGE_IDENTITY, lambda: _print_identity(device)),
                  (PAGE_STATE, lambda: _print_state(device, names)),
                  (PAGE_INPUT_MODES, lambda: _print_input_modes(device)),
-                 (PAGE_NAMES, lambda: _print_names(device)),
+                 (PAGE_NAMES, lambda: _print_names(board_names)),
                  (PAGE_SUMMARY, lambda: _print_summary(device, names)),
                  (PAGE_PROFILES, lambda: _print_profiles(device)),
                  (PAGE_CONTROLS, lambda: _print_controls(device, names)),
@@ -280,9 +281,8 @@ def _caps_json(device: HostLightingDevice, hello: Hello) -> dict[str, Any]:
             'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages) if page in readers}}
 
 
-def _print_names(device: HostLightingDevice) -> None:
-    """Read and print page 3, counted by enum."""
-    names = device.read_names()
+def _print_names(names: dict[str, dict[int, str]]) -> None:
+    """Print page 3 as read_names() gave it, counted by enum."""
     print('page 3 (names): ' + (', '.join(f"{len(values)} {enum}" for enum, values in names.items()) or 'none'))
 
 

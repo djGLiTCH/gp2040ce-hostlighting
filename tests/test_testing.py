@@ -315,3 +315,23 @@ def test_set_animation_changing_to_an_animation_wakes_the_animations(board_type)
     board.idle()
     device.set_animation(0)                 # the animation already shown
     assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+
+
+def test_fake_board_publishes_a_claims_commit_after_only_for_the_holder():
+    """Test that another token's CLAIM with COMMIT_AFTER records no frame on FakeBoard, as on the board."""
+    board = FakeBoard()
+    device = fake_device(board)
+    device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    device.fill((1, 2, 3))
+    device.request(hl.CMD_CLAIM, bytes([hl.CLAIM_TAKE]) + struct.pack('<I', 0x52) + b'other'.ljust(16, b'\x00'),
+                   hl.FLAG_COMMIT_AFTER)
+    assert not board.frames
+
+
+def test_a_derived_summary_caps_the_extent_at_the_limit():
+    """Test that a light past the limit adds nothing to the derived extent, and one across it reaches the limit."""
+    board = FakeBoard()
+    board.summary = None
+    board.lights = [light_record(98, 5), light_record(120, 2)]
+    summary = fake_device(board).read_record(hl.PAGE_SUMMARY).records[0].summary
+    assert summary.led_extent == 100

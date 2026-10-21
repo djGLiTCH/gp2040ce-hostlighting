@@ -15,7 +15,7 @@ import pytest
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.claim import ClaimChange, ClaimChangeKind
 from gp2040ce_hostlighting.frames import Frame
-from gp2040ce_hostlighting.runner import AsyncSession, BoardWatcher, SessionGroup, SessionRunner
+from gp2040ce_hostlighting.runner import PROBE_TRIES, AsyncSession, BoardWatcher, SessionGroup, SessionRunner
 from gp2040ce_hostlighting.session import Session, SessionUpdate
 from gp2040ce_hostlighting.testing import FakeBoard, ModelBoard, attach, fake_device
 
@@ -162,8 +162,9 @@ def test_an_async_session_not_started_and_one_that_fails():
             await session.update()
         with pytest.raises(hl.HostLightingClaimedError):
             await session.start()
-        async for _ in session:
-            raise AssertionError('no update after a failed start')
+        with pytest.raises(hl.HostLightingClaimedError):
+            async for _ in session:
+                raise AssertionError('no update after a failed start')
     asyncio.run(main())
 
 
@@ -260,3 +261,85 @@ def test_a_runners_queue_keeps_the_latest_updates():
     for update in told:
         runner._tell(update)
     assert [runner.updates.get_nowait(), runner.updates.get_nowait()] == told[1:]
+
+
+def test_a_runner_with_a_failed_start_closes_the_device():
+    """Test that a session that does not start leaves no device open."""
+    board = ModelBoard()
+    board.take_over(exclusive=True)
+    runner = SessionRunner(Session(fake_device(board), 'runner'))
+    with pytest.raises(hl.HostLightingClaimedError):
+        runner.start()
+    assert runner.session.device.closed and runner.close()
+
+
+def test_an_unanswered_configure_is_tried_again():
+    """Test that settings with an unanswered renewal are sent at a later poll, the runner still running."""
+    board, lose = ModelBoard(), threading.Event()
+    board.hooks.append(lambda on, request: (on.drop.add if lose.is_set() else on.drop.discard)(hl.CMD_CLAIM))
+    with SessionRunner(Session(fake_device(board), 'runner')) as runner:
+        lose.set()
+        runner.configure(hl.Settings(keepalive_ms=900))
+        assert until(lambda: board.requests and board.requests[-1][0] == hl.CMD_CLAIM)
+        lose.clear()
+        assert until(lambda: board.keepalive_ms == 900) and runner.running and runner.error is None
+
+
+def test_a_board_that_leaves_again_while_rejoining_is_looked_for_again():
+    """Test that a board gone again as the frame is shown again is looked for again, not the runner's end."""
+    board, leave, back, opened = ModelBoard(), threading.Event(), threading.Event(), []
+    board.hooks.append(once(leave, lambda on: on.unplug()))
+
+    def reopen(board_id):
+        if not back.is_set():
+            return None
+        board.replug()
+        opened.append(True)
+        if len(opened) == 1:
+            leave.set()                                 # gone again at the next request
+        return fake_device(board)
+    runner = SessionRunner(Session(fake_device(board), 'runner', reopen=reopen), reconnect_seconds=0.01).start()
+    try:
+        runner.show(frame_of(0))
+        assert until(lambda: bool(board.frames))
+        leave.set()
+        assert until(lambda: board.departed)
+        back.set()
+        assert until(lambda: len(opened) >= 2 and board.holder_token != 0)
+        assert runner.running and runner.error is None
+    finally:
+        runner.close()
+
+
+def test_a_cancelled_async_start_closes_the_runner(monkeypatch):
+    """Test that cancelling start() closes the runner once its start returns."""
+    board, release = ModelBoard(), threading.Event()
+    session = AsyncSession(Session(fake_device(board), 'async'))
+    start = session.runner.start
+
+    def slow_start():
+        release.wait(5)
+        return start()
+    monkeypatch.setattr(session.runner, 'start', slow_start)
+
+    async def main():
+        task = asyncio.ensure_future(session.start())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(main())
+    release.set()
+    assert until(lambda: session.runner._stop.is_set() and not session.runner.running)
+    assert until(lambda: board.holder_token == 0)
+
+
+def test_the_watcher_gives_up_on_an_interface_that_is_not_a_board(monkeypatch):
+    """Test that an interface with a failing HELLO is tried PROBE_TRIES times while it stays on the bus."""
+    board = FakeBoard()
+    attach(monkeypatch, board)
+    board.magic = b'NOPE'
+    watcher = BoardWatcher()
+    for _ in range(PROBE_TRIES + 2):
+        assert watcher.poll() == (frozenset(), frozenset())
+    assert len(board.sent(hl.CMD_HELLO)) == PROBE_TRIES

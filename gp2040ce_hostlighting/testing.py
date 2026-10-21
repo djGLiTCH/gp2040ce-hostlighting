@@ -306,6 +306,8 @@ class FakeBoard:
         reply = (self.answer(command, sequence, request) if rejection is None else
                  self._rejected(command, sequence, rejection))
         publishes = command == hl.CMD_COMMIT or flags & hl.FLAG_COMMIT_AFTER
+        if command == hl.CMD_CLAIM and struct.unpack_from('<I', request, 4)[0] != self.holder_token:
+            publishes = False           # a CLAIM's flags act only when it leaves the sender holding
         if reply is not None and reply[2] == hl.STATUS_OK and publishes:
             self._record_frame()
             self._start_takeover()
@@ -707,7 +709,9 @@ class FakeBoard:
 
         The other fields take summary_record()'s defaults.
         """
-        ends = [sum(struct.unpack_from('<HH', light[0])) for light in self.lights]
+        limit = struct.unpack_from('<H', summary_record()[0], _SUMMARY_LIMIT)[0]
+        ranges = [struct.unpack_from('<HH', light[0]) for light in self.lights]
+        ends = [min(first + count, limit) for first, count in ranges if count and first < limit]
         lit = sum(1 for control in self.controls if control[0][3] & 0x02)
         return summary_record(led_extent=max(ends, default=0),
                               grid_width=max((light[4][0] + 1 for light in self.lights), default=0),
