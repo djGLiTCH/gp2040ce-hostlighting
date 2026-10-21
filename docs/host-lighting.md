@@ -145,8 +145,8 @@ sharing a board, events and a clean shutdown.
 
 1. Discover by usage page and usage. Send `HELLO`. Require the `GPHL` magic and
    major 2, check the capabilities the host uses, and bind by the board ID.
-2. Read page 8 with `GET_PAGE`. Read pages 0, 2 and 9-12 as the use case needs
-   (table below).
+2. Read page 8 with `GET_PAGE`. Read pages 0, 2, 3 and 9-12 as the use case
+   needs (table below).
 3. Send `CLAIM`. Make it exclusive to keep applications that do not claim from
    changing the board.
    - If the reply shows another holder, show its name, then wait or take over.
@@ -208,7 +208,8 @@ pages and their change counters, which start again at 0 with each boot.
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
 | Set an animation's speeds | `SET_ANIMATION_SPEED`; 12 for the speeds, 8 for the step count |
 | Switch the input mode | `SET_INPUT_MODE`; 2 |
-| Full inventory and UI | 0, 2, 8-12 |
+| Name actions and light kinds | 3 |
+| Full inventory and UI | 0, 2, 3, 8-12 |
 | Share a board with other applications | `CLAIM`, the generation; 1 |
 | Keep applications that do not claim off the board | `CLAIM` exclusive, `HOLDER` and the generation; 1 |
 | Stay current | `SUBSCRIBE`, or poll 1 |
@@ -252,8 +253,7 @@ Status: `0` OK, `1` unsupported command, `2` invalid argument, `3` stale token
 
 - A command whose status is not 0 changes nothing, answered or not, and neither
   `COMMIT_AFTER` nor `KEEPALIVE` applies.
-- On `CLAIM` they apply only when it leaves the sender holding the claim
-  (`CLAIM`).
+- On `CLAIM` they apply as `CLAIM` sets out.
 - A status 2 reply carries at `[3]` the offset of the invalid request byte, the
   lowest when several are invalid.
 - A status 4 reply carries at `[3..24]` the holder, laid out as page 1's
@@ -269,7 +269,7 @@ Each quantity has one width wherever it appears:
 | 4-bit | Addressing mode, pixel format (`[3]` of `STAGE`, `UNSTAGE` and `FILL`) |
 | 8-bit | Pin, key, kind, grid coordinate, enumerated value, string byte; sequence, takeover number, versions, page, profile, brightness, animation speed, player, palette slot, button layout, change counter, reply queue limit; counts, offsets and strides within one report |
 | 16-bit | LED index and count, light ordinal and count, animation ordinal, record index and count, control instance and instances, grid size, render rate, time in ms |
-| 16-bit, signed | Action |
+| 16-bit, signed | Action, page 3 value |
 | 32-bit | State token, host token |
 | 64-bit | Board ID |
 | 1 bit per member | Bitmaps: request flags (bits 0-3 and 7), claim flags (8), addressing modes (16), pixel formats (16), events (16), pages (32), commands (128), field groups (16), `STAGE` and `UNSTAGE` outcome (32) |
@@ -1313,7 +1313,7 @@ Each report is 64 bytes, and every byte not shown is zero.
                                                the claim generation
              3e 00 0f 00 03 00 0f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
              00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x33, 0x70-0x71
-             07 1f 00 00              [35..38] pages 0-2 and 8-12
+             0f 1f 00 00              [35..38] pages 0-3 and 8-12
              f3 00 07 00 01 00        [39..44] addressing 0, 1 and 4-7; pixel
                                                formats 0-2; event 0
              00 00                    [45..46] no events enabled
