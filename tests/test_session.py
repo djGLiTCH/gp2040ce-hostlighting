@@ -501,9 +501,11 @@ def test_the_readme_session_example_runs(board, monkeypatch):
     example = re.findall(r'```python\n(.*?)```', readme, re.S)[1]
     monkeypatch.setattr(hl, 'open_device', lambda prefix='': fake_device(board))
     monkeypatch.setattr(time, 'sleep', board.sleep)
+    monkeypatch.setattr(time, 'monotonic', board.time)
+    start = board.now
     exec(compile(example, 'README.md', 'exec'), {})     # the repository's own README
     assert board.frames[-1] == {1: (0, 0, 255), 2: (0, 0, 255), 3: (0, 0, 255)} and board.holder_token == 0
-    assert board.now >= 3.0
+    assert 3.0 <= board.now - start < 3.1               # paced to each frame's time: 180 frames at 60 a second
 
 
 def test_a_reconnect_that_finds_no_board_leaves_nothing_to_send(board):

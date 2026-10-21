@@ -42,12 +42,26 @@ package, Python and hidapi.
 | `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
 | `gp2040ce_hostlighting/tools/` | The `hlp-*` commands: `commands.py`, and `conformance.py` for `hlp-conformance` and `hlp-bench` |
 | `docs/host-lighting.md` | The Host Lighting specification |
+| `test-vectors/` | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
+| `scripts/test_vectors.py` | Writes the test vectors, or replays them on a board |
 | `tests/` | The tests |
 
 ## Specification
 
 `docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the
 document the Host Lighting add-on adds to GP2040-CE as `docs/host-lighting.md`.
+
+## Host implementations
+
+Examples of hosts that speak the protocol:
+
+* [hlp-spice2x](https://github.com/djGLiTCH/hlp-spice2x) shows the cabinet
+  lighting of games running under spice2x on a GP2040-CE controller's buttons.
+  It is built on this library.
+* MESH (Modern Emulator State Hub) is a cross-platform desktop app that drives
+  controller lighting from emulator game state. It implements the protocol
+  itself, with this library as the reference for host behaviour, and replays
+  `test-vectors/` against its own board model.
 
 ## The library
 
@@ -65,8 +79,9 @@ A host drives the lights in these steps:
 1. Open a board with `open_device()`. With several boards connected, pass a hex
    prefix of the board ID. When it finds no board to open, it raises
    `HostLightingBoardSelectionError`. Its `boards` and `matched` name the
-   boards it found. `find_board()` opens one board by its whole ID and returns
-   `None` when it is not connected.
+   boards it found and `interfaces` counts the interfaces found, answering or
+   not. `find_board()` opens one board by its whole ID and returns `None` when
+   it is not connected.
 2. Read what the board reports with `hello()`, `read_identity()`,
    `read_record()` and `read_table()`. The two reads give a `PageRead` of the
    records and the state token. Each record carries its `ordinal`, its position
@@ -173,11 +188,16 @@ from gp2040ce_hostlighting.session import Session
 with Session(open_device(), 'my-host') as session:
     frame = Frame()
     frame.entries(ADDRESSING_KIND, [(KIND_CASE, (0, 0, 255))])
-    for _ in range(180):
+    start = time.monotonic()
+    for index in range(180):
         session.poll()
         session.show(frame)
-        time.sleep(1 / 60)
+        time.sleep(max(0.0, start + (index + 1) / 60 - time.monotonic()))
 ```
+
+The loop sleeps to each frame's time rather than for a fixed 1/60 s: before
+Python 3.11, `time.sleep()` on Windows wakes on the 15.6 ms system tick, so a
+fixed sleep would give about 32 frames a second.
 
 A device belongs to one thread and every call on it blocks. A `SessionRunner`
 gives a session a thread that owns its device, for a GUI or any program that
@@ -185,14 +205,19 @@ must not block. `show()` posts the latest frame and `configure()` new settings
 from any thread. The runner shows the frame posted last, again whenever an
 update asks for a restage, and finds the board again by its board ID after it
 leaves the bus. Each update that carries anything goes to `on_update`, called
-on the runner's thread, and to the `updates` queue. `AsyncSession` puts a runner
-behind awaitables for an `asyncio` program: `await update()`, or `async for`,
-which ends when the runner is closed and raises the error that ended it. A
-runner keeps the frame posted, so a host posts a new `Frame` for each change,
-and closes each runner before it exits.
+on the runner's thread, and to the `updates` queue. `AsyncSession` puts a
+runner behind awaitables for an `asyncio` program: `await update()`, or
+`async for`, which ends when the runner is closed and raises the error that
+ended it. A runner keeps the frame posted, so a host posts a new `Frame` for
+each change, and closes each runner before it exits. A frame past the board's
+LED limit when the runner shows it, as one held for a board back with a lower
+limit, is dropped with a warning.
+
 `BoardWatcher` reports boards arriving and leaving by board ID, opening only an
 interface it has not seen. `SessionGroup` keeps a runner for each board on the
-bus, built by a function the host gives.
+bus, built by a function the host gives. A board that fails to start a session
+is tried again after `retry_seconds`, the wait doubling to `retry_max_seconds`,
+with one warning until a start succeeds.
 
 `lights_by_cell()` maps each cell of the LED layout grid to its lights. A
 `Canvas` of the grid's size, `Canvas.for_summary(summary)`, holds a colour per
@@ -262,9 +287,11 @@ type. `read_enum_names()` in `gp2040ce_hostlighting.enums` reads their names
 from GP2040-CE's `enums.proto`, given as the file or its directory, so a host
 can show `BUTTON_PRESS_UP` beside action 1. The board gives the names of its
 own actions and light kinds on page 3, and `HostLightingDevice.read_names()`
-reads them in the same shape, so a host needs no `.proto` file for those. The
-commands use page 3 when `-P` names nothing. The library keeps no list of its
-own.
+reads them in the same shape, so a host needs no `.proto` file for those.
+Page 3 is fixed for the firmware and outside the state token, so
+`read_names()` reads it without one, and a host can keep the names by
+firmware version. The commands read page 3 only with `--names`, when `-P`
+names nothing. The library keeps no list of its own.
 
 ### Testing a host
 
@@ -276,9 +303,10 @@ counters, on a clock the test controls with `sleep()` and `time()`. The record
 builders set what a fake board reports, for example
 `board.lights = [light_record(0, pin=2)]`. A fake board can also be unplugged
 and plugged back, reconfigured, taken over by another application or have its
-animations go idle, and `frames` keeps every frame it published. `attach()`
-puts fake boards on a fake bus, so `open_device()`, `find_board()` and the rest
-find them.
+animations go idle, and `frames` keeps every frame it published.
+`attach(monkeypatch, *boards)` puts fake boards on a fake bus, so
+`open_device()`, `find_board()` and the rest find them, and pytest's
+`monkeypatch` fixture takes them off after the test.
 
 A fake board's `HELLO` comes from its attributes: `magic`, `version`,
 `request_flags`, `commands`, `pages`, `addressing_modes`, `pixel_formats` and
@@ -288,6 +316,12 @@ neither run nor answered, and `reject` answers each it names with a status and
 runs nothing. Both take a command or a (command, `[3]`) pair and can change
 mid-test. Each of `hooks` is called with the board and the request before every
 request. Setting `summary` to `None` derives the Summary from the pages.
+
+A host that keeps a board model of its own can test it against
+`test-vectors/vectors.json`: exact requests, and every report `ModelBoard`
+sent after each. Its README gives the format, the codes a replay acts on and
+the bytes a board's own state changes. `scripts/test_vectors.py --board ID`
+replays them on a board.
 
 ### Conformance checks
 
@@ -413,9 +447,9 @@ Sample usage:
 
 ```
 % hlp-ping
-Haute42 COSMOX M Ultra (v0.7.12-154-g7b61b97), board ID 433030343237362E
+Haute42 COSMOX M Ultra (v0.7.12-138-ge9313e9), board ID 433030343237362E
 magic GPHL, protocol 2.0, reply queue limit 16
-100 round trips in 200 ms (2.0 ms average)
+100 round trips in 203 ms (2.0 ms average)
 
 % hlp-caps
 ...
@@ -423,7 +457,7 @@ page 8 (summary): LED extent 46, limit 100, render rate 40 Hz, colour format 0, 
   brightness maximum 199, 10 steps; animation speed steps 10; grid 19x13
   1 profiles, 21 controls (16 lit, 5 unlit), 46 lights, 4 animations
   button layouts 27 and 31, orientation 0
-  changes counted on pages 8: 0, 9: 0, 10: 0, 11: 0, 12: 8, 13: 0, 14: 0, 15: 0
+  changes counted on pages 8: 0, 9: 0, 10: 0, 11: 0, 12: 14, 13: 0, 14: 0, 15: 0
 ...
 page 10 (controls): 21 (16 lit), token 0x55CDC8CD
   GP2 action 1 instance 1 of 2 LED 3 at (9,9), 1 light(s) from ordinal 3
@@ -451,9 +485,9 @@ brightness step 4 of 0-10 (maximum 199)
 
 % hlp-watch --seconds 4
    0.000 takeover_live False, brightness_unsaved False, animations_idle False, input_mode 0, profile 1, ...
-   1.083 holder_token 0x00000000 -> 0x759D59D1, application_name  -> hlp-settings, claim_generation 3 -> 4
-   1.090 brightness_unsaved False -> True, brightness_step_shown 4 -> 6
-   2.093 brightness_unsaved True -> False, brightness_step_shown 6 -> 4, holder_token 0x759D59D1 -> 0x00000000, ...
+   1.141 holder_token 0x00000000 -> 0x7F2BBFA3, application_name  -> hlp-settings, claim_generation 4 -> 5
+   1.156 brightness_unsaved False -> True, brightness_step_shown 4 -> 6
+   2.156 brightness_unsaved True -> False, brightness_step_shown 6 -> 4, holder_token 0x7F2BBFA3 -> 0x00000000, ...
 
 % hlp-conformance --settings
 HELLO:
@@ -462,12 +496,12 @@ HELLO:
 Takeover and keepalive:
   ...
   PASS  the takeover ends at the timeout
-        expiry seen after 306 ms (timeout 300)
+        expiry seen after 307 ms (timeout 300)
 ...
-RESULT: ALL PASS (181 passed, 0 failed)
+RESULT: ALL PASS (188 passed, 0 failed)
 
 % hlp-bench
-round trip: median 2.00 ms, p95 2.05 ms (300 of 300 answered)
+round trip: median 2.00 ms, p95 2.01 ms (300 of 300 answered)
 60 fps: 300 of 300 frames acknowledged (46 LEDs, 3 reports per frame)
 unthrottled, every report answered: 166 frames/s
 unthrottled, pipelined: 249 frames/s
