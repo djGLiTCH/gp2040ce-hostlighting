@@ -372,7 +372,7 @@ the detail.
 
 | State | Starts | Kept by | Ends on | Not ended by |
 |---|---|---|---|---|
-| Takeover | `COMMIT` or `COMMIT_AFTER` when none is live | A successful staging or lifecycle command (0x10-0x2F), or any successful command with `COMMIT_AFTER` or `KEEPALIVE` | `RELEASE`; the keepalive timeout; a change of holder; USB suspend; the end of the USB session | A USB bus reset while no claim is held |
+| Takeover | `COMMIT` or `COMMIT_AFTER` when none is live | A successful staging or lifecycle command (0x10-0x2F), or any successful command with `COMMIT_AFTER` or `KEEPALIVE`, a `CLAIM` only when it leaves the sender holding the claim | `RELEASE`; the keepalive timeout; a change of holder; USB suspend; the end of the USB session | A USB bus reset while no claim is held |
 | Staged frame | `STAGE`, `FILL` | - | `CLEAR`; `RELEASE`; the end of a takeover; a change of holder; USB suspend; the end of the USB session | `COMMIT`; a USB bus reset while no claim is held |
 | Unsaved brightness step | `SET_BRIGHTNESS` with save 0 | What keeps a takeover, and another unsaved `SET_BRIGHTNESS` | The keepalive timeout; a change of holder; a saved step; step 0xFF; a brightness hotkey; USB suspend; the end of the USB session | `RELEASE`; a USB bus reset while no claim is held |
 | Claim | `CLAIM` 0 on an unclaimed board, or `CLAIM` 1 | The holder's own `CLAIM` 0 or 1, and nothing else | `CLAIM` 2 by the holder; the keepalive timeout; `CLAIM` 1 by another; a USB bus reset; the end of the USB session | `RELEASE`; requests with `HOLDER`; USB suspend |
@@ -574,10 +574,11 @@ The following refresh the keepalive of a live takeover and of an unsaved
 brightness step when they succeed, answered or not:
 
 - a staging or lifecycle command (0x10-0x2F)
-- any command sent with `COMMIT_AFTER` or `KEEPALIVE`
+- any command sent with `COMMIT_AFTER` or `KEEPALIVE`, a `CLAIM` only when it
+  leaves the sender holding the claim
 
 An unsaved `SET_BRIGHTNESS` also restarts its own step's keepalive. No other
-command refreshes either, `HELLO` and `CLAIM` included.
+command refreshes either. `HELLO` and `CLAIM` without these flags do not.
 
 When a takeover ends, the board returns to its animations and clears the staged
 frame as `CLEAR` does, so every takeover starts from an empty frame. Session
@@ -795,9 +796,10 @@ State flag bit 0 is set while a takeover is live, from the `COMMIT` that starts
 it until it ends (Session state). Bit 1 is set while the step shown differs
 from the saved step, from an unsaved `SET_BRIGHTNESS` until the step ends.
 Bit 2 is set while the animations' idle timeout
-(`AnimationOptions.autoDisableTime`) has the on-board animations off. A button
-press, or `SET_ANIMATION` changing the animation to one other than off, wakes
-them and restarts the timeout. Frames, takeovers and other commands do not.
+(`AnimationOptions.autoDisableTime`) has the on-board animations off. A press
+of a lit control (page 10 flag bit 1), or `SET_ANIMATION` changing the
+animation to one other than off, wakes them and restarts the timeout. Frames,
+takeovers and other commands do not.
 While the animations are off, an overlay's unstaged pixels show only the
 board's RGB player and turbo indicators. Going idle and waking each raise
 `STATE_CHANGED`.
