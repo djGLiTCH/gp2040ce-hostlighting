@@ -204,6 +204,112 @@ def test_idle_animations_show_on_page_1_and_raise_an_event():
     assert fake_device(fake).read_record(hl.PAGE_STATE).records[0].state.animations_idle
 
 
+def test_a_profile_switch_brings_its_pages_token_and_one_event():
+    """Test SET_PROFILE on the model board: the profile's pages and a new token, with one event carrying both."""
+    board = ModelBoard()
+    board.profiles.append([bytes([2, 1]) + b'Second'.ljust(16, b'\x00')])
+    board.profiles.append([bytes([3, 1]) + b'Third'.ljust(16, b'\x00')])
+    lights = [light_record(0, pin=5, action=1, x=1, y=0), light_record(1, 3, kind=1, slot=0, x=0, y=1)]
+    board.profile_pages[2] = (board.controls, lights)
+    device = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    before = device.read_record(hl.PAGE_STATE)
+    device.set_profile(2)
+    events = [hl.decode_state_changed(event) for event in device.take_events()]
+    after = device.read_table(hl.PAGE_LIGHTS)
+    assert after.token != before.token and after.records[0].owner.pin == 5
+    assert [(event.record.state.profile, event.token) for event in events] == [(2, after.token)]
+    device.set_profile(2)
+    assert device.take_events() == []
+    device.set_profile(3)                   # a profile without pages of its own keeps them
+    events = [hl.decode_state_changed(event) for event in device.take_events()]
+    assert [(event.record.state.profile, event.token) for event in events] == [(3, after.token)]
+
+
+def test_set_animation_wakes_the_animations_at_the_next_render_tick():
+    """Test that an animation picked during the idle timeout clears the idle flag one render period later."""
+    board = ModelBoard()
+    board.animations.append([bytes([1, 3, 1, 3]), bytes([5, 5, 5])])
+    device = fake_device(board)
+    board.idle()
+    device.set_animation(1)
+    state = device.read_record(hl.PAGE_STATE).records[0].state
+    assert state.animation == 1 and state.animations_idle
+    board.sleep(1 / 40)
+    assert not device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+    board.idle()
+    device.set_animation(None)
+    board.sleep(0.1)
+    assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+
+
+def test_a_bus_reset_drops_the_replies_waiting_and_ends_a_claim():
+    """Test bus_reset(): the waiting replies go, a claim ends with the next generation, the subscription stays."""
+    board = ModelBoard()
+    device = fake_device(board)
+    other = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    device.configure(takeover=hl.TAKEOVER_OVERLAY)
+    board.bus_reset()
+    assert device.read_record(hl.PAGE_STATE).records[0].settings.takeover == hl.TAKEOVER_OVERLAY
+    claimed = device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    sequence = device.send(hl.CMD_HELLO)
+    board.bus_reset()
+    with pytest.raises(hl.HostLightingTimeoutError):
+        device.wait_reply(hl.CMD_HELLO, sequence, 0.01)
+    record = other.read_record(hl.PAGE_STATE).records[0]
+    assert record.controller.holder_token == 0 and record.settings == hl.Settings()
+    assert record.controller.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
+    assert other.hello().events_enabled == {hl.EVENT_STATE_CHANGED}
+
+
+def test_a_suspend_ends_the_takeover_and_unsaved_step_and_sends_nothing():
+    """Test suspend() and resume(): what ends, what runs on, and that the board neither sends nor takes a report."""
+    board = ModelBoard()
+    device = fake_device(board)
+    other = fake_device(board)
+    device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    device.fill((1, 2, 3), commit=True)
+    device.set_brightness(2)
+    device.take_events()
+    board.suspend()
+    assert board.write(bytes([0, hl.CMD_HELLO, 1, 0]) + bytes(61)) == -1
+    assert board.read(64) == [] and board.outbox == []
+    board.resume()
+    assert device.take_events()
+    record = device.read_record(hl.PAGE_STATE).records[0]
+    assert not record.state.takeover_live and not record.state.brightness_unsaved and not board.staged
+    assert record.controller.holder_token == 0x51
+    board.suspend()
+    board.sleep(2.5)
+    board.resume()
+    assert other.read_record(hl.PAGE_STATE).records[0].controller.holder_token == 0
+
+
+def test_deconfigure_ends_the_usb_session():
+    """Test deconfigure(): unclaimed and unsubscribed, the CONFIGURE defaults, nothing waiting, no event."""
+    board = ModelBoard()
+    device = fake_device(board)
+    other = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    claimed = device.claim(hl.CLAIM_TAKE, 0x51, b'app')
+    device.configure(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=500)
+    device.fill((1, 2, 3), commit=True)
+    device.take_events()
+    device.send(hl.CMD_HELLO)
+    board.deconfigure()
+    assert board.queue == [] and not board.pending
+    record = other.read_record(hl.PAGE_STATE).records[0]
+    assert record.controller.holder_token == 0 and record.settings == hl.Settings()
+    assert not record.state.takeover_live and not board.staged
+    assert record.controller.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
+    assert not other.hello().events_enabled and device.take_events() == []
+    board.deconfigure()
+    generation = other.read_record(hl.PAGE_STATE).records[0].controller.claim_generation
+    assert generation == record.controller.claim_generation
+
+
 @pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
 def test_reconfigure_changes_the_pages_token_and_counters(board_type):
     """Test reconfigure(): the Summary's totals, a new token, the changed pages' counters and an event."""
@@ -311,6 +417,8 @@ def test_set_animation_changing_to_an_animation_wakes_the_animations(board_type)
     device.set_animation(None)
     assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
     device.set_animation(0)
+    if board_type is ModelBoard:
+        board.sleep(1 / 40)             # the next render tick
     assert not device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
     board.idle()
     device.set_animation(0)                 # the animation already shown

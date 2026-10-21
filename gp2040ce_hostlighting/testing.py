@@ -158,6 +158,7 @@ def hello_reply(sequence: int = 1, major: int = 2, board_id: bytes = BOARD_ID, e
 
 # where the fakes read the Summary group's fields
 _SUMMARY_LIMIT = 2
+_SUMMARY_RENDER_HZ = 4
 _SUMMARY_BRIGHTNESS_STEPS = 9
 _SUMMARY_SPEED_STEPS = 10
 _SUMMARY_CONTROLS = 20
@@ -849,6 +850,11 @@ class ModelBoard(FakeBoard):
     capacity and limit rules, FILL, UNSTAGE, the magic-guarded commands, and a state token and change counters that
     follow the configuration pages. Each report written takes 1 ms. A read with nothing to read waits its timeout.
     Reports wait on the board until a handle reads, where a host's operating system takes them as they come.
+
+    As the firmware times them: SET_PROFILE shows the profile on page 1 at once, and its pages (profile_pages), the
+    token and one event at the board's next pass; SET_ANIMATION from the idle timeout clears the idle flag at the
+    next render tick. bus_reset(), suspend(), resume() and deconfigure() are the USB events of the specification's
+    Session state.
     """
 
     def __init__(self) -> None:
@@ -875,6 +881,11 @@ class ModelBoard(FakeBoard):
         self.queue: list[bytes] = []    # the reports waiting on the board until a handle reads
         self.steal_at = None            # a time at which another application takes the claim over
         self.queue_limit = 16
+        # profile number -> (controls, lights): the pages a SET_PROFILE to it shows. A profile not here keeps them
+        self.profile_pages: dict[int, tuple[list[list[bytes]], list[list[bytes]]]] = {}
+        self.suspended = False          # USB suspend: nothing is sent and a write fails until resume()
+        self._profile_due = False       # a SET_PROFILE with pages, token and event waiting for the next pass
+        self._wake_due: Optional[float] = None   # when a SET_ANIMATION clears the idle flag
         self._hashes: list[int] = []         # each configuration page as last hashed, for the change counters
         self._refresh()
         self._seen = (tuple(self.state), self.token)
@@ -895,7 +906,7 @@ class ModelBoard(FakeBoard):
     def write(self, data: bytes) -> int:
         """Take one report, answer it and apply its flags when it succeeds."""
         _check_written(data)
-        if self.departed:
+        if self.departed or self.suspended:
             return -1                   # as hidapi reports a write the device did not take
         request = bytes(data[1:])
         for hook in list(self.hooks):
@@ -936,9 +947,11 @@ class ModelBoard(FakeBoard):
     def _serve(self) -> None:
         """Send the reports waiting, then a pending event, to every open handle, as a read of any handle has USB do.
 
-        An event goes only once no reply waits, as the firmware sends it.
+        An event goes only once no reply waits, as the firmware sends it. Nothing goes during a USB suspend.
         """
         self._tick()
+        if self.suspended:
+            return
         if self.queue:
             self.outbox.extend(self.queue)
             self.queue.clear()
@@ -1019,8 +1032,51 @@ class ModelBoard(FakeBoard):
 
     def idle(self, idle: bool = True) -> None:
         """Have the LED idle timeout turn the animations off, or a button press wake them."""
+        self._wake_due = None
         super().idle(idle)
         self._note()
+
+    def bus_reset(self) -> None:
+        """Have the host reset the bus: the replies still waiting are dropped, and a claim ends (a change of holder).
+
+        The subscription stays, and while no claim is held the CONFIGURE settings, the takeover and an unsaved
+        step stay too.
+        """
+        self.queue.clear()
+        if self.holder_token:
+            self._set_holder(0, bytes(16))
+        self._note()
+
+    def suspend(self) -> None:
+        """Have the host suspend the bus: the takeover, the staged frame and an unsaved step end.
+
+        The claim and its lease run on, so a claim lapses during a suspend that outlasts it. Until resume(),
+        nothing is sent, an event included, and a write fails.
+        """
+        self.suspended = True
+        self._end_takeover()
+        self._show_step(self.saved_step)
+        self._note()
+
+    def resume(self) -> None:
+        """Have the host resume the bus. What waited is sent at the next read."""
+        self.suspended = False
+
+    def deconfigure(self) -> None:
+        """Have the host deconfigure the board (SET_CONFIGURATION 0), which ends the USB session.
+
+        The board is left unclaimed and unsubscribed, with the CONFIGURE defaults, no takeover or unsaved step,
+        and no reply or event waiting. A claim it ends is a change of holder.
+        """
+        if self.holder_token:
+            self._set_holder(0, bytes(16))
+        else:
+            self._reset_control()
+        self.subscribed = 0
+        self.pending = False
+        self.queue.clear()
+        self._refresh()
+        self._seen = (tuple(self.state), self.token)
 
     def reconfigure(self, lights: Optional[list[list[bytes]]] = None,
                     controls: Optional[list[list[bytes]]] = None) -> None:
@@ -1046,6 +1102,33 @@ class ModelBoard(FakeBoard):
         self._hashes = []
         self._refresh()
         self._seen = (tuple(self.state), self.token)
+
+    def _set_profile(self, request: bytes) -> int:
+        """Apply SET_PROFILE, and return the byte at fault, or 0.
+
+        Page 1 shows the profile at once. Its pages, the token and one event follow at the board's next pass. The
+        profile shown already is status 0 and changes nothing.
+        """
+        if request[3] == self.state[0][2]:
+            return 0
+        offset = super()._set_profile(request)
+        if not offset:
+            self._profile_due = True
+        return offset
+
+    def _set_animation(self, request: bytes) -> int:
+        """Apply SET_ANIMATION, and return the byte at fault, or 0.
+
+        Page 1 shows the animation at once. One that wakes the animations clears the idle flag at the next render
+        tick, one period of the Summary's render rate later.
+        """
+        idle = self.state[0][0] & hl.STATE_IDLE
+        offset = super()._set_animation(request)
+        if not offset and idle and not self.state[0][0] & hl.STATE_IDLE:
+            self.set_state(0, bytes([self.state[0][0] | hl.STATE_IDLE]))
+            render_hz = struct.unpack_from('<H', self.summary[0], _SUMMARY_RENDER_HZ)[0] or 1
+            self._wake_due = self.now + 1 / render_hz
+        return offset
 
     def _set_brightness(self, request: bytes) -> int:
         """Apply SET_BRIGHTNESS. An unsaved step starts its keepalive."""
@@ -1107,13 +1190,16 @@ class ModelBoard(FakeBoard):
         self.live = False
         self.staged.clear()
 
+    def _reset_control(self) -> None:
+        """End the takeover and an unsaved step, and put the CONFIGURE settings back to their defaults."""
+        self._end_takeover()
+        self._show_step(self.saved_step)
+        self.overlay, self.keepalive_ms, self.brightness = 0, 2000, 1
+
     def _set_holder(self, token: int, name: bytes, flags: int = 0) -> None:
         if token != self.holder_token:
-            # a change of holder ends the takeover and an unsaved step, puts the CONFIGURE settings back to
-            # their defaults and steps the generation
-            self._end_takeover()
-            self._show_step(self.saved_step)
-            self.overlay, self.keepalive_ms, self.brightness = 0, 2000, 1
+            # a change of holder resets the control state and steps the generation
+            self._reset_control()
             self.generation = self.generation % hl.GENERATION_MAX + 1
         self.holder_token, self.holder_name, self.holder_flags = token, bytes(name), flags
 
@@ -1122,6 +1208,15 @@ class ModelBoard(FakeBoard):
         return bool(self.state[0][6] != self.saved_step)
 
     def _tick(self) -> None:
+        if self._profile_due:
+            # the board's next pass: the profile's pages and the token follow it, with one event
+            self._profile_due = False
+            pages = self.profile_pages.get(self.state[0][2])
+            if pages is not None:
+                self.reconfigure(controls=pages[0], lights=pages[1])
+        if self._wake_due is not None and self.now >= self._wake_due:
+            self._wake_due = None
+            self.set_state(0, bytes([self.state[0][0] & ~hl.STATE_IDLE]))
         timeout = self.keepalive_ms / 1000
         if self.steal_at is not None and self.now >= self.steal_at:
             self.steal_at = None
@@ -1153,6 +1248,8 @@ class ModelBoard(FakeBoard):
         self.token = zlib.crc32(repr(hashes).encode()) or 1
 
     def _note(self) -> None:
+        if self._profile_due:
+            return                      # the profile's event waits for its pages and token
         self._refresh()
         now = (tuple(self.state), self.token)
         if now != self._seen:
