@@ -9,7 +9,7 @@ host software drive a board's RGB LEDs live over a vendor HID interface.
 pip install gp2040ce-hostlighting
 ```
 
-It needs Python 3.10 or later. hidapi has no wheels for Python 3.15 yet, so on
+It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
 3.15 pip builds it from source, which needs a C compiler, and on Linux the
 development packages hidapi's README lists.
 
@@ -195,9 +195,8 @@ with Session(open_device(), 'my-host') as session:
         time.sleep(max(0.0, start + (index + 1) / 60 - time.monotonic()))
 ```
 
-The loop sleeps to each frame's time rather than for a fixed 1/60 s: before
-Python 3.11, `time.sleep()` on Windows wakes on the 15.6 ms system tick, so a
-fixed sleep would give about 32 frames a second.
+The loop sleeps to each frame's time rather than for a fixed 1/60 s, so the
+time spent sending a frame does not slow the rate.
 
 A device belongs to one thread and every call on it blocks. A `SessionRunner`
 gives a session a thread that owns its device, for a GUI or any program that

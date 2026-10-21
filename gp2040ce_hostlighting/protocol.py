@@ -1116,8 +1116,7 @@ class HostLightingDevice:
             left = deadline - time.monotonic()
             if left <= 0:
                 break
-            # a read that blocks until a report or the timeout, with no polling sleep, which is ~16 ms on Windows
-            # before Python 3.11
+            # a read that blocks until a report or the timeout, with no polling sleep
             report = self._read(max(1, int(left * 1000)))
             if not report:
                 continue
