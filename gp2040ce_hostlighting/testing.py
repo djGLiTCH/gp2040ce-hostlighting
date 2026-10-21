@@ -1066,8 +1066,9 @@ class ModelBoard(FakeBoard):
         """Have the host deconfigure the board (SET_CONFIGURATION 0), which ends the USB session.
 
         The board is left unclaimed and unsubscribed, with the CONFIGURE defaults, no takeover or unsaved step,
-        and no reply or event waiting. A claim it ends is a change of holder.
+        and no reply or event waiting. A claim it ends is a change of holder. The bus is active, so a suspend ends.
         """
+        self.suspended = False
         if self.holder_token:
             self._set_holder(0, bytes(16))
         else:
@@ -1128,6 +1129,8 @@ class ModelBoard(FakeBoard):
             self.set_state(0, bytes([self.state[0][0] | hl.STATE_IDLE]))
             render_hz = struct.unpack_from('<H', self.summary[0], _SUMMARY_RENDER_HZ)[0] or 1
             self._wake_due = self.now + 1 / render_hz
+        if not offset and struct.unpack_from('<H', request, 3)[0] == hl.ANIMATION_OFF:
+            self._wake_due = None       # the board applies the last request: off leaves the animations idle
         return offset
 
     def _set_brightness(self, request: bytes) -> int:

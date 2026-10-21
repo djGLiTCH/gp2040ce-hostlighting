@@ -222,6 +222,8 @@ def test_decode_identity_strings():
                                                                            board_config=strings[1])
     long = 'X' * 48
     assert hl.decode_identity(identity_reply(['', '', '', long], mask=0x08)) == records.Identity(firmware_version=long)
+    cut = 'X' * 47 + '\u00e9'                        # two bytes, the 48th byte cuts it
+    assert hl.decode_identity(identity_reply([cut], mask=0x01)) == records.Identity(board_label='X' * 47 + '\ufffd')
 
 
 def test_request_skips_other_applications_and_keeps_events(hlp_fake_device, hlp_fake_board):
@@ -547,11 +549,13 @@ def test_open_device_selects_by_board_id_and_major(monkeypatch):
     with pytest.raises(hl.HostLightingBoardSelectionError, match='no board') as none:
         hl.open_device('FF')
     assert none.value.board_id_prefix == 'FF' and none.value.matched == () and len(none.value.boards) == 2
+    assert none.value.interfaces == 3
     monkeypatch.setattr(hl, 'find_devices', lambda: [])
     monkeypatch.setattr(hl, 'find_other_majors', lambda: [hl.USAGE_PROTOCOL_1])
     with pytest.raises(hl.HostLightingBoardSelectionError, match='pre-release protocol 1.x') as absent:
         hl.open_device()
     assert absent.value.boards == () and absent.value.other_majors == (hl.USAGE_PROTOCOL_1,)
+    assert absent.value.interfaces == 0
 
 
 def test_find_board_opens_only_the_whole_id(monkeypatch):
@@ -580,7 +584,8 @@ def test_hello_rejects_other_magic(hlp_fake_device, hlp_fake_board):
     with pytest.raises(hl.HostLightingMagicError) as raised:
         hlp_fake_device.hello()
     assert raised.value.magic == b'XXXX' and isinstance(raised.value, hl.HostLightingIncompatibleError)
-    assert str(raised.value) == 'HELLO reply carries magic 58 58 58 58 (XXXX), not GPHL: not a Host Lighting interface'
+    assert str(raised.value) == ('This interface is not a Host Lighting one. Its HELLO reply carries the magic '
+                                 '58 58 58 58 (XXXX), not GPHL.')
 
 
 def test_open_device_skips_interfaces_that_fail(monkeypatch):
@@ -622,7 +627,7 @@ def test_open_device_names_interfaces_that_did_not_answer(monkeypatch):
                        match=r"^2 Host Lighting interface\(s\) found, but none opened and answered as a protocol 2 "
                              r"board\. On Linux, check the udev rule$") as error:
         hl.open_device('43')
-    assert error.value.boards == () and error.value.board_id_prefix == '43'
+    assert error.value.boards == () and error.value.board_id_prefix == '43' and error.value.interfaces == 2
 
 
 def test_reboot_treats_a_missing_reply_as_rebooting(hlp_fake_device, hlp_fake_board):
@@ -1000,3 +1005,13 @@ def test_read_names_gives_page_3_as_read_enum_names_does(hlp_fake_device, hlp_fa
     assert set(names) == {'GpioAction', 'LightType'} and names['GpioAction'][1] == 'BUTTON_PRESS_UP'
     assert names['LightType'] == {0: 'ActionButton', 1: 'Case', 2: 'Turbo', 3: 'Player1Light', 4: 'Player2Light',
                                   5: 'Player3Light', 6: 'Player4Light'}
+
+
+def test_read_names_reads_page_3_without_a_token(hlp_fake_device, hlp_fake_board):
+    """Test that read_names() sends no token, so a change of state mid-walk does not start it again."""
+    hlp_fake_board.stale_once_at = 2
+    hlp_fake_device.read_names()
+    reads = [request for request in hlp_fake_board.requests
+             if request[0] == hl.CMD_GET_PAGE and request[3] == hl.PAGE_NAMES]
+    assert len(reads) == len(hlp_fake_board.name_records())
+    assert all(struct.unpack_from('<I', request, 6)[0] == 0 for request in reads)

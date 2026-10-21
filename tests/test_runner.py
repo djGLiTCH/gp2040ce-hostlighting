@@ -6,18 +6,21 @@ SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import asyncio
+import logging
 import queue
 import threading
 import time
+import types
 
 import pytest
 
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting import runner as runner_module
 from gp2040ce_hostlighting.claim import ClaimChange, ClaimChangeKind
 from gp2040ce_hostlighting.frames import Frame
 from gp2040ce_hostlighting.runner import PROBE_TRIES, AsyncSession, BoardWatcher, SessionGroup, SessionRunner
 from gp2040ce_hostlighting.session import Session, SessionUpdate
-from gp2040ce_hostlighting.testing import FakeBoard, ModelBoard, attach, fake_device
+from gp2040ce_hostlighting.testing import FakeBoard, ModelBoard, attach, fake_device, summary_record
 
 SECOND_ID = bytes.fromhex('0102030405060708')
 
@@ -229,7 +232,10 @@ class ScriptedWatcher(BoardWatcher):
 
 
 def test_a_group_closes_a_runner_when_its_board_left_and_skips_what_will_not_start(monkeypatch):
-    """Test a departure closing its runner, an ID not on the bus, and a session that does not start."""
+    """Test a departure closing its runner, an ID not on the bus, and a session that does not start.
+
+    A board that failed to start a session is forgotten, to be tried again, only once retry_seconds have passed.
+    """
     good, held = ModelBoard(), ModelBoard()
     held.board_id = SECOND_ID
     held.take_over(exclusive=True)
@@ -237,15 +243,230 @@ def test_a_group_closes_a_runner_when_its_board_left_and_skips_what_will_not_sta
     good_id, held_id, absent = good.board_id.hex().upper(), SECOND_ID.hex().upper(), 'FFFFFFFFFFFFFFFF'
     watcher = ScriptedWatcher((frozenset({good_id, held_id, absent}), frozenset()),
                               (frozenset(), frozenset({good_id})))
-    group = SessionGroup(lambda device: Session(device, 'group'), watcher=watcher)
+    group = SessionGroup(lambda device: Session(device, 'group'), watcher=watcher, retry_seconds=0)
     try:
         assert group.poll() == (frozenset({good_id}), frozenset())
-        assert sorted(watcher.forgotten) == sorted([held_id, absent])
+        assert watcher.forgotten == [absent]
         runner = group.runners[good_id]
         assert group.poll() == (frozenset(), frozenset({good_id}))
+        assert watcher.forgotten == [absent, held_id]
         assert not runner.running and not group.runners
     finally:
         group.close()
+
+
+def at_stage(flag: threading.Event, action):
+    """Make a hook that runs an action at the first STAGE after the flag is set."""
+    def hook(board, request):
+        if flag.is_set() and request[0] == hl.CMD_STAGE:
+            flag.clear()
+            action(board)
+    return hook
+
+
+def test_a_frame_with_its_acknowledgement_lost_is_sent_again():
+    """Test that a show neither acknowledged nor refused leaves the frame pending, sent again at the next poll."""
+    board, lose, answer = FakeBoard(), threading.Event(), threading.Event()
+    board.hooks.append(once(lose, lambda on: on.drop.add(hl.CMD_STAGE)))
+    board.hooks.append(once(answer, lambda on: on.drop.discard(hl.CMD_STAGE)))
+    runner = SessionRunner(Session(fake_device(board), 'runner')).start()
+    try:
+        runner.show(frame_of(0, (9, 0, 0)))
+        assert until(lambda: bool(board.frames) and board.frames[-1].get(0) == (9, 0, 0))
+        lose.set()
+        runner.show(frame_of(0, (0, 9, 0)))
+        assert until(lambda: runner.result is not None and not runner.result.acknowledged)
+        answer.set()
+        assert until(lambda: board.frames[-1].get(0) == (0, 9, 0))
+    finally:
+        runner.close()
+    assert runner.error is None
+
+
+def test_a_frame_posted_as_the_board_leaves_is_shown_after_the_reconnect():
+    """Test that the frame shown at the departure, not the one before it, is shown on the board's return."""
+    board, leave, back = ModelBoard(), threading.Event(), threading.Event()
+    board.hooks.append(at_stage(leave, lambda on: (on.unplug(), on.disconnect_on.add(hl.CMD_STAGE))))
+
+    def reopen(board_id):
+        if not back.is_set():
+            return None
+        board.disconnect_on.clear()
+        board.replug()
+        return fake_device(board)
+    runner = SessionRunner(Session(fake_device(board), 'runner', reopen=reopen), reconnect_seconds=0.01).start()
+    try:
+        runner.show(frame_of(0, (9, 0, 0)))
+        assert until(lambda: bool(board.frames) and board.frames[-1].get(0) == (9, 0, 0))
+        leave.set()
+        runner.show(frame_of(0, (0, 0, 9)))
+        assert until(lambda: board.departed)
+        back.set()
+        assert until(lambda: board.frames[-1].get(0) == (0, 0, 9))
+    finally:
+        runner.close()
+    assert runner.error is None
+
+
+def test_start_raises_only_the_starts_own_error():
+    """Test that an error after the session started stays in `error`, and start() returns."""
+    session = Session(fake_device(ModelBoard()), 'runner')
+
+    def poll():
+        raise RuntimeError('a fault after the start')
+    session.poll = poll
+    runner = SessionRunner(session)
+    assert runner.start() is runner
+    assert until(lambda: not runner.running)
+    assert isinstance(runner.error, RuntimeError)
+
+
+def test_a_callback_that_raises_is_logged_and_the_runner_carries_on(caplog):
+    """Test that an exception from on_update is logged, and the runner keeps the session and its claim."""
+    board, steal = ModelBoard(), threading.Event()
+    board.hooks.append(once(steal, lambda on: on.take_over()))
+
+    def fail(update):
+        raise RuntimeError('a fault in the host')
+    runner = SessionRunner(Session(fake_device(board), 'runner'), on_update=fail).start()
+    try:
+        steal.set()
+        assert until(lambda: 'the on_update callback raised' in caplog.text)
+        runner.show(frame_of(0, (5, 5, 5)))
+        assert until(lambda: runner.result is not None)
+        assert runner.running and runner.error is None
+    finally:
+        runner.close()
+
+
+def test_show_before_start_raises():
+    """Test that a frame posted before start() is refused on the caller's thread."""
+    runner = SessionRunner(Session(fake_device(ModelBoard()), 'runner'))
+    with pytest.raises(hl.HostLightingError, match='start the runner'):
+        runner.show(frame_of(0))
+
+
+def test_a_group_tries_a_board_that_did_not_start_only_after_the_delay(monkeypatch, caplog):
+    """Test that a held board is not claimed again at every poll, and the warning names the error."""
+    held = ModelBoard()
+    held.take_over(exclusive=True)
+    attach(monkeypatch, held)
+    held_id = held.board_id.hex().upper()
+    watcher = ScriptedWatcher((frozenset({held_id}), frozenset()))
+    group = SessionGroup(lambda device: Session(device, 'group'), watcher=watcher, retry_seconds=60)
+    try:
+        assert group.poll() == (frozenset(), frozenset())
+        assert group.poll() == (frozenset(), frozenset()) and watcher.forgotten == []
+        assert 'did not start. It is tried again in 60 s.' in caplog.text and 'holds the lights' in caplog.text
+    finally:
+        group.close()
+
+
+class RefindingWatcher(BoardWatcher):
+    """A watcher that finds one board, and finds it again at the poll after it is forgotten."""
+
+    def __init__(self, board_id):
+        """Hold the board ID, not yet found."""
+        super().__init__()
+        self.board_id, self.known = board_id, False
+
+    def poll(self):
+        """Report the board as arrived when it is not known."""
+        if self.known:
+            return frozenset(), frozenset()
+        self.known = True
+        return frozenset({self.board_id}), frozenset()
+
+    def forget(self, board_id):
+        """Forget the board, to be found again."""
+        self.known = False
+
+
+def test_a_group_warns_once_of_a_held_board_and_backs_its_retries_off(monkeypatch, caplog):
+    """Test that a held board is warned of once, then logged at debug, and tried after a doubling wait."""
+    held = ModelBoard()
+    held.take_over(exclusive=True)
+    attach(monkeypatch, held)
+    now = [100.0]
+    monkeypatch.setattr(runner_module, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
+    caplog.set_level(logging.DEBUG, logger='gp2040ce_hostlighting.runner')
+    watcher = RefindingWatcher(held.board_id.hex().upper())
+    group = SessionGroup(lambda device: Session(device, 'group'), watcher=watcher, retry_seconds=1, retry_max_seconds=3)
+    tries = []
+    try:
+        for _ in range(52):                        # 13 s in steps of 0.25 s
+            claims = len(held.sent(hl.CMD_CLAIM))
+            group.poll()
+            if len(held.sent(hl.CMD_CLAIM)) > claims:
+                tries.append(now[0])
+            now[0] += 0.25
+    finally:
+        group.close()
+    logged = [record for record in caplog.records if 'did not start' in record.getMessage()]
+    assert [record.levelno for record in logged] == [logging.WARNING] + [logging.DEBUG] * (len(tries) - 1)
+    assert [later - earlier for earlier, later in zip(tries, tries[1:])] == [1, 2, 3, 3, 3]
+    assert 'It is tried again in 1 s.' in logged[0].getMessage()
+
+
+def test_a_held_frame_past_a_lower_led_limit_is_dropped_after_the_reconnect(caplog):
+    """Test that a board back with a lower LED limit drops the held frame with a warning, and the runner goes on."""
+    board, back = ModelBoard(), threading.Event()
+
+    def reopen(board_id):
+        if not back.is_set():
+            return None
+        board.replug()
+        return fake_device(board)
+    runner = SessionRunner(Session(fake_device(board), 'runner', reopen=reopen), reconnect_seconds=0.01).start()
+    try:
+        frame = Frame()
+        frame.run(hl.ADDRESSING_LED_RUN, 10, [(1, 2, 3)] * 5)
+        runner.show(frame)
+        assert until(lambda: runner.result is not None and runner.result.acknowledged)
+        board.unplug()
+        board.summary = summary_record(led_limit=12)
+        back.set()
+        assert until(lambda: 'the frame posted is dropped' in caplog.text)
+        assert 'limit of 12' in caplog.text and runner.running and runner.result is None
+        with pytest.raises(ValueError, match='limit of 12'):
+            runner.show(frame)
+        runner.show(frame_of(0, (0, 9, 0)))
+        assert until(lambda: board.frames[-1].get(0) == (0, 9, 0))
+    finally:
+        runner.close()
+    assert runner.error is None
+
+
+def test_a_frame_past_the_limit_posted_during_a_reconnect_is_dropped(caplog):
+    """Test that a frame posted while a reconnect reads the Summary, so not checked, is dropped when shown."""
+    board, back, post = ModelBoard(), threading.Event(), threading.Event()
+    late = Frame()
+    late.run(hl.ADDRESSING_LED_RUN, board.led_limit() - 2, [(1, 2, 3)] * 5)
+    runner = None
+
+    def at_summary(on, request):
+        if post.is_set() and request[0] == hl.CMD_GET_PAGE and request[3] == hl.PAGE_SUMMARY:
+            post.clear()
+            runner.show(late)
+    board.hooks.append(at_summary)
+
+    def reopen(board_id):
+        if not back.is_set():
+            return None
+        board.replug()
+        post.set()
+        return fake_device(board)
+    runner = SessionRunner(Session(fake_device(board), 'runner', reopen=reopen), reconnect_seconds=0.01).start()
+    try:
+        runner.show(frame_of(0, (9, 0, 0)))
+        assert until(lambda: bool(board.frames))
+        board.unplug()
+        back.set()
+        assert until(lambda: 'the frame posted is dropped' in caplog.text)
+        assert not post.is_set() and runner.running
+    finally:
+        runner.close()
+    assert runner.error is None
 
 
 def test_a_runners_queue_keeps_the_latest_updates():

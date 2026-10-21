@@ -214,7 +214,8 @@ def test_a_profile_switch_brings_its_pages_token_and_one_event():
     device = fake_device(board)
     device.subscribe([hl.EVENT_STATE_CHANGED])
     before = device.read_record(hl.PAGE_STATE)
-    device.set_profile(2)
+    device.send(hl.CMD_SET_PROFILE, bytes([2]))
+    assert board.state[0][2] == 2 and board.token == before.token and not board.pending
     events = [hl.decode_state_changed(event) for event in device.take_events()]
     after = device.read_table(hl.PAGE_LIGHTS)
     assert after.token != before.token and after.records[0].owner.pin == 5
@@ -241,6 +242,11 @@ def test_set_animation_wakes_the_animations_at_the_next_render_tick():
     device.set_animation(None)
     board.sleep(0.1)
     assert device.read_record(hl.PAGE_STATE).records[0].state.animations_idle
+    device.set_animation(1)
+    device.set_animation(None)              # before the render tick: the board applies off
+    board.sleep(0.1)
+    state = device.read_record(hl.PAGE_STATE).records[0].state
+    assert state.animation is None and state.animations_idle
 
 
 def test_a_bus_reset_drops_the_replies_waiting_and_ends_a_claim():
@@ -250,8 +256,12 @@ def test_a_bus_reset_drops_the_replies_waiting_and_ends_a_claim():
     other = fake_device(board)
     device.subscribe([hl.EVENT_STATE_CHANGED])
     device.configure(takeover=hl.TAKEOVER_OVERLAY)
+    device.fill((1, 2, 3), commit=True)
+    device.set_brightness(2)
     board.bus_reset()
-    assert device.read_record(hl.PAGE_STATE).records[0].settings.takeover == hl.TAKEOVER_OVERLAY
+    record = other.read_record(hl.PAGE_STATE).records[0]
+    assert record.settings.takeover == hl.TAKEOVER_OVERLAY
+    assert record.state.takeover_live and record.state.brightness_unsaved
     claimed = device.claim(hl.CLAIM_TAKE, 0x51, b'app')
     sequence = device.send(hl.CMD_HELLO)
     board.bus_reset()
@@ -308,6 +318,9 @@ def test_deconfigure_ends_the_usb_session():
     board.deconfigure()
     generation = other.read_record(hl.PAGE_STATE).records[0].controller.claim_generation
     assert generation == record.controller.claim_generation
+    board.suspend()
+    board.deconfigure()
+    assert not board.suspended and other.hello().board_id
 
 
 @pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])

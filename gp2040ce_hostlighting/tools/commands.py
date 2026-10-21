@@ -242,21 +242,24 @@ def caps() -> None:
     parser = device_parser("Read and decode a GP2040-CE board's Host Lighting capabilities and pages.")
     parser.add_argument('--json', action='store_true',
                         help="print HELLO and every page the library decodes as JSON, the records' fields by name")
+    parser.add_argument('--names', action='store_true',
+                        help="name actions and light kinds from the board's page 3 when -P names none "
+                             "(148 more requests)")
     args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         hello = device.hello()
         if args.json:
-            print(json.dumps(_caps_json(device, hello), indent=1))
+            print(json.dumps(_caps_json(device, hello, args.names), indent=1))
             return
-        board_names = device.read_names() if PAGE_NAMES in hello.pages else {}
+        board_names = device.read_names() if args.names and PAGE_NAMES in hello.pages else {}
         names = enum_names() or board_names
         _print_hello(hello)
         pages: tuple[tuple[int, Callable[[], None]], ...] = (
                  (PAGE_IDENTITY, lambda: _print_identity(device)),
                  (PAGE_STATE, lambda: _print_state(device, names)),
                  (PAGE_INPUT_MODES, lambda: _print_input_modes(device)),
-                 (PAGE_NAMES, lambda: _print_names(board_names)),
+                 (PAGE_NAMES, lambda: _print_names(board_names, args.names)),
                  (PAGE_SUMMARY, lambda: _print_summary(device, names)),
                  (PAGE_PROFILES, lambda: _print_profiles(device)),
                  (PAGE_CONTROLS, lambda: _print_controls(device, names)),
@@ -269,20 +272,25 @@ def caps() -> None:
         device.close()
 
 
-def _caps_json(device: HostLightingDevice, hello: Hello) -> dict[str, Any]:
-    """Read HELLO's pages the library decodes, as hlp-caps --json prints them."""
+def _caps_json(device: HostLightingDevice, hello: Hello, names: bool) -> dict[str, Any]:
+    """Read HELLO's pages the library decodes, as hlp-caps --json prints them, page 3 only with names."""
     readers: dict[int, Callable[[], Any]] = {
         PAGE_IDENTITY: device.read_identity,
         PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
         PAGE_SUMMARY: lambda: device.read_record(PAGE_SUMMARY).records}
-    for page in (PAGE_INPUT_MODES, PAGE_NAMES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
+    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
         readers[page] = functools.partial(lambda number: device.read_table(number).records, page)
+    if names:
+        readers[PAGE_NAMES] = device.read_names
     return {'hello': jsonable(hello),
             'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages) if page in readers}}
 
 
-def _print_names(names: dict[str, dict[int, str]]) -> None:
-    """Print page 3 as read_names() gave it, counted by enum."""
+def _print_names(names: dict[str, dict[int, str]], read: bool) -> None:
+    """Print page 3 as read_names() gave it, counted by enum, or that it was not read."""
+    if not read:
+        print('page 3 (names): not read (--names reads it)')
+        return
     print('page 3 (names): ' + (', '.join(f"{len(values)} {enum}" for enum, values in names.items()) or 'none'))
 
 
@@ -448,12 +456,15 @@ def settings() -> None:
     parser.add_argument('--unsaved', action='store_true',
                         help="show --brightness unsaved for --seconds, holding the claim, then the saved step again")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long --unsaved holds the step (default: 5)")
+    parser.add_argument('--names', action='store_true',
+                        help="name actions and light kinds from the board's page 3 when -P names none "
+                             "(148 more requests)")
     add_claim_arguments(parser)
     args = parser.parse_args()
     speeds = _checked_options(args)
     device = open_device(args.board_id)
     try:
-        names = enum_names(device)
+        names = enum_names(device if args.names else None)
         if args.unsaved:
             _hold_unsaved_brightness(device, args.brightness, args.seconds, args.force, args.exclusive)
         if args.profile is not None:
@@ -781,14 +792,18 @@ def buttons() -> None:
                            "B1-B4, L1, R1, L2 and R2 white over the running animations (overlay takeover), then "
                            "give the claim up.")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long each phase holds (default: 5)")
+    parser.add_argument('--names', action='store_true',
+                        help="take the buttons' actions from the board's page 3 when -P names none "
+                             "(148 more requests)")
     add_claim_arguments(parser)
     args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
+        overlay = overlay_buttons(controls, enum_names(device if args.names else None))
         with LightsClaim(device, 'hlp-buttons', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
-            _buttons(claim, controls, lights, args.seconds, overlay_buttons(controls, enum_names(device)))
+            _buttons(claim, controls, lights, args.seconds, overlay)
     finally:
         device.close()
 

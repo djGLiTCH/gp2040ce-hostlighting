@@ -480,6 +480,16 @@ def test_buttons_overlay_takes_the_buttons_the_board_lights(hlp_run_on_model_boa
     assert stages[2][5:7] == bytes([5, 0]) and stages[2][10:12] == bytes([9, 0])
 
 
+def test_buttons_reads_page_3_only_with_names(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test that hlp-buttons takes the buttons' actions from page 3 only with --names."""
+    def names_read():
+        return [request for request in hlp_model_board.sent(hl.CMD_GET_PAGE) if request[3] == hl.PAGE_NAMES]
+    hlp_run_on_model_board(tools.buttons, '--seconds', '1')
+    assert not names_read()
+    hlp_run_on_model_board(tools.buttons, '--seconds', '1', '--names')
+    assert names_read()
+
+
 def test_overlay_buttons_follow_the_proto_names_when_given():
     """Test that a button's action comes from the .proto names when present, and from enums.proto's value if not."""
     controls = [records.ControlRecord(ordinal=ordinal, input=records.ControlInput(
@@ -616,14 +626,18 @@ def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_
     hlp_run_on_fake_board(tools.caps, '--json')
     data = json.loads(capsys.readouterr().out)
     assert data['hello']['major'] == 2 and data['hello']['board_id'] == hlp_fake_board.board_id.hex().upper()
-    assert set(data['pages']) == {'0', '1', '2', '3', '8', '9', '10', '11', '12'}
+    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12'}
     assert data['pages']['11'][0]['leds'] == {'first_led': 0, 'led_count': 1}
     assert data['pages']['1'][0]['controller']['holder_token'] == 0 and data['pages']['0']['board_config']
 
 
 def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fake_board, capsys):
-    """Test that without -P the board's page 3 names actions and kinds, and hlp-caps counts it."""
-    hlp_run_on_fake_board(tools.caps)
+    """Test that without -P, --names has the board's page 3 name actions and kinds, and hlp-caps count it."""
+    hlp_run_on_fake_board(tools.caps, '--names')
     out = capsys.readouterr().out
     assert 'page 3 (names): 6 GpioAction, 7 LightType' in out
     assert 'action 1 (BUTTON_PRESS_UP)' in out and 'kind 1 (Case)' in out
+    hlp_run_on_fake_board(tools.caps)
+    assert 'page 3 (names): not read (--names reads it)' in capsys.readouterr().out
+    hlp_run_on_fake_board(tools.caps, '--json', '--names')
+    assert json.loads(capsys.readouterr().out)['pages']['3']['GpioAction']['1'] == 'BUTTON_PRESS_UP'

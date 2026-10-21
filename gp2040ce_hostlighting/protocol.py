@@ -773,7 +773,7 @@ def decode_identity(reply: bytes) -> Identity:
     """Decode a page 0 reply's strings.
 
     Each returned group is a string of up to 48 bytes, NUL-terminated when shorter, starting after the
-    previous one's NUL or 48th byte.
+    previous one's NUL or 48th byte. A character the 48th byte cuts decodes as U+FFFD.
 
     :param reply: the reply report
     :return: the strings the reply echoes, None for the others
@@ -870,8 +870,8 @@ class HostLightingMagicError(HostLightingIncompatibleError):
         """Record the magic the reply carried, and word it in hex and as text."""
         self.magic = magic
         text = ''.join(chr(b) if 32 <= b < 127 else '.' for b in magic)
-        super().__init__(f"HELLO reply carries magic {magic.hex(' ').upper()} ({text}), not "
-                         f"{MAGIC.decode()}: not a Host Lighting interface")
+        super().__init__(f"This interface is not a Host Lighting one. Its HELLO reply carries the magic "
+                         f"{magic.hex(' ').upper()} ({text}), not {MAGIC.decode()}.")
 
 
 class HostLightingGroupNotReadError(HostLightingError, AttributeError):
@@ -892,11 +892,12 @@ class HostLightingBoardSelectionError(HostLightingError):
     """open_device() found no board to open: none at all, none matching the board ID prefix, or several.
 
     A host can word its own message from what was found. `matched` is empty, or holds the boards the prefix left
-    to choose between.
+    to choose between. `interfaces` counts the protocol 2 interfaces found, answering or not, so 0 means none was
+    found and a count with no `boards` means none answered.
     """
 
     def __init__(self, message: str, board_id_prefix: str, boards: tuple[BoardListing, ...],
-                 matched: tuple[BoardListing, ...], other_majors: tuple[int, ...]) -> None:
+                 matched: tuple[BoardListing, ...], other_majors: tuple[int, ...], interfaces: int) -> None:
         """Record what was found.
 
         :param message: the library's message
@@ -904,11 +905,13 @@ class HostLightingBoardSelectionError(HostLightingError):
         :param boards: a BoardListing for each protocol 2 board found
         :param matched: the boards among them the prefix matches
         :param other_majors: the usage of each interface that speaks another protocol major
+        :param interfaces: how many protocol 2 interfaces were found, answering or not
         """
         self.board_id_prefix = board_id_prefix
         self.boards = boards
         self.matched = matched
         self.other_majors = other_majors
+        self.interfaces = interfaces
         super().__init__(message)
 
 
@@ -1364,8 +1367,10 @@ class HostLightingDevice:
                 return walked
         raise HostLightingError(f"page {page} kept changing during {attempts} walks")
 
-    def _walk_table(self, page: int, mask: int, token: int) -> PageRead[Any] | int:
+    def _walk_table(self, page: int, mask: int, token: int, follow: bool = True) -> PageRead[Any] | int:
         """Walk a table page from its first record, adopting the first reply's token when token is 0.
+
+        With follow false, every read goes without a token, for a page the token does not cover (page 3).
 
         :return: the decoded records and their state token, or the board's current token when it answers
             STALE_TOKEN
@@ -1376,15 +1381,16 @@ class HostLightingDevice:
             header = decode_page_header(reply)
             if reply[2] == STATUS_STALE_TOKEN:
                 return header.token
-            token = header.token
+            if follow:
+                token = header.token
             if header.count == 0:
                 # a mask naming no group the board defines returns the total, no records and no groups
                 if len(records) < header.total and header.groups:
                     raise HostLightingError(f"page {page} stalled at {len(records)} of {header.total} records")
-                return PageRead(records=tuple(records), token=token)
+                return PageRead(records=tuple(records), token=header.token)
             records.extend(decode_records(reply))
             if len(records) >= header.total:
-                return PageRead(records=tuple(records), token=token)
+                return PageRead(records=tuple(records), token=header.token)
 
     @overload
     def read_record(self, page: Literal[1], mask: int = 0) -> PageRead[StateRecord]: ...
@@ -1408,12 +1414,17 @@ class HostLightingDevice:
     def read_names(self) -> dict[str, dict[int, str]]:
         """Read page 3: the names the board's firmware gives its GpioAction and LightType values.
 
+        Page 3 is fixed for the firmware and outside the state token, so it is read without one, and a change
+        of the board's state during the walk does not start it again. A host can keep the names by firmware
+        version (page 0).
+
         :return: {enum name: {value: name}}, as read_enum_names() returns them, an enum this library does
             not know left out
         :raises HostLightingRejectedError: when the board does not list page 3
         """
+        walked = self._walk_table(PAGE_NAMES, 0, 0, follow=False)
         names: dict[str, dict[int, str]] = {}
-        for record in self.read_table(PAGE_NAMES).records:
+        for record in walked.records if isinstance(walked, PageRead) else ():
             enum = NAME_ENUMS.get(record.entry.enum)
             if enum is not None:
                 names.setdefault(enum, {})[record.entry.value] = record.name
@@ -1839,10 +1850,10 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
     infos = find_devices()
     if not infos:
         usages = tuple(find_other_majors())
-        raise HostLightingBoardSelectionError(_no_interface(usages), board_id_prefix, (), (), usages)
+        raise HostLightingBoardSelectionError(_no_interface(usages), board_id_prefix, (), (), usages, 0)
     found = [probe for probe in (_probe(info) for info in infos) if probe]
     if not found:
-        raise HostLightingBoardSelectionError(_none_answered(len(infos)), board_id_prefix, (), (), ())
+        raise HostLightingBoardSelectionError(_none_answered(len(infos)), board_id_prefix, (), (), (), len(infos))
     matching = [hello.board_id for hello, _ in found if hello.board_id.startswith(board_id_prefix.upper())]
     if len(matching) == 1:
         for hello, device in found:
@@ -1857,7 +1868,7 @@ def open_device(board_id_prefix: str = '') -> HostLightingDevice:
         named = ', '.join(f"{board.board_id} ({board.board_label})" if board.board_label else board.board_id
                           for board in matched)
         message = f"multiple boards found: {named}. Choose one by a board ID prefix"
-    raise HostLightingBoardSelectionError(message, board_id_prefix, boards, matched, ())
+    raise HostLightingBoardSelectionError(message, board_id_prefix, boards, matched, (), len(infos))
 
 
 def find_board(board_id: str) -> Optional[HostLightingDevice]:

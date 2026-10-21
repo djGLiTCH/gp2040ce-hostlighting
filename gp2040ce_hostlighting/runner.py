@@ -12,6 +12,7 @@ import asyncio
 import logging
 import queue
 import threading
+import time
 from typing import Callable, Optional
 
 from gp2040ce_hostlighting.claim import ClaimChangeKind
@@ -22,12 +23,13 @@ from gp2040ce_hostlighting.records import Settings
 from gp2040ce_hostlighting.session import Session, SessionUpdate
 
 __all__ = ['AsyncSession', 'BoardWatcher', 'SessionGroup', 'SessionRunner', 'POLL_SECONDS', 'PROBE_TRIES',
-           'RECONNECT_SECONDS', 'UPDATES_KEPT']
+           'RECONNECT_SECONDS', 'RETRY_MAX_SECONDS', 'UPDATES_KEPT']
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 0.01             # between a runner's polls
 RECONNECT_SECONDS = 1.0         # between a runner's looks for a board that left the bus
+RETRY_MAX_SECONDS = 30.0        # the longest a group waits to try again a board that failed to start a session
 UPDATES_KEPT = 64               # a runner's queue of updates, the oldest dropped first
 PROBE_TRIES = 3                 # a watcher's HELLOs to an interface that does not answer as a board
 
@@ -42,11 +44,14 @@ class SessionRunner:
     """A Session on a thread of its own, which alone uses the session's device.
 
     The thread starts the session, then polls it, sends the settings and frame posted last, and shows the latest
-    frame again whenever an update asks for a restage. A board that leaves the bus is looked for again by its board
-    ID every RECONNECT_SECONDS, unless reconnect is off, when the runner ends. Any other error ends the runner, and
-    `error` keeps it. Whenever the runner ends, a start that fails included, it closes the session and its device.
-    close() ends the session from any thread and waits for the thread. The thread is a daemon thread, so a host
-    closes each runner before it exits, or the claim lapses at its timeout rather than being given up.
+    frame again whenever an update asks for a restage. A frame with a show neither acknowledged nor refused is
+    sent again at the next poll. A board that leaves the bus is looked for again by its board ID every
+    RECONNECT_SECONDS, unless reconnect is off, when the runner ends, and the latest frame is shown on it. An
+    exception from on_update is logged and the runner carries on, and a frame past the board's LED limit is dropped
+    with a warning. Any other error ends the runner, and `error` keeps it. Whenever the runner ends, a start that
+    fails included, it closes the session and its device. close() ends the session from any thread and waits for
+    the thread. The thread is a daemon thread, so a host closes each runner before it exits, or the claim lapses at
+    its timeout rather than being given up.
     """
 
     def __init__(self, session: Session, on_update: Optional[Callable[[SessionUpdate], None]] = None,
@@ -71,9 +76,12 @@ class SessionRunner:
         # the updates that carry anything, for a host that reads them rather than take the callback
         self.updates: queue.Queue[SessionUpdate] = queue.Queue(UPDATES_KEPT)
         self.error: Optional[BaseException] = None      # what ended the runner, if anything did
-        self.result: Optional[FrameResult] = None       # what became of the last frame shown
+        self.result: Optional[FrameResult] = None       # what became of the last frame, None if not sent
         self._lock = threading.Lock()
-        self._frame: Optional[Frame] = None             # posted, not yet shown
+        self._frame: Optional[Frame] = None             # posted, not yet taken by the thread
+        self._latest: Optional[Frame] = None            # the last frame taken, shown again when needed
+        self._pending = False                           # the latest frame still needs a show
+        self._start_error: Optional[BaseException] = None
         self._settings: Optional[Settings] = None       # posted, not yet sent
         self._stop = threading.Event()
         self._started = threading.Event()
@@ -83,15 +91,16 @@ class SessionRunner:
         """Start the thread, and wait for the session's start.
 
         :return: the runner
-        :raises HostLightingError: when the session does not start, as Session.start() raises it
+        :raises HostLightingError: when the session does not start, as Session.start() raises it. An error after
+            the start is kept in `error` and not raised here
         """
         if self._thread is not None:
             raise HostLightingError("the runner has already started")
         self._thread = threading.Thread(target=self._run, name=f"hlp-{self.session.name or 'session'}", daemon=True)
         self._thread.start()
         self._started.wait()
-        if self.error is not None:
-            raise self.error
+        if self._start_error is not None:
+            raise self._start_error
         return self
 
     @property
@@ -105,8 +114,11 @@ class SessionRunner:
         The runner keeps the frame and shows it again at each restage, so the host posts a new Frame for a
         change rather than changing one it posted.
 
-        :raises ValueError: for an LED run past the board's addressable LED limit, once the session has read it
+        :raises HostLightingError: before start() has returned
+        :raises ValueError: for an LED run past the board's addressable LED limit
         """
+        if not self._started.is_set() or self._start_error is not None:
+            raise HostLightingError("start the runner before posting a frame")
         cache = self.session.cache
         summary = cache.summary if cache is not None else None
         if summary is not None:
@@ -147,7 +159,10 @@ class SessionRunner:
                 pass
         self.updates.put_nowait(update)
         if self.on_update is not None:
-            self.on_update(update)
+            try:
+                self.on_update(update)
+            except Exception:  # noqa: B902 a host's callback must not end the session
+                logger.warning("the on_update callback raised, and the runner carries on", exc_info=True)
 
     def _taken(self) -> tuple[Optional[Frame], Optional[Settings]]:
         with self._lock:
@@ -158,21 +173,20 @@ class SessionRunner:
         try:
             self.session.start()
         except BaseException as error:  # noqa: B902 handed to start()'s caller
-            self.error = error
+            self.error = self._start_error = error
             self._close_session()
             self._started.set()
             self._ended()
             return
         self._started.set()
-        latest: Optional[Frame] = None      # the last frame posted, shown again when an update asks
         try:
             while not self._stop.is_set():
                 try:
-                    latest = self._cycle(latest)
+                    self._cycle()
                 except HostLightingDisconnectedError:
                     if not self.reconnect:
                         raise
-                    self._rejoin(latest)
+                    self._rejoin()
                 self._stop.wait(self.poll_seconds)
         except BaseException as error:  # noqa: B902 kept for the host
             self.error = error
@@ -187,8 +201,8 @@ class SessionRunner:
         except (HostLightingError, OSError):
             logger.debug("closing the session failed", exc_info=True)
 
-    def _cycle(self, latest: Optional[Frame]) -> Optional[Frame]:
-        """Poll, send the settings posted, show the frame posted or the latest again on a restage, then tell."""
+    def _cycle(self) -> None:
+        """Poll, send the settings posted, show the latest frame when it is new, unanswered or restaged, then tell."""
         update = self.session.poll()
         frame, settings = self._taken()
         if settings is not None:
@@ -198,13 +212,32 @@ class SessionRunner:
                 with self._lock:
                     self._settings = self._settings or settings      # tried again at the next poll
         if frame is not None:
-            latest = frame
-        if latest is not None and (frame is not None or update.restage):
-            self.result = self.session.show(latest)
+            self._latest, self._pending = frame, True
+        if update.restage:
+            self._pending = True
+        if self._latest is not None and self._pending:
+            self._show(self._latest)
         self._tell(update)
-        return latest
 
-    def _rejoin(self, latest: Optional[Frame]) -> None:
+    def _show(self, frame: Frame) -> None:
+        """Show the latest frame.
+
+        It stays pending until a show is acknowledged or refused. A frame not sent, as while another application
+        holds the claim, waits for the restage that follows the claim's return. A frame past the board's LED
+        limit, as one posted while a reconnect reads the Summary or held for a board back with a lower limit, is
+        dropped, and result is None, as for a frame not sent.
+        """
+        try:
+            result = self.session.show(frame)
+        except ValueError as error:
+            self.result, self._latest, self._pending = None, None, False
+            reason = str(error)
+            logger.warning("the frame posted is dropped. %s", reason)
+            return
+        self.result = result
+        self._pending = result is not None and not (result.acknowledged or result.refused is not None)
+
+    def _rejoin(self) -> None:
         """Look for the board that left until it is back or the runner closes, then show the latest frame on it.
 
         A board that leaves again before the frame lands is looked for again.
@@ -212,8 +245,8 @@ class SessionRunner:
         while not self._stop.is_set():
             if self.session.reconnect():
                 try:
-                    if latest is not None:
-                        self.result = self.session.show(latest)
+                    if self._latest is not None:
+                        self._show(self._latest)
                     return
                 except HostLightingDisconnectedError:
                     logger.debug("the board left again", exc_info=True)
@@ -372,25 +405,36 @@ class BoardWatcher:
 class SessionGroup:
     """A SessionRunner for each board on the bus, started when the board arrives and closed when it leaves.
 
-    A runner that fails to start its session, or that ends, is dropped, and its board is reported again at the next
-    poll that finds it, when a runner starts for it again.
+    A runner that ends is dropped, and its board is reported again at the next poll that finds it, when a runner
+    starts for it again. A board that fails to start a session, as when another application holds it and
+    make_session's Session does not wait for the claim, is tried again after retry_seconds, the wait doubling at
+    each failure up to retry_max_seconds. The first failure is logged as a warning and the rest at debug, until
+    a start succeeds or the board leaves. A session built with wait=True instead starts once the other
+    application gives the board up.
     """
 
     def __init__(self, make_session: Callable[[HostLightingDevice], Session],
                  on_update: Optional[Callable[[str, SessionUpdate], None]] = None,
-                 watcher: Optional[BoardWatcher] = None, poll_seconds: float = POLL_SECONDS) -> None:
+                 watcher: Optional[BoardWatcher] = None, poll_seconds: float = POLL_SECONDS,
+                 retry_seconds: float = RECONNECT_SECONDS, retry_max_seconds: float = RETRY_MAX_SECONDS) -> None:
         """Describe the group. Nothing runs until poll().
 
         :param make_session: builds a session, not yet started, on a board's opened device
         :param on_update: called on a runner's thread with the board ID and each update that carries anything
         :param watcher: the board watcher, by default a new one
         :param poll_seconds: each runner's wait between polls
+        :param retry_seconds: the wait before a board that failed to start a session is tried again
+        :param retry_max_seconds: the longest that wait grows to, doubling at each failure
         """
         self.make_session = make_session
         self.on_update = on_update
         self.watcher = watcher or BoardWatcher()
         self.poll_seconds = poll_seconds
         self.runners: dict[str, SessionRunner] = {}
+        self.retry_seconds = retry_seconds
+        self.retry_max_seconds = retry_max_seconds
+        self._retry: dict[str, float] = {}      # board ID -> when a board that failed to start is tried
+        self._wait: dict[str, float] = {}       # board ID -> the wait after its next failure, while failing
 
     def poll(self) -> tuple[frozenset[str], frozenset[str]]:
         """Look at the bus once: start a runner for each board that arrived, close each for a board that left.
@@ -400,7 +444,14 @@ class SessionGroup:
         for board_id in [board_id for board_id, runner in self.runners.items() if not runner.running]:
             self.runners.pop(board_id)
             self.watcher.forget(board_id)
+        now = time.monotonic()
+        for board_id in [board_id for board_id, due in self._retry.items() if due <= now]:
+            self._retry.pop(board_id)
+            self.watcher.forget(board_id)
         arrived, left = self.watcher.poll()
+        for board_id in left:
+            self._retry.pop(board_id, None)
+            self._wait.pop(board_id, None)
         closed = set()
         for board_id in left:
             runner = self.runners.pop(board_id, None)
@@ -417,10 +468,16 @@ class SessionGroup:
             runner = SessionRunner(self.make_session(device), tell, poll_seconds=self.poll_seconds, reconnect=False)
             try:
                 runner.start()
-            except HostLightingError:
-                logger.warning("board %s: the session did not start", board_id)
-                self.watcher.forget(board_id)
+            except HostLightingError as error:
+                reason = str(error)
+                wait = self._wait.get(board_id, self.retry_seconds)
+                level = logging.DEBUG if board_id in self._wait else logging.WARNING
+                logger.log(level, "the session on board %s did not start. It is tried again in %s s. %s", board_id,
+                           wait, reason)
+                self._retry[board_id] = time.monotonic() + wait
+                self._wait[board_id] = min(wait * 2, self.retry_max_seconds)
                 continue
+            self._wait.pop(board_id, None)
             self.runners[board_id] = runner
             started.add(board_id)
         return frozenset(started), frozenset(closed)
