@@ -6,8 +6,12 @@ host software drive a board's RGB LEDs live over a vendor HID interface.
 ## Installation
 
 ```
-pip install gp2040ce-hostlighting
+pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc1
 ```
+
+The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
+Host Lighting Protocol 2.0 is final. Until then each release candidate is a tag
+in this repository. pip installs it from the tag, which needs git.
 
 It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
 3.15 pip builds it from source, which needs a C compiler, and on Linux the
