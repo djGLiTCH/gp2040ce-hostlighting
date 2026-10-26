@@ -6,7 +6,7 @@ host software drive a board's RGB LEDs live over a vendor HID interface.
 ## Installation
 
 ```
-pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc1
+pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc2
 ```
 
 The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
