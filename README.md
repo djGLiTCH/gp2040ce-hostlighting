@@ -459,9 +459,9 @@ Sample usage:
 
 ```
 % hlp-ping
-Haute42 COSMOX M Ultra (v0.7.12-138-ge9313e9), board ID 433030343237362E
+Haute42 COSMOX M Ultra (v0.7.12-147-g6650cb8), board ID 433030343237362E
 magic GPHL, protocol 2.0, reply queue limit 16
-100 round trips in 203 ms (2.0 ms average)
+100 round trips in 200 ms (2.0 ms average)
 
 % hlp-caps
 ...
@@ -469,15 +469,21 @@ page 8 (summary): LED extent 46, limit 100, render rate 40 Hz, colour format 0, 
   brightness maximum 199, 10 steps; animation speed steps 10; grid 19x13
   1 profiles, 21 controls (16 lit, 5 unlit), 46 lights, 4 animations
   button layouts 27 and 31, orientation 0
-  changes counted on pages 8: 0, 9: 0, 10: 0, 11: 0, 12: 14, 13: 0, 14: 0, 15: 0
+  changes counted on pages 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0
 ...
-page 10 (controls): 21 (16 lit), token 0x55CDC8CD
+page 10 (controls): 21 (16 lit), token 0x210EF306
   GP2 action 1 instance 1 of 2 LED 3 at (9,9), 1 light(s) from ordinal 3
   GP3 action 2 LED 1 at (6,4), 1 light(s) from ordinal 1
   ...
   GP14 action 32 unlit
   ...
   GP27 action 1 instance 2 of 2 LED 12 at (7,2), 1 light(s) from ordinal 12
+page 11 (keyboard mapping): 32, token 0x210EF306
+   0 action 1: code 0x52
+  ...
+  17 action 16: code 0x3B
+  18 action 41: no code
+  ...
 ...
 
 % hlp-settings
@@ -488,18 +494,30 @@ animation 0 (an enabled ordinal, or off); speeds 0-10:
     1 enabled, idle 0, pressed 0, case 0, speeds 4/4/4
   ...
 brightness step 4 of 0-10 (maximum 199)
+D-pad mode 0 (Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the digital D-pad mode)
+keyboard codes, the active profile's (page 11 ordinal, its button's action, code):
+   0 action 1: code 0x52
+  ...
+   4 action 5: code 0xE1
+  ...
+
+% hlp-settings --keyboard-code 4=0x68
+...
+   4 action 5: code 0x68
+...
 
 % hlp-settings --brightness 2 --unsaved --exclusive
 brightness step 2 shown, unsaved, for 5.0 s
 claim given up, on-board animations restored
 ...
 brightness step 4 of 0-10 (maximum 199)
+...
 
-% hlp-watch --seconds 4
+% hlp-watch --seconds 8
    0.000 takeover_live False, brightness_unsaved False, animations_idle False, input_mode 0, profile 1, ...
-   1.141 holder_token 0x00000000 -> 0x7F2BBFA3, application_name  -> hlp-settings, claim_generation 4 -> 5
-   1.156 brightness_unsaved False -> True, brightness_step_shown 4 -> 6
-   2.156 brightness_unsaved True -> False, brightness_step_shown 6 -> 4, holder_token 0x7F2BBFA3 -> 0x00000000, ...
+   0.958 holder_token 0x00000000 -> 0xAE7287C7, application_name  -> hlp-settings, exclusive False -> True, ...
+   0.966 brightness_unsaved False -> True, brightness_step_shown 4 -> 2
+   5.964 brightness_unsaved True -> False, brightness_step_shown 2 -> 4, holder_token 0xAE7287C7 -> 0x00000000, ...
 
 % hlp-conformance --settings
 HELLO:
@@ -508,12 +526,12 @@ HELLO:
 Takeover and keepalive:
   ...
   PASS  the takeover ends at the timeout
-        expiry seen after 307 ms (timeout 300)
+        expiry seen after 310 ms (timeout 300)
 ...
-RESULT: ALL PASS (188 passed, 0 failed)
+RESULT: ALL PASS (200 passed, 0 failed)
 
 % hlp-bench
-round trip: median 2.00 ms, p95 2.01 ms (300 of 300 answered)
+round trip: median 2.00 ms, p95 2.06 ms (300 of 300 answered)
 60 fps: 300 of 300 frames acknowledged (46 LEDs, 3 reports per frame)
 unthrottled, every report answered: 166 frames/s
 unthrottled, pipelined: 249 frames/s
