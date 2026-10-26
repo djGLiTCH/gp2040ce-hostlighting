@@ -29,11 +29,12 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
                                             KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_STATE,
-                                            PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD,
-                                            REBOOT_WEBCONFIG, SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY,
-                                            TAKEOVER_WHOLE_FRAME, HostLightingClaimedError, HostLightingDevice,
-                                            HostLightingError, HostLightingRejectedError, HostLightingTimeoutError,
+                                            PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_NAMES,
+                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
+                                            REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
+                                            STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
+                                            HostLightingClaimedError, HostLightingDevice, HostLightingError,
+                                            HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
                                             stage_capacity)
 from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord, jsonable
@@ -192,6 +193,14 @@ def _animation(text: str) -> int:
     return ANIMATION_OFF if text == 'off' else ranged(0, 0xFFFF)(text)
 
 
+def _keyboard_code(text: str) -> tuple[int, int]:
+    """Parse ORDINAL=CODE: a page 11 ordinal and the code to set, each decimal or 0x hex."""
+    ordinal, separator, code = text.partition('=')
+    if not separator:
+        raise argparse.ArgumentTypeError(f"not ORDINAL=CODE: {text}")
+    return ranged(0, 0xFFFF)(ordinal), ranged(0, 0xFF)(code)
+
+
 def _parse_colour(text: str) -> tuple[int, ...]:
     """Parse RRGGBB or RRGGBBWW hex into a colour tuple.
 
@@ -263,6 +272,7 @@ def caps() -> None:
                  (PAGE_SUMMARY, lambda: _print_summary(device, names)),
                  (PAGE_PROFILES, lambda: _print_profiles(device)),
                  (PAGE_CONTROLS, lambda: _print_controls(device, names)),
+                 (PAGE_KEYBOARD_MAPPING, lambda: _print_keyboard_mapping(device, names)),
                  (PAGE_LIGHTS, lambda: _print_lights(device, names)),
                  (PAGE_ANIMATIONS, lambda: _print_animations(device, names)))
         for page, show in pages:
@@ -278,7 +288,7 @@ def _caps_json(device: HostLightingDevice, hello: Hello, names: bool) -> dict[st
         PAGE_IDENTITY: device.read_identity,
         PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
         PAGE_SUMMARY: lambda: device.read_record(PAGE_SUMMARY).records}
-    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS):
+    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_ANIMATIONS):
         readers[page] = functools.partial(lambda number: device.read_table(number).records, page)
     if names:
         readers[PAGE_NAMES] = device.read_names
@@ -325,6 +335,7 @@ def _print_state(device: HostLightingDevice, names: dict[str, dict[int, str]]) -
     print(f"page 1 (state), token 0x{read.token:08X}: input mode {_named(state.input_mode, names, 'InputMode')}, "
           f"profile {state.profile}, player {state.player}, animation {animation}"
           f"{' (idle)' if state.animations_idle else ''}, "
+          f"D-pad mode {_named(state.dpad_mode, names, 'DpadMode')}, "
           f"brightness step {state.brightness_step_shown}"
           + (f" (unsaved; saved step {state.saved_brightness_step})" if state.brightness_unsaved else ''))
     live = 'live' if state.takeover_live else 'not live'
@@ -399,11 +410,25 @@ def _print_controls(device: HostLightingDevice, names: dict[str, dict[int, str]]
         print("  " + ' '.join(pieces))
 
 
+def _print_keyboard_mapping(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
+    """Read and print page 11, the code the Keyboard input mode sends for each button."""
+    read = device.read_table(PAGE_KEYBOARD_MAPPING)
+    print(f"page {PAGE_KEYBOARD_MAPPING} (keyboard mapping): {len(read.records)}, token 0x{read.token:08X}")
+    for record in read.records:
+        print(f"  {_keyboard_line(record.ordinal, record.button.action, record.button.code, names)}")
+
+
+def _keyboard_line(ordinal: int, action: int, code: int, names: dict[str, dict[int, str]]) -> str:
+    """Show one page 11 record: its ordinal, its button's action and its code, in hex."""
+    shown = f"code 0x{code:02X}" if code else 'no code'
+    return f"{ordinal:2d} action {_named(action, names, 'GpioAction')}: {shown}"
+
+
 def _print_lights(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
-    """Read and print page 11, every light."""
+    """Read and print page 12, every light."""
     read = device.read_table(PAGE_LIGHTS)
     lights = read.records
-    print(f"page 11 (lights): {len(lights)}, token 0x{read.token:08X}")
+    print(f"page {PAGE_LIGHTS} (lights): {len(lights)}, token 0x{read.token:08X}")
     for light in lights:
         pieces = [f"{light.ordinal:3d} LED {light.leds.first_led}"]
         if light.leds.led_count > 1:
@@ -423,9 +448,9 @@ def _print_lights(device: HostLightingDevice, names: dict[str, dict[int, str]]) 
 
 
 def _print_animations(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
-    """Read and print page 12, the on-board animations."""
+    """Read and print page 13, the on-board animations."""
     animations = device.read_table(PAGE_ANIMATIONS).records
-    print(f"page 12 (animations): {len(animations)}")
+    print(f"page {PAGE_ANIMATIONS} (animations): {len(animations)}")
     for animation in animations:
         effects, speeds = animation.effects, animation.speeds
         state = 'enabled' if effects.enabled else 'disabled'
@@ -438,15 +463,17 @@ def _print_animations(device: HostLightingDevice, names: dict[str, dict[int, str
 
 @hlp_command
 def settings() -> None:
-    """Show or change a board's profile, animation, animation speeds and brightness."""
-    parser = device_parser("Show a GP2040-CE board's input profile, animation, animation speeds and brightness, "
-                           "or change them. The board applies a change live and saves it to its settings flash "
-                           "shortly after. A value equal to the current one writes nothing. Use it for a user's "
-                           "choice, not as an effect. A profile change switches the live button mapping. "
-                           "--brightness with --unsaved writes nothing. The board shows the step while this "
-                           "command holds the claim, and the saved step again when it ends.")
+    """Show or change a board's profile, animation, animation speeds, brightness and keyboard codes."""
+    parser = device_parser("Show a GP2040-CE board's input profile, animation, animation speeds, brightness and "
+                           "keyboard codes, or change them. The board applies a change live and saves it to its "
+                           "settings flash, a profile or keyboard code at once and the others about a second later. "
+                           "A value equal to the current one writes nothing. Use it for a user's choice, not as an "
+                           "effect. A profile change switches the live button mapping. --brightness with --unsaved "
+                           "writes nothing. The board shows the step while this command holds the claim, and the "
+                           "saved step again when it ends.")
     parser.add_argument('--profile', type=ranged(0, 0xFF), help="select this input profile (a page 9 number)")
-    parser.add_argument('--animation', type=_animation, help="select this animation (a page 12 ordinal) or 'off'")
+    parser.add_argument('--animation', type=_animation,
+                        help=f"select this animation (a page {PAGE_ANIMATIONS} ordinal) or 'off'")
     parser.add_argument('--speed', type=ranged(0, 0xFFFF), metavar='ORDINAL',
                         help="set this animation's speeds from --idle, --pressed and --case")
     for name in ('idle', 'pressed', 'case'):
@@ -456,6 +483,10 @@ def settings() -> None:
     parser.add_argument('--unsaved', action='store_true',
                         help="show --brightness unsaved for --seconds, holding the claim, then the saved step again")
     parser.add_argument('--seconds', type=float, default=5.0, help="how long --unsaved holds the step (default: 5)")
+    parser.add_argument('--keyboard-code', type=_keyboard_code, action='append', metavar='ORDINAL=CODE',
+                        help=f"set the code the Keyboard input mode sends for page {PAGE_KEYBOARD_MAPPING}'s record "
+                             "ORDINAL, in the active profile, or in --profile's when given. Repeat it for more. "
+                             "Consecutive ordinals go in one request, written once")
     parser.add_argument('--names', action='store_true',
                         help="name actions and light kinds from the board's page 3 when -P names none "
                              "(148 more requests)")
@@ -465,6 +496,8 @@ def settings() -> None:
     device = open_device(args.board_id)
     try:
         names = enum_names(device if args.names else None)
+        if args.keyboard_code:
+            _check_keyboard_ordinals(device, args.keyboard_code)
         if args.unsaved:
             _hold_unsaved_brightness(device, args.brightness, args.seconds, args.force, args.exclusive)
         if args.profile is not None:
@@ -475,6 +508,8 @@ def settings() -> None:
             _apply(f"--speed {args.speed}", lambda: device.set_animation_speed(args.speed, *speeds))
         if args.brightness is not None and not args.unsaved:
             _apply(f"--brightness {args.brightness}", lambda: device.set_brightness(args.brightness, save=True))
+        if args.keyboard_code:
+            _apply('--keyboard-code', lambda: _set_keyboard_codes(device, args.keyboard_code, args.profile))
         _print_settings(device, names)
     finally:
         device.close()
@@ -487,7 +522,8 @@ def _checked_options(args: argparse.Namespace) -> tuple[int, int, int]:
         raise SystemExit("--idle, --pressed and --case need --speed ORDINAL")
     if args.speed is not None and speeds == (SPEED_UNCHANGED,) * 3:
         raise SystemExit("--speed needs at least one of --idle, --pressed, --case")
-    if args.unsaved and (args.brightness is None or (args.profile, args.animation, args.speed) != (None,) * 3):
+    if args.unsaved and (args.brightness is None or
+                         (args.profile, args.animation, args.speed, args.keyboard_code) != (None,) * 4):
         raise SystemExit("--unsaved takes --brightness alone. The other settings are always saved")
     if (args.force or args.exclusive) and not args.unsaved:
         raise SystemExit("--force and --exclusive go with --unsaved, which holds the claim")
@@ -505,6 +541,36 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds, lambda: device.set_brightness(step))
+
+
+def _check_keyboard_ordinals(device: HostLightingDevice, changes: list[tuple[int, int]]) -> None:
+    """Refuse an ordinal past page 11's records, before hlp-settings changes anything."""
+    total = len(device.read_table(PAGE_KEYBOARD_MAPPING).records)
+    for ordinal, _ in changes:
+        if ordinal >= total:
+            raise SystemExit(f"error: --keyboard-code: ordinal {ordinal} is past page {PAGE_KEYBOARD_MAPPING}'s "
+                             f"{total} records")
+
+
+def _set_keyboard_codes(device: HostLightingDevice, changes: list[tuple[int, int]],
+                        profile: Optional[int] = None) -> None:
+    """Set the codes of page 11's records, one SET_KEYBOARD_MAPPING for each run of consecutive ordinals.
+
+    Only the codes given are sent, each run for the profile given, --profile's, or else the one page 1 shows. The
+    board refuses a run after a switch to another profile and writes nothing into it, and a run sent while a
+    switch to that profile is still pending is sent again. An ordinal given twice takes the last code. A refused run
+    raises, and the runs before it stay written.
+    """
+    if profile is None:
+        profile = device.read_record(PAGE_STATE).records[0].state.profile
+    codes = dict(changes)
+    ordinals = sorted(codes)
+    start = 0
+    for end in range(1, len(ordinals) + 1):
+        if end == len(ordinals) or ordinals[end] != ordinals[end - 1] + 1:
+            device.set_keyboard_mapping(profile, ordinals[start],
+                                        [codes[ordinal] for ordinal in ordinals[start:end]])
+            start = end
 
 
 def _apply(option: str, change: Callable[[], None]) -> None:
@@ -538,6 +604,13 @@ def _print_settings(device: HostLightingDevice, names: dict[str, dict[int, str]]
               f"speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
     print(f"brightness step {state.brightness_step_shown} of 0-{summary.brightness_steps} "
           f"(maximum {summary.brightness_maximum}){', unsaved' if state.brightness_unsaved else ''}")
+    if PAGE_KEYBOARD_MAPPING in device.hello().pages:
+        print(f"D-pad mode {_named(state.dpad_mode, names, 'DpadMode')} (Up to Right on a GPIO pin or Hall-effect "
+              "trigger send their codes only in the digital D-pad mode)")
+        print(f"keyboard codes, the active profile's (page {PAGE_KEYBOARD_MAPPING} ordinal, its button's action, "
+              "code):")
+        for record in device.read_table(PAGE_KEYBOARD_MAPPING).records:
+            print(f"  {_keyboard_line(record.ordinal, record.button.action, record.button.code, names)}")
 
 
 def _state_fields(record: StateRecord, token: int) -> dict[str, Any]:
@@ -626,10 +699,10 @@ def fill() -> None:
 @hlp_command
 def set_light() -> None:
     """Colour individual lights by ordinal, pin, action or kind."""
-    parser = device_parser("Colour lights on a GP2040-CE board by their page 11 ordinal (or by pin, action or "
-                           "kind), hold, then restore animations.")
+    parser = device_parser(f"Colour lights on a GP2040-CE board by their page {PAGE_LIGHTS} ordinal (or by pin, action "
+                           "or kind), hold, then restore animations.")
     parser.add_argument('--by', choices=['light', 'pin', 'action', 'kind'], default='light',
-                        help="what the addresses name (default: light, the page 11 ordinal)")
+                        help=f"what the addresses name (default: light, the page {PAGE_LIGHTS} ordinal)")
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the colours (default: 3)")
     add_claim_arguments(parser)
     parser.add_argument('entries', nargs='+', metavar='ADDRESS:RRGGBB[WW]',

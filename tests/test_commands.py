@@ -25,7 +25,8 @@ def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert 'protocol 2.0, board ID 433030343237362E, reply queue limit 16' in out
     assert 'firmware version: v0.7.12-88-ga83f820' in out
-    assert 'input mode 0 (INPUT_MODE_XINPUT), profile 1, player 1, animation 0, brightness step 5' in out
+    assert 'input mode 0 (INPUT_MODE_XINPUT), profile 1, player 1, animation 0, D-pad mode 0, brightness step 5' \
+        in out
     assert '0 XINPUT (lighting once a PC is detected)' in out and '4 PS4\n' in out
     assert 'LED extent 19, limit 100, render rate 40 Hz, colour format 0, no white channel\n' in out
     assert 'button layouts 0 and 0, orientation 0\n' in out and 'changes counted on pages 8: 0, 9: 0' in out
@@ -346,6 +347,55 @@ def test_settings_shows_and_changes(hlp_run_on_fake_board, hlp_fake_board, capsy
         hlp_run_on_fake_board(tools.settings, '--profile', '2')
 
 
+def test_settings_shows_and_sets_keyboard_codes(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test hlp-settings' keyboard codes: page 11 shown, and one request for each run of consecutive ordinals."""
+    base = list(hlp_fake_board.keyboard_codes[1])
+    hlp_run_on_fake_board(tools.settings)
+    out = capsys.readouterr().out
+    assert 'D-pad mode 0 (Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the digital ' \
+           'D-pad mode)\n' in out
+    assert "keyboard codes, the active profile's (page 11 ordinal, its button's action, code):" in out
+    assert f"   4 action 5: code 0x{base[4]:02X}" in out and '  31 action 54: no code' in out
+    hlp_run_on_fake_board(tools.settings, '--keyboard-code', '6=7', '--keyboard-code', '4=0x04',
+                          '--keyboard-code', '9=1', '--keyboard-code', '5=2', '--keyboard-code', '9=0x09')
+    out = capsys.readouterr().out
+    sent = hlp_fake_board.sent(hl.CMD_SET_KEYBOARD_MAPPING)
+    assert [request[3:7 + request[6]] for request in sent] == [struct.pack('<BHB', 1, 4, 3) + bytes([4, 2, 7]),
+                                                               struct.pack('<BHB', 1, 9, 1) + bytes([9])]
+    assert '   4 action 5: code 0x04' in out and '   6 action 7: code 0x07' in out
+    assert f"   7 action 8: code 0x{base[7]:02X}" in out and '   9 action 10: code 0x09' in out
+    hlp_fake_board.state = state_record(profile=2, player=3)
+    hlp_run_on_fake_board(tools.settings, '--keyboard-code', '0=0x04')
+    assert hlp_fake_board.sent(hl.CMD_SET_KEYBOARD_MAPPING)[-1][3:8] == struct.pack('<BHB', 2, 0, 1) + bytes([4])
+    assert hlp_fake_board.keyboard_codes[2][0] == 0x04
+    # with --profile, the codes go for that profile, page 1 unread between the switch and them
+    hlp_fake_board.profiles.append([bytes([3, 1]) + b'Third'.ljust(16, b'\x00')])
+    hlp_run_on_fake_board(tools.settings, '--profile', '3', '--keyboard-code', '1=0x05')
+    requests = hlp_fake_board.requests
+    switch = max(i for i, request in enumerate(requests) if request[0] == hl.CMD_SET_PROFILE)
+    write = max(i for i, request in enumerate(requests) if request[0] == hl.CMD_SET_KEYBOARD_MAPPING)
+    assert switch < write and requests[write][3] == 3
+    assert not [request for request in requests[switch:write]
+                if request[0] == hl.CMD_GET_PAGE and request[3] == hl.PAGE_STATE]
+    with pytest.raises(SystemExit, match="ordinal 32 is past page 11's 32 records"):
+        hlp_run_on_fake_board(tools.settings, '--keyboard-code', '4=1', '--keyboard-code', '32=1')
+    with pytest.raises(SystemExit, match="ordinal 40 is past page 11's 32 records"):
+        hlp_run_on_fake_board(tools.settings, '--brightness', '2', '--keyboard-code', '40=1')
+    # nothing sent, the brightness included
+    assert len(hlp_fake_board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 4 and not hlp_fake_board.sent(hl.CMD_SET_BRIGHTNESS)
+    for arguments, message in ((('--keyboard-code', '4'), 'not ORDINAL=CODE'),
+                               (('--keyboard-code', '4=256'), 'outside 0-255')):
+        with pytest.raises(SystemExit):
+            hlp_run_on_fake_board(tools.settings, *arguments)
+        assert message in capsys.readouterr().err
+    with pytest.raises(SystemExit, match='--unsaved takes --brightness alone'):
+        hlp_run_on_fake_board(tools.settings, '--brightness', '2', '--unsaved', '--keyboard-code', '4=1')
+    assert len(hlp_fake_board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 4
+    hlp_fake_board.pages.discard(hl.PAGE_KEYBOARD_MAPPING)         # a board without page 11
+    hlp_run_on_fake_board(tools.settings)
+    assert 'keyboard codes' not in capsys.readouterr().out
+
+
 def test_settings_argument_checks(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test that hlp-settings range-checks its values and pairs --speed with a speed."""
     for arguments, message in ((('--brightness', '255'), 'outside 0-254'), (('--animation', '-1'), 'outside 0-65535'),
@@ -391,7 +441,7 @@ def test_watch_prints_what_each_event_changes(hlp_run_on_fake_board, hlp_fake_bo
     assert hlp_fake_board.subscribed == 1
     assert lines[0].endswith('takeover_live False, brightness_unsaved False, animations_idle False, input_mode 0, '
                              'profile 1, player 1, animation 0, brightness_step_shown 5, takeover_number 3, '
-                             'saved_brightness_step 5, holder_token 0x00000000, application_name , '
+                             'saved_brightness_step 5, dpad_mode 0, holder_token 0x00000000, application_name , '
                              'exclusive False, claim_generation 1, takeover 0, keepalive_ms 2000, '
                              'brightness_applied True, token 0x1234ABCD')
     assert 'ordinal' not in lines[0]
@@ -626,8 +676,9 @@ def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_
     hlp_run_on_fake_board(tools.caps, '--json')
     data = json.loads(capsys.readouterr().out)
     assert data['hello']['major'] == 2 and data['hello']['board_id'] == hlp_fake_board.board_id.hex().upper()
-    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12'}
-    assert data['pages']['11'][0]['leds'] == {'first_led': 0, 'led_count': 1}
+    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12', '13'}
+    assert data['pages']['12'][0]['leds'] == {'first_led': 0, 'led_count': 1}
+    assert data['pages']['11'][0]['button'] == {'action': 1, 'code': hlp_fake_board.keyboard_codes[1][0]}
     assert data['pages']['1'][0]['controller']['holder_token'] == 0 and data['pages']['0']['board_config']
 
 
@@ -635,8 +686,9 @@ def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fa
     """Test that without -P, --names has the board's page 3 name actions and kinds, and hlp-caps count it."""
     hlp_run_on_fake_board(tools.caps, '--names')
     out = capsys.readouterr().out
-    assert 'page 3 (names): 6 GpioAction, 7 LightType' in out
+    assert 'page 3 (names): 35 GpioAction, 7 LightType' in out
     assert 'action 1 (BUTTON_PRESS_UP)' in out and 'kind 1 (Case)' in out
+    assert 'page 11 (keyboard mapping): 32' in out and ' 0 action 1 (BUTTON_PRESS_UP): code 0x52' in out
     hlp_run_on_fake_board(tools.caps)
     assert 'page 3 (names): not read (--names reads it)' in capsys.readouterr().out
     hlp_run_on_fake_board(tools.caps, '--json', '--names')

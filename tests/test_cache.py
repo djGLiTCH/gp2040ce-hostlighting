@@ -10,7 +10,11 @@ import pytest
 
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.cache import ConfigurationCache
-from gp2040ce_hostlighting.testing import control_record, light_record, summary_record
+from gp2040ce_hostlighting.testing import ModelBoard, control_record, fake_device, light_record, summary_record
+
+# the configuration pages 2.0 defines, which a refresh reads first
+EVERY_PAGE = {hl.PAGE_SUMMARY, hl.PAGE_PROFILES, hl.PAGE_CONTROLS, hl.PAGE_KEYBOARD_MAPPING, hl.PAGE_LIGHTS,
+              hl.PAGE_ANIMATIONS}
 
 
 def reads(board) -> list:
@@ -21,15 +25,17 @@ def reads(board) -> list:
 
 
 def test_the_first_refresh_reads_every_kept_page(hlp_fake_device, hlp_fake_board):
-    """Test the Summary, then pages 9 to 12 under its token with every group, and what the cache then holds."""
+    """Test the Summary, then pages 9 to 13 under its token with every group, and what the cache then holds."""
     cache = ConfigurationCache(hlp_fake_device.hello())
     assert cache.summary is None and cache.lights is None and cache.token is None
-    assert cache.refresh(hlp_fake_device) == {8, 9, 10, 11, 12}
+    assert cache.refresh(hlp_fake_device) == EVERY_PAGE
     token = hlp_fake_board.token
-    assert reads(hlp_fake_board) == [(8, 0, 0b11), (9, token, 0b1), (10, token, 0b1111), (11, token, 0b111111),
-                                     (12, token, 0b11)]
+    assert reads(hlp_fake_board) == [(hl.PAGE_SUMMARY, 0, 0b11), (hl.PAGE_PROFILES, token, 0b1),
+                                     (hl.PAGE_CONTROLS, token, 0b1111), (hl.PAGE_KEYBOARD_MAPPING, token, 0b1),
+                                     (hl.PAGE_LIGHTS, token, 0b111111), (hl.PAGE_ANIMATIONS, token, 0b11)]
     assert cache.token == token and cache.summary.led_extent == 19 and cache.counters == (0,) * 8
     assert len(cache.profiles) == 1 and len(cache.controls) == 3 and len(cache.lights) == 2
+    assert len(cache.keyboard_mapping) == len(hlp_fake_board.keyboard_actions)
     assert cache.animations[0].speeds.idle == 5
     assert cache.refresh(hlp_fake_device) == frozenset() and reads(hlp_fake_board)[-1] == (8, 0, 0b11)
 
@@ -43,13 +49,14 @@ def test_a_changed_page_is_read_again_and_lights_by_the_groups_that_change(hlp_f
     # a profile switch: light 0's owner action changes, its LEDs and cell stay
     hlp_fake_board.reconfigure(lights=[light_record(0, pin=2, action=9, instance=1, instances=1),
                                        hlp_fake_board.lights[1]])
-    assert cache.refresh(hlp_fake_device) == {11}
-    assert reads(hlp_fake_board)[-1] == (11, hlp_fake_board.token, 0b1110)
+    assert cache.refresh(hlp_fake_device) == {hl.PAGE_LIGHTS}
+    assert reads(hlp_fake_board)[-1] == (hl.PAGE_LIGHTS, hlp_fake_board.token, 0b1110)
     assert cache.lights[0].owner.action == 9 and cache.lights[0].leds == first[0].leds
     assert cache.lights[0].grid == first[0].grid and cache.lights[1] == first[1]
     hlp_fake_board.reconfigure(controls=hlp_fake_board.controls[:2])
-    assert cache.refresh(hlp_fake_device) == {8, 10}                # the Summary's control totals changed too
-    assert reads(hlp_fake_board)[-1][::2] == (10, 0b1111) and len(cache.controls) == 2
+    # the Summary's control totals changed too
+    assert cache.refresh(hlp_fake_device) == {hl.PAGE_SUMMARY, hl.PAGE_CONTROLS}
+    assert reads(hlp_fake_board)[-1][::2] == (hl.PAGE_CONTROLS, 0b1111) and len(cache.controls) == 2
 
 
 def test_lights_of_another_count_are_read_whole(hlp_fake_device, hlp_fake_board):
@@ -57,7 +64,7 @@ def test_lights_of_another_count_are_read_whole(hlp_fake_device, hlp_fake_board)
     cache = ConfigurationCache(hlp_fake_device.hello())
     cache.refresh(hlp_fake_device)
     hlp_fake_board.reconfigure(lights=[*hlp_fake_board.lights, light_record(4, kind=1, slot=1)])
-    assert cache.refresh(hlp_fake_device) == {8, 11}
+    assert cache.refresh(hlp_fake_device) == {hl.PAGE_SUMMARY, hl.PAGE_LIGHTS}
     assert [mask for page, _, mask in reads(hlp_fake_board)[-2:]] == [0b1110, 0b111111]
     assert len(cache.lights) == 3 and cache.lights[2].leds.first_led == 4
 
@@ -74,8 +81,8 @@ def test_a_stale_read_starts_again_from_the_summary(hlp_fake_device, hlp_fake_bo
             hlp_fake_board.token += 1
         return page(sequence, request)
     hlp_fake_board._page = changing
-    assert cache.refresh(hlp_fake_device) == {8, 9, 10, 11, 12}
-    assert [read[0] for read in reads(hlp_fake_board)] == [8, 9, 8, 9, 10, 11, 12]
+    assert cache.refresh(hlp_fake_device) == EVERY_PAGE
+    assert [read[0] for read in reads(hlp_fake_board)] == [hl.PAGE_SUMMARY, hl.PAGE_PROFILES] + sorted(EVERY_PAGE)
     assert cache.token == hlp_fake_board.token
     cache.clear()
     assert cache.summary is None and cache.controls is None and cache.counters is None
@@ -111,15 +118,15 @@ def test_a_page_added_to_those_kept_is_read_at_the_next_refresh(hlp_fake_device,
 
 
 def test_a_mask_of_0_is_every_group_and_an_undecoded_page_is_refused(hlp_fake_device, hlp_fake_board):
-    """Test that masks of 0 read every group, Lights again by groups 1-3, and that page 13 cannot be kept."""
+    """Test that masks of 0 read every group, Lights again by groups 1-3, and that page 14 cannot be kept."""
     cache = ConfigurationCache(hlp_fake_device.hello(), {hl.PAGE_SUMMARY: 0, hl.PAGE_LIGHTS: 0})
     cache.refresh(hlp_fake_device)
     assert cache.summary is not None and cache.masks[hl.PAGE_LIGHTS] == 0b111111
     hlp_fake_board.reconfigure(lights=hlp_fake_board.lights)
     cache.refresh(hlp_fake_device)
     assert reads(hlp_fake_board)[-1][2] == 0b1110 and cache.moved == {hl.PAGE_LIGHTS}
-    cache.pages = cache.pages | {13}
-    with pytest.raises(ValueError, match='not 13'):
+    cache.pages = cache.pages | {14}
+    with pytest.raises(ValueError, match='not 14'):
         cache.refresh(hlp_fake_device)
 
 
@@ -136,6 +143,27 @@ def test_the_lights_an_entry_reaches_and_the_controls_by_key_or_action(hlp_fake_
         cache.lights_reached(hl.ADDRESSING_LED_RUN, 0)
     assert [control.input.key for control in cache.controls_with(action=1)] == [2]
     assert cache.controls_with(key=12)[0].input.action == 13 and cache.controls_with(key=12, action=1) == ()
+
+
+def test_the_keyboard_code_of_an_action_follows_the_mapping(hlp_fake_device):
+    """Test keyboard_code(): None until read, the code of the record with the action, None for an action without one.
+
+    A changed code is read again by page 11's counter alone.
+    """
+    board = ModelBoard()
+    device = fake_device(board)
+    cache = ConfigurationCache(device.hello())
+    b1 = board.keyboard_actions.index(5)            # BUTTON_PRESS_B1's record
+    assert cache.keyboard_code(5) is None
+    cache.refresh(device)
+    assert cache.keyboard_code(5) == board.keyboard_codes[1][b1] and cache.keyboard_code(55) is None
+    device.set_keyboard_mapping(1, b1, [0x04])
+    assert cache.refresh(device) == {hl.PAGE_KEYBOARD_MAPPING} and cache.moved == {hl.PAGE_KEYBOARD_MAPPING}
+    assert cache.keyboard_code(5) == 0x04
+    board.later_groups[hl.PAGE_KEYBOARD_MAPPING] = bytes([1])     # a later 2.x board's group, read alone
+    unread = ConfigurationCache(device.hello(), masks={hl.PAGE_KEYBOARD_MAPPING: 0b10})
+    unread.refresh(device)
+    assert unread.keyboard_mapping and unread.keyboard_code(5) is None
 
 
 def test_the_summary_gives_the_brightness_scale_and_a_stream_rate(hlp_fake_device, hlp_fake_board):

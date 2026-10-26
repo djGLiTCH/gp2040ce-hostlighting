@@ -18,8 +18,8 @@ from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.protocol import HostLightingDevice
 
 __all__ = ['BOARD_ID', 'FakeBoard', 'ModelBoard', 'attach', 'control_record', 'fake_device', 'hello_reply',
-           'identity_reply', 'light_record', 'other_event', 'page_reply', 'state_event', 'state_record',
-           'summary_record']
+           'identity_reply', 'keyboard_record', 'light_record', 'other_event', 'page_reply', 'state_event',
+           'state_record', 'summary_record']
 
 BOARD_ID = bytes.fromhex('433030343237362E')
 
@@ -51,7 +51,7 @@ def state_record(takeover_live: int = 0, input_mode: int = 0, profile: int = 1, 
                  holder_token: int = 0, application_name: bytes = b'', takeover: int = 0,
                  keepalive_ms: int = 2000, brightness_applied: int = 1, brightness_unsaved: int = 0,
                  exclusive: int = 0, saved_brightness_step: Optional[int] = None, claim_generation: int = 1,
-                 animations_idle: int = 0) -> list[bytes]:
+                 animations_idle: int = 0, dpad_mode: int = 0) -> list[bytes]:
     """One page 1 record as its three groups, with the saved step the step shown unless given.
 
     Each keyword is the field of the same name in records.State, Controller or Settings.
@@ -59,7 +59,7 @@ def state_record(takeover_live: int = 0, input_mode: int = 0, profile: int = 1, 
     saved = brightness_step_shown if saved_brightness_step is None else saved_brightness_step
     flags = takeover_live | brightness_unsaved << 1 | animations_idle << 2
     return [bytes([flags, input_mode, profile, player]) + struct.pack('<H', animation) +
-            bytes([brightness_step_shown, takeover_number, saved]),
+            bytes([brightness_step_shown, takeover_number, saved, dpad_mode]),
             struct.pack('<I', holder_token) + application_name.ljust(16, b'\x00') +
             bytes([exclusive, claim_generation]),
             struct.pack('<BHB', takeover, keepalive_ms, brightness_applied)]
@@ -104,10 +104,24 @@ def control_record(key: int, action: int, duplicated: int = 0, lit: int = 1, ins
             struct.pack('<HH', first_light if lit else 0xFFFF, light_count)]
 
 
+def keyboard_record(action: int, code: int) -> list[bytes]:
+    """One page 11 record: a button's action and the code the Keyboard input mode sends for it."""
+    return [struct.pack('<hB', action, code)]
+
+
+# the fakes' keyboard mapping: KeyboardMapping's fields in order, each with its button's GpioAction as enums.proto
+# numbers it and the code GP2040-CE's configs/Pico/BoardConfig.h gives (TinyUSB's HID usages), 0 where it gives none
+_KEYBOARD_BUTTONS = ((1, 0x52), (2, 0x51), (3, 0x50), (4, 0x4F), (5, 0xE1), (6, 0x1D), (7, 0xE0), (8, 0xE2),
+                     (9, 0x06), (10, 0x2C), (11, 0x19), (12, 0x1B), (13, 0x22), (14, 0x1E), (17, 0x2E), (18, 0x2D),
+                     (15, 0x26), (16, 0x3B)) + tuple((action, 0) for action in range(41, 55))
+# _set_keyboard_mapping()'s answer while a profile switch waits to apply or for another profile: status 3
+_STALE = -1
+
+
 def light_record(first_led: int, led_count: int = 1, kind: int = 0, duplicated: int = 0, pin: int = 0xFF,
                  action: int = hl.ACTION_NONE, instance: int = 0, instances: int = 0, x: int = 0, y: int = 0,
                  slot: int = 0xFF) -> list[bytes]:
-    """One page 11 record. Each keyword is the field of the same name in its group's record class."""
+    """One page 12 record. Each keyword is the field of the same name in its group's record class."""
     return [struct.pack('<HH', first_led, led_count), bytes([kind, duplicated]), struct.pack('<Bh', pin, action),
             struct.pack('<HH', instance, instances), bytes([x, y]), bytes([slot])]
 
@@ -133,8 +147,8 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
 # what this firmware's HELLO lists, the fakes' defaults
 HELLO_REQUEST_FLAGS = frozenset(range(7))
 HELLO_COMMANDS = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x30, 0x31, 0x32,
-                            0x33, 0x70, 0x71))
-HELLO_PAGES = frozenset((0, 1, 2, 3, 8, 9, 10, 11, 12))
+                            0x33, 0x34, 0x70, 0x71))
+HELLO_PAGES = frozenset((0, 1, 2, 3, 8, 9, 10, 11, 12, 13))
 HELLO_ADDRESSING_MODES = frozenset((0, 1, 4, 5, 6, 7))
 HELLO_PIXEL_FORMATS = frozenset((0, 1, 2))
 HELLO_EVENTS = frozenset((0,))
@@ -165,9 +179,9 @@ _SUMMARY_CONTROLS = 20
 _SUMMARY_LIT = 22
 _SUMMARY_UNLIT = 24
 _SUMMARY_LIGHTS = 26
-# the configuration pages' change counters the fakes step: pages 10 and 11
-_CHANGES_CONTROLS = 2
-_CHANGES_LIGHTS = 3
+# the configuration pages' change counters the fakes step: Controls and Lights
+_CHANGES_CONTROLS = hl.PAGE_CONTROLS - hl.PAGE_SUMMARY
+_CHANGES_LIGHTS = hl.PAGE_LIGHTS - hl.PAGE_SUMMARY
 
 
 def _pixel(data: bytes, pixel_format: int) -> tuple[int, ...]:
@@ -226,8 +240,8 @@ class FakeBoard:
 
     COMMANDS = {hl.CMD_HELLO, hl.CMD_GET_PAGE, hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_STAGE,
                 hl.CMD_UNSTAGE, hl.CMD_FILL, hl.CMD_CLEAR, hl.CMD_COMMIT, hl.CMD_RELEASE, hl.CMD_SET_PROFILE,
-                hl.CMD_SET_ANIMATION, hl.CMD_SET_ANIMATION_SPEED, hl.CMD_SET_BRIGHTNESS, hl.CMD_SET_INPUT_MODE,
-                hl.CMD_REBOOT}
+                hl.CMD_SET_ANIMATION, hl.CMD_SET_ANIMATION_SPEED, hl.CMD_SET_BRIGHTNESS, hl.CMD_SET_KEYBOARD_MAPPING,
+                hl.CMD_SET_INPUT_MODE, hl.CMD_REBOOT}
 
     def __init__(self) -> None:
         """Set up a small board: three controls (one an expander pin), a button light and a case strip."""
@@ -260,6 +274,11 @@ class FakeBoard:
                       [bytes([4, 0x00]), b'PS4'.ljust(22, b'\x00')]]
         self.profiles = [[bytes([1, 1]) + b'Base'.ljust(16, b'\x00')]]
         self.animations = [[bytes([1, 2, 1, 2]), bytes([5, 5, 5])]]
+        # page 11: the buttons' actions, and each profile's codes by profile number. A profile without codes of
+        # its own has profile 1's, as GP2040-CE copies the base mapping into each profile at boot. The first write
+        # gives each listed profile its own copy, so that a change stays in its profile
+        self.keyboard_actions = [action for action, _ in _KEYBOARD_BUTTONS]
+        self.keyboard_codes: dict[int, list[int]] = {1: [code for _, code in _KEYBOARD_BUTTONS]}
         self.identity = ['Haute42 COSMOX M Ultra', 'Haute42COSMOXMUltra', 'rp2040', 'v0.7.12-88-ga83f820',
                          '0.7.12', 'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
         self.token = 0x1234ABCD
@@ -460,8 +479,11 @@ class FakeBoard:
             self.subscribed |= struct.unpack_from('<H', request, 3)[0] & (1 << hl.EVENT_STATE_CHANGED)
             return (ok + struct.pack('<H', self.subscribed)).ljust(hl.REPORT_SIZE, b'\x00')
         setters = {hl.CMD_SET_PROFILE: self._set_profile, hl.CMD_SET_ANIMATION: self._set_animation,
-                   hl.CMD_SET_ANIMATION_SPEED: self._set_speed, hl.CMD_SET_BRIGHTNESS: self._set_brightness}
+                   hl.CMD_SET_ANIMATION_SPEED: self._set_speed, hl.CMD_SET_BRIGHTNESS: self._set_brightness,
+                   hl.CMD_SET_KEYBOARD_MAPPING: self._set_keyboard_mapping}
         offset = setters[command](request)
+        if offset == _STALE:
+            return ok[:2] + bytes([hl.STATUS_STALE]) + bytes(61)
         if offset:
             return ok[:2] + bytes([hl.STATUS_INVALID, offset]) + bytes(60)
         return ok.ljust(hl.REPORT_SIZE, b'\x00')
@@ -473,7 +495,9 @@ class FakeBoard:
         self.state = [bytes(state)] + self.state[1:]
 
     def _set_profile(self, request: bytes) -> int:
-        """Apply SET_PROFILE, and return the byte at fault, or 0."""
+        """Apply SET_PROFILE, and return the byte at fault, or 0. The profile shown is status 0, checked first."""
+        if request[3] == self.state[0][2]:
+            return 0
         if request[3] not in [record[0][0] for record in self.profiles if record[0][1] & 1]:
             return 3
         self.set_state(2, request[3:4])
@@ -502,6 +526,42 @@ class FakeBoard:
         old = self.animations[index][1]
         speeds = bytes(was if speed == hl.SPEED_UNCHANGED else speed for was, speed in zip(old, new))
         self.animations[index] = [self.animations[index][0], speeds]
+        return 0
+
+    def keyboard_records(self) -> list[list[bytes]]:
+        """Build page 11's records: each button's action and the applied profile's code."""
+        return [keyboard_record(action, code)
+                for action, code in zip(self.keyboard_actions, self.profile_codes(self.applied_profile()))]
+
+    def profile_codes(self, profile: int) -> list[int]:
+        """Give a profile's keyboard codes, profile 1's for a profile without codes of its own."""
+        return self.keyboard_codes.get(profile, self.keyboard_codes[1])
+
+    def applied_profile(self) -> int:
+        """Give the profile of the mappings the pages report: the one page 1 shows, applied at once here."""
+        return int(self.state[0][2])
+
+    def switch_pending(self) -> bool:
+        """Say whether a profile switch waits to apply. FakeBoard applies one at once."""
+        return False
+
+    def _set_keyboard_mapping(self, request: bytes) -> int:
+        """Apply SET_KEYBOARD_MAPPING to the applied profile's codes.
+
+        :return: the byte at fault, _STALE while a profile switch waits to apply or for another profile, or 0
+        """
+        profile, first, count = struct.unpack_from('<BHB', request, 3)
+        if first >= len(self.keyboard_actions):
+            return 4
+        if not count or count > len(self.keyboard_actions) - first:
+            return 6
+        if self.switch_pending() or profile != self.applied_profile():
+            return _STALE
+        for record in self.profiles:
+            self.keyboard_codes.setdefault(record[0][0], list(self.keyboard_codes[1]))
+        codes = list(self.profile_codes(profile))
+        codes[first:first + count] = request[7:7 + count]
+        self.keyboard_codes[profile] = codes
         return 0
 
     def _set_brightness(self, request: bytes) -> int:
@@ -610,7 +670,8 @@ class FakeBoard:
         state = [self.state[0], self._controller()] + self.state[2:]
         tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_NAMES: self.name_records(),
                   hl.PAGE_SUMMARY: [self.summary],
-                  hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls, hl.PAGE_LIGHTS: self.lights,
+                  hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls,
+                  hl.PAGE_KEYBOARD_MAPPING: self.keyboard_records(), hl.PAGE_LIGHTS: self.lights,
                   hl.PAGE_ANIMATIONS: self.animations}
         if page not in self.pages or (page != hl.PAGE_IDENTITY and page not in tables):
             return bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_INVALID, 3]) + bytes(60)
@@ -618,7 +679,7 @@ class FakeBoard:
             self.stale_once_at = None
             self.token += 1
         if token and token != self.token:
-            return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE_TOKEN)
+            return page_reply(page, [], start, mask, self.token, sequence, hl.STATUS_STALE)
         if page == hl.PAGE_IDENTITY:
             return identity_reply(self.identity, mask or 0xFF, sequence, start)
         records, widths = tables[page], hl.PAGE_GROUPS[page]
@@ -700,6 +761,7 @@ class FakeBoard:
             return self.names
         actions = {struct.unpack_from('<h', control[0], 1)[0] for control in self.controls}
         actions |= {struct.unpack_from('<h', light[2], 1)[0] for light in self.lights} - {hl.ACTION_NONE}
+        actions |= set(self.keyboard_actions)
         actions |= set(_ACTION_NAMES)
         records = [name_record(hl.NAMES_GPIO_ACTION, value, _ACTION_NAMES.get(value, f'ACTION_{value}'))
                    for value in sorted(actions)]
@@ -851,10 +913,12 @@ class ModelBoard(FakeBoard):
     follow the configuration pages. Each report written takes 1 ms. A read with nothing to read waits its timeout.
     Reports wait on the board until a handle reads, where a host's operating system takes them as they come.
 
-    As the firmware times them: SET_PROFILE shows the profile on page 1 at once, and its pages (profile_pages), the
-    token and one event at the board's next pass; SET_ANIMATION from the idle timeout clears the idle flag at the
+    As the firmware times them: SET_PROFILE stores the profile, and page 1 shows it with its pages (profile_pages
+    and the profile's keyboard codes), the token and one event at the board's next pass, SET_KEYBOARD_MAPPING
+    answering STALE until then and for another profile; SET_ANIMATION from the idle timeout clears the idle flag at the
     next render tick. bus_reset(), suspend(), resume() and deconfigure() are the USB events of the specification's
-    Session state.
+    Session state, set_dpad_mode() a D-pad hotkey or a held SUSTAIN_DP_MODE_* button, and store_profile() a
+    profile hotkey.
     """
 
     def __init__(self) -> None:
@@ -884,7 +948,10 @@ class ModelBoard(FakeBoard):
         # profile number -> (controls, lights): the pages a SET_PROFILE to it shows. A profile not here keeps them
         self.profile_pages: dict[int, tuple[list[list[bytes]], list[list[bytes]]]] = {}
         self.suspended = False          # USB suspend: nothing is sent and a write fails until resume()
-        self._profile_due = False       # a SET_PROFILE with pages, token and event waiting for the next pass
+        # the profile stored, by SET_PROFILE or any other source. One other than page 1's, the applied one, is a
+        # switch that page 1, its pages, the token and its event show at the next pass. Page 1's profile set by
+        # hand returns to it then, so a test switches with store_profile() or SET_PROFILE
+        self.stored_profile = int(self.state[0][2])
         self._wake_due: Optional[float] = None   # when a SET_ANIMATION clears the idle flag
         self._hashes: list[int] = []         # each configuration page as last hashed, for the change counters
         self._refresh()
@@ -1036,6 +1103,11 @@ class ModelBoard(FakeBoard):
         super().idle(idle)
         self._note()
 
+    def set_dpad_mode(self, mode: int) -> None:
+        """Have a D-pad hotkey or a held SUSTAIN_DP_MODE_* button change the D-pad mode the gamepad applies."""
+        self.set_state(9, bytes([mode]))
+        self._note()
+
     def bus_reset(self) -> None:
         """Have the host reset the bus: the replies still waiting are dropped, and a claim ends (a change of holder).
 
@@ -1104,18 +1176,25 @@ class ModelBoard(FakeBoard):
         self._refresh()
         self._seen = (tuple(self.state), self.token)
 
-    def _set_profile(self, request: bytes) -> int:
-        """Apply SET_PROFILE, and return the byte at fault, or 0.
+    def switch_pending(self) -> bool:
+        """Say whether a stored profile waits to apply, at the board's next pass."""
+        return self.stored_profile != self.applied_profile()
 
-        Page 1 shows the profile at once. Its pages, the token and one event follow at the board's next pass. The
-        profile shown already is status 0 and changes nothing.
+    def store_profile(self, number: int) -> None:
+        """Have a profile hotkey store a profile, which applies at the board's next pass.
+
+        A hotkey stores profile 1 or an enabled profile, as Storage::setProfile does, so number is one of those.
         """
-        if request[3] == self.state[0][2]:
+        self.stored_profile = number
+
+    def _set_profile(self, request: bytes) -> int:
+        """Store SET_PROFILE's profile, and return the byte at fault, or 0. The stored profile is status 0."""
+        if request[3] == self.stored_profile:
             return 0
-        offset = super()._set_profile(request)
-        if not offset:
-            self._profile_due = True
-        return offset
+        if request[3] not in [record[0][0] for record in self.profiles if record[0][1] & 1]:
+            return 3
+        self.stored_profile = request[3]
+        return 0
 
     def _set_animation(self, request: bytes) -> int:
         """Apply SET_ANIMATION, and return the byte at fault, or 0.
@@ -1211,10 +1290,10 @@ class ModelBoard(FakeBoard):
         return bool(self.state[0][6] != self.saved_step)
 
     def _tick(self) -> None:
-        if self._profile_due:
-            # the board's next pass: the profile's pages and the token follow it, with one event
-            self._profile_due = False
-            pages = self.profile_pages.get(self.state[0][2])
+        if self.switch_pending():
+            # the board's next pass: page 1, the profile's pages and the token follow it, with one event
+            self.set_state(2, bytes([self.stored_profile]))
+            pages = self.profile_pages.get(self.stored_profile)
             if pages is not None:
                 self.reconfigure(controls=pages[0], lights=pages[1])
         if self._wake_due is not None and self.now >= self._wake_due:
@@ -1239,9 +1318,11 @@ class ModelBoard(FakeBoard):
         self.state = [bytes(state), self._controller(),
                       struct.pack('<BHB', self.overlay, self.keepalive_ms, self.brightness)]
         # the token follows what the configuration pages report, the change counters apart. A page that
-        # changed since it was last hashed steps its counter (pages 8 to 12 here)
-        pages = [self.summary[0], self.profiles, self.controls, self.lights, self.animations]
-        hashes = [zlib.crc32(repr(page).encode()) for page in pages]
+        # changed since it was last hashed steps its counter, each page 8 to 15 in its own slot
+        pages = {hl.PAGE_SUMMARY: self.summary[0], hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls,
+                 hl.PAGE_KEYBOARD_MAPPING: self.keyboard_records(), hl.PAGE_LIGHTS: self.lights,
+                 hl.PAGE_ANIMATIONS: self.animations}
+        hashes = [zlib.crc32(repr(pages.get(page)).encode()) for page in range(hl.PAGE_SUMMARY, hl.PAGE_SUMMARY + 8)]
         changes = bytearray(self.summary[1])
         for index, (was, now) in enumerate(zip(self._hashes, hashes)):
             if was != now:
@@ -1251,8 +1332,6 @@ class ModelBoard(FakeBoard):
         self.token = zlib.crc32(repr(hashes).encode()) or 1
 
     def _note(self) -> None:
-        if self._profile_due:
-            return                      # the profile's event waits for its pages and token
         self._refresh()
         now = (tuple(self.state), self.token)
         if now != self._seen:

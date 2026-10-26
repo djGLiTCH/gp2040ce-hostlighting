@@ -83,7 +83,7 @@ def test_decode_hello():
     assert hello.board_id == '433030343237362E' and hello.reply_queue_limit == 16
     assert hello.request_flags == {0, 1, 2, 3, 4, 5, 6}     # four flags and the claim generation's three bits
     assert 0x33 in hello.commands and 0x71 in hello.commands and 0x06 not in hello.commands
-    assert hello.pages == {0, 1, 2, 3, 8, 9, 10, 11, 12} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
+    assert hello.pages == {0, 1, 2, 3, 8, 9, 10, 11, 12, 13} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
     assert hello.pixel_formats == {0, 1, 2} and hello.events == {0} and hello.events_enabled == frozenset()
 
 
@@ -94,15 +94,16 @@ def test_decode_state_all_groups():
                                                     takeover_number=9, holder_token=0xA1, application_name=b'MESH',
                                                     takeover=1, keepalive_ms=300,
                                                     brightness_applied=0, brightness_unsaved=1, exclusive=1,
-                                                    saved_brightness_step=5, claim_generation=3)])
+                                                    saved_brightness_step=5, claim_generation=3,
+                                                    dpad_mode=2)])
     header = hl.decode_page_header(reply)
-    assert (header.page, header.total, header.count, header.stride, header.groups) == (1, 1, 1, 35, 7)
+    assert (header.page, header.total, header.count, header.stride, header.groups) == (1, 1, 1, 36, 7)
     (record,) = hl.decode_records(reply)
     assert record == records.StateRecord(
         ordinal=0,
         state=records.State(takeover_live=True, brightness_unsaved=True, animations_idle=False, input_mode=14,
                             profile=2, player=0, animation=None, brightness_step_shown=7, takeover_number=9,
-                            saved_brightness_step=5),
+                            saved_brightness_step=5, dpad_mode=2),
         controller=hl.Controller(holder_token=0xA1, application_name='MESH', exclusive=True, claim_generation=3),
         settings=hl.Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False))
     idle = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(animations_idle=1)]))[0].state
@@ -193,13 +194,13 @@ def test_a_group_not_read_raises_and_records_are_immutable():
     lights = [light_record(4, 2, pin=3, action=5, x=1, y=2)]
     whole = hl.decode_records(page_reply(hl.PAGE_LIGHTS, lights))[0]
     owners = hl.decode_records(page_reply(hl.PAGE_LIGHTS, lights, mask=0b1110))[0]
-    with pytest.raises(hl.HostLightingGroupNotReadError, match='page 11 record 0: the grid group was not read'):
+    with pytest.raises(hl.HostLightingGroupNotReadError, match='page 12 record 0: the grid group was not read'):
         owners.grid
-    assert isinstance(hl.HostLightingGroupNotReadError(11, 'grid', 0), AttributeError)
+    assert isinstance(hl.HostLightingGroupNotReadError(hl.PAGE_LIGHTS, 'grid', 0), AttributeError)
     assert not hasattr(owners, 'grid') and hasattr(owners, 'owner') and owners.has('owner') and not owners.has('leds')
-    with pytest.raises(ValueError, match="page 11 has no field group 'colour'"):
+    with pytest.raises(ValueError, match="page 12 has no field group 'colour'"):
         owners.has('colour')
-    with pytest.raises(TypeError, match="page 11 has no field group 'colour'"):
+    with pytest.raises(TypeError, match="page 12 has no field group 'colour'"):
         records._Record.__init__(owners, 0, {'colour': 1})
     assert whole.merged(owners) == whole and owners.merged(whole) == whole and hash(whole.merged(owners)) == hash(whole)
     moved = hl.decode_records(page_reply(hl.PAGE_LIGHTS, [light_record(4, 2, pin=3, action=6)], mask=0b100))[0]
@@ -387,7 +388,7 @@ def test_request_times_out(hlp_fake_device, hlp_fake_board):
 def test_rejection_carries_status_and_offset(hlp_fake_device):
     """Test that a status other than 0 raises with the offending byte."""
     with pytest.raises(hl.HostLightingRejectedError) as caught:
-        hlp_fake_device.get_page(13)
+        hlp_fake_device.get_page(14)
     assert caught.value.status == hl.STATUS_INVALID and caught.value.offset == 3
     assert 'at request byte 3' in str(caught.value)
 
@@ -652,7 +653,7 @@ def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
     def always_stale(sequence, request):
         hlp_fake_board.token += 1
         return page_reply(hl.PAGE_PROFILES, [], struct.unpack_from('<H', request, 4)[0], 0, hlp_fake_board.token,
-                          sequence, hl.STATUS_STALE_TOKEN)
+                          sequence, hl.STATUS_STALE)
     hlp_fake_board._page = lambda sequence, request: (always_stale(sequence, request)
                                                       if struct.unpack_from('<I', request, 6)[0]
                                                       else real_page(sequence, request))
@@ -678,7 +679,7 @@ def test_sequence_wraps_past_zero(hlp_fake_device, hlp_fake_board):
 
 
 def test_decode_partial_groups_of_controls_and_animations():
-    """Test page 10 with groups 0-2 (14 bytes, three per reply) and page 12 with the speeds alone."""
+    """Test page 10 with groups 0-2 (14 bytes, three per reply) and page 13 with the speeds alone."""
     controls = [control_record(pin, 1) for pin in range(5)]
     reply = page_reply(hl.PAGE_CONTROLS, controls, mask=0b0111)
     header = hl.decode_page_header(reply)
@@ -819,7 +820,7 @@ def test_records_that_do_not_fit_their_reply_are_refused():
     reply = bytearray(page_reply(hl.PAGE_LIGHTS, [light_record(0), light_record(1)]))
     narrow = bytearray(reply)
     narrow[9] = 4
-    with pytest.raises(hl.HostLightingError, match='page 11 records are 4 bytes apart, narrower than the 16'):
+    with pytest.raises(hl.HostLightingError, match='page 12 records are 4 bytes apart, narrower than the 16'):
         hl.decode_records(bytes(narrow))
     crowded = bytearray(reply)
     crowded[8] = 4
@@ -945,9 +946,13 @@ def test_device_calls_refuse_values_their_fields_cannot_hold(hlp_fake_device, hl
              lambda: device.configure(keepalive_ms=70000), lambda: device.subscribe([16]),
              lambda: device.set_animation(0x10000), lambda: device.set_animation_speed(0x10000),
              lambda: device.set_animation_speed(0, idle=300), lambda: device.claim(256, 1),
+             lambda: device.set_keyboard_mapping(256, 0, [1]), lambda: device.set_keyboard_mapping(1, 0x10000, [1]),
+             lambda: device.set_keyboard_mapping(1, 0, []), lambda: device.set_keyboard_mapping(1, 0, [256]),
+             lambda: device.set_keyboard_mapping(1, 0, [0] * (hl.REPORT_SIZE - 6)),
+             lambda: device.set_keyboard_mapping(1, 0, [1], attempts=0),
              lambda: hl.encode_pixel((1, 2), hl.PIXEL_RGB)]
     for call in calls:
-        with pytest.raises(ValueError, match='outside|fewer than three'):
+        with pytest.raises(ValueError, match='outside|fewer than three|below 1'):
             call()
     assert not hlp_fake_board.requests and device.claim_token == 0
 

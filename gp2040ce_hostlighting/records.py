@@ -15,8 +15,8 @@ from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
 __all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
            'ControlRecord', 'Controller', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
-           'InputModeRecord', 'Instances', 'LedRange', 'LightKind', 'LightRecord', 'NameRecord', 'Owner', 'PageHeader',
-           'PageRead',
+           'InputModeRecord', 'Instances', 'KeyboardButton', 'KeyboardMappingRecord', 'LedRange', 'LightKind',
+           'LightRecord', 'NameRecord', 'Owner', 'PageHeader', 'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
            'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord', 'jsonable']
 
@@ -167,6 +167,7 @@ class State:
     brightness_step_shown: int
     takeover_number: int
     saved_brightness_step: int
+    dpad_mode: int                          # the D-pad mode the gamepad applies (DpadMode), verbatim
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -382,7 +383,7 @@ class ControlInstances:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Instances:
-    """Page 11's owner instances: the owning control's place among the controls with its action.
+    """Page 12's owner instances: the owning control's place among the controls with its action.
 
     Both are None for a light with an owner pin that is none or not a control, which the board sends as 0.
     """
@@ -425,11 +426,34 @@ class ControlRecord(_Record):
         super().__init__(ordinal, {'input': input, 'instances': instances, 'position': position, 'lights': lights})
 
 
-# page 11, Lights
+# page 11, Keyboard mapping
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KeyboardButton:
+    """Page 11's one group: a button of the Keyboard input mode's mapping and the code it sends."""
+
+    action: int                 # the button's GpioAction, as page 10 carries a control's
+    code: int                   # a HID keyboard usage, a media key above 0xE7, or 0 for none
+
+
+class KeyboardMappingRecord(_Record):
+    """A page 11 record."""
+
+    PAGE = 11
+    GROUPS = ('button',)
+    __slots__ = ('_button',)
+    button = _Group[KeyboardButton]()
+
+    def __init__(self, *, ordinal: int, button: Optional[KeyboardButton] = None) -> None:
+        """Hold the groups a read returned, None for the others."""
+        super().__init__(ordinal, {'button': button})
+
+
+# page 12, Lights
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LedRange:
-    """Page 11's first group: the light's LEDs."""
+    """Page 12's first group: the light's LEDs."""
 
     first_led: int
     led_count: int
@@ -437,7 +461,7 @@ class LedRange:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LightKind:
-    """Page 11's second group: the light's LightType and its flag."""
+    """Page 12's second group: the light's LightType and its flag."""
 
     value: int
     duplicated: bool
@@ -445,7 +469,7 @@ class LightKind:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Owner:
-    """Page 11's owner group, each None for none."""
+    """Page 12's owner group, each None for none."""
 
     pin: Optional[int]
     action: Optional[int]
@@ -461,15 +485,15 @@ class GridCell:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PaletteSlot:
-    """Page 11's last group: the light's palette slot, None for none."""
+    """Page 12's last group: the light's palette slot, None for none."""
 
     slot: Optional[int]
 
 
 class LightRecord(_Record):
-    """A page 11 record."""
+    """A page 12 record."""
 
-    PAGE = 11
+    PAGE = 12
     GROUPS = ('leds', 'kind', 'owner', 'owner_instances', 'grid', 'palette')
     __slots__ = ('_leds', '_kind', '_owner', '_owner_instances', '_grid', '_palette')
     leds = _Group[LedRange]()
@@ -487,11 +511,11 @@ class LightRecord(_Record):
                                    'grid': grid, 'palette': palette})
 
 
-# page 12, Animations
+# page 13, Animations
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Effects:
-    """Page 12's first group: whether the animation is enabled, and its idle, pressed and case effects."""
+    """Page 13's first group: whether the animation is enabled, and its idle, pressed and case effects."""
 
     enabled: bool
     idle: int
@@ -501,7 +525,7 @@ class Effects:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Speeds:
-    """Page 12's second group: the idle, pressed and case speeds."""
+    """Page 13's second group: the idle, pressed and case speeds."""
 
     idle: int
     pressed: int
@@ -509,9 +533,9 @@ class Speeds:
 
 
 class AnimationRecord(_Record):
-    """A page 12 record."""
+    """A page 13 record."""
 
-    PAGE = 12
+    PAGE = 13
     GROUPS = ('effects', 'speeds')
     __slots__ = ('_effects', '_speeds')
     effects = _Group[Effects]()

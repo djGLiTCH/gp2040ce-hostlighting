@@ -1,6 +1,6 @@
 """The board's LED layout grid: lights by cell, and a canvas painted by cell and sampled onto the lights.
 
-Page 11 gives each light a cell of the grid the Summary sizes (grid_width x grid_height). lights_by_cell() maps
+Page 12 gives each light a cell of the grid the Summary sizes (grid_width x grid_height). lights_by_cell() maps
 each cell to its lights. A Canvas holds one colour per cell, and frame() builds a Frame that colours each light
 with its cell's colour.
 

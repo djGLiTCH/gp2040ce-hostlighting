@@ -72,7 +72,7 @@ def test_a_board_answers_page_0_stale_or_past_its_record(board_type):
 def test_an_unknown_page_is_refused_before_the_token_is_checked(board_type):
     """Test GET_PAGE of a page the board does not list under a stale token: status 2 at [3], as the firmware."""
     device = fake_device(board_type())
-    reply = device.request(hl.CMD_GET_PAGE, struct.pack('<BHIH', 13, 0, 1, 0))
+    reply = device.request(hl.CMD_GET_PAGE, struct.pack('<BHIH', 14, 0, 1, 0))
     assert reply[2:4] == bytes([hl.STATUS_INVALID, 3])
 
 
@@ -205,7 +205,10 @@ def test_idle_animations_show_on_page_1_and_raise_an_event():
 
 
 def test_a_profile_switch_brings_its_pages_token_and_one_event():
-    """Test SET_PROFILE on the model board: the profile's pages and a new token, with one event carrying both."""
+    """Test SET_PROFILE on the model board: page 1, the profile's pages and a new token, with one event carrying all.
+
+    Until the board's next pass, page 1 shows the applied profile.
+    """
     board = ModelBoard()
     board.profiles.append([bytes([2, 1]) + b'Second'.ljust(16, b'\x00')])
     board.profiles.append([bytes([3, 1]) + b'Third'.ljust(16, b'\x00')])
@@ -215,7 +218,8 @@ def test_a_profile_switch_brings_its_pages_token_and_one_event():
     device.subscribe([hl.EVENT_STATE_CHANGED])
     before = device.read_record(hl.PAGE_STATE)
     device.send(hl.CMD_SET_PROFILE, bytes([2]))
-    assert board.state[0][2] == 2 and board.token == before.token and not board.pending
+    assert board.stored_profile == 2 and board.state[0][2] == 1 and board.token == before.token
+    assert not board.pending
     events = [hl.decode_state_changed(event) for event in device.take_events()]
     after = device.read_table(hl.PAGE_LIGHTS)
     assert after.token != before.token and after.records[0].owner.pin == 5
@@ -225,6 +229,104 @@ def test_a_profile_switch_brings_its_pages_token_and_one_event():
     device.set_profile(3)                   # a profile without pages of its own keeps them
     events = [hl.decode_state_changed(event) for event in device.take_events()]
     assert [(event.record.state.profile, event.token) for event in events] == [(3, after.token)]
+
+
+def test_set_profile_of_the_profile_stored_is_ok_before_page_9_is_checked():
+    """Test that SET_PROFILE of the profile stored is status 0 on both boards, though page 9 does not list it."""
+    for board in (FakeBoard(), ModelBoard()):
+        board.profiles = [[bytes([2, 1]) + b'Second'.ljust(16, b'\x00')]]
+        device = fake_device(board)
+        device.set_profile(1)
+        with pytest.raises(hl.HostLightingRejectedError):
+            device.set_profile(3)
+
+
+def test_the_keyboard_mapping_is_each_profiles_and_waits_for_a_switch():
+    """Test page 11 on the model board: each profile's codes, profile 1's in a profile without codes of its own.
+
+    A profile keeps the copy it had of profile 1's codes when those change. While a switch from any source waits
+    to apply, a valid SET_KEYBOARD_MAPPING is status 3, after its arguments are checked.
+    """
+    board = ModelBoard()
+    board.profiles += [[bytes([2, 1]) + b'Second'.ljust(16, b'\x00')], [bytes([3, 1]) + b'Third'.ljust(16, b'\x00')]]
+    device = fake_device(board)
+    base = list(board.keyboard_codes[1])
+
+    def codes():
+        return [record.button.code for record in device.read_table(hl.PAGE_KEYBOARD_MAPPING).records]
+    device.set_profile(2)
+    assert codes() == base                          # profile 2 has profile 1's codes until it has its own
+    device.set_keyboard_mapping(2, 0, [0x04])
+    assert codes() == [0x04] + base[1:] and board.keyboard_codes[1] == base
+    device.set_profile(1)
+    assert codes() == base
+    device.set_keyboard_mapping(1, 1, [0x05])
+    device.set_profile(3)
+    assert codes() == base                          # profile 3 kept profile 1's codes from before the change
+    device.set_profile(1)
+    changed = base[:1] + [0x05] + base[2:]
+    assert codes() == changed
+    request = hl.build_request(hl.CMD_SET_KEYBOARD_MAPPING, 1, struct.pack('<BHB', 1, 0, 1) + bytes([0x06]))
+    board.store_profile(2)                          # a switch to profile 2, by a hotkey, still to apply
+    assert board.switch_pending() and board.applied_profile() == 1
+    assert board.state[0][2] == 1                   # page 1 shows the applied one until the next pass
+    assert board.answer(hl.CMD_SET_KEYBOARD_MAPPING, 1, request)[2] == hl.STATUS_STALE
+    no_codes = hl.build_request(hl.CMD_SET_KEYBOARD_MAPPING, 1, struct.pack('<BHB', 1, 0, 0))
+    assert board.answer(hl.CMD_SET_KEYBOARD_MAPPING, 1, no_codes)[2:4] == bytes([hl.STATUS_INVALID, 6])
+    assert board.keyboard_codes[1] == changed
+    assert codes() == [0x04] + base[1:] and board.applied_profile() == 2    # applied at the next pass
+    # once applied, a request for the profile read before the switch is refused, and one for profile 2 applies
+    assert board.answer(hl.CMD_SET_KEYBOARD_MAPPING, 1, request)[2] == hl.STATUS_STALE
+    assert board.keyboard_codes[1] == changed and codes() == [0x04] + base[1:]
+    device.set_keyboard_mapping(2, 0, [0x06])
+    assert codes() == [0x06] + base[1:] and board.keyboard_codes[1] == changed
+
+
+def test_a_dpad_mode_change_shows_on_page_1_with_one_event():
+    """Test page 1's D-pad mode: a change raises one STATE_CHANGED carrying it, the same mode none."""
+    board = ModelBoard()
+    device = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    token = device.read_record(hl.PAGE_STATE).token
+    for mode, events in ((1, [1]), (1, []), (0, [0])):
+        board.set_dpad_mode(mode)
+        read = device.read_record(hl.PAGE_STATE)
+        assert read.records[0].state.dpad_mode == mode and read.token == token
+        assert [hl.decode_state_changed(event).record.state.dpad_mode for event in device.take_events()] == events
+
+
+def test_a_change_while_a_switch_is_pending_raises_its_own_event():
+    """Test a page 1 change while a profile switch is pending: its event is due at once, and carries the switch.
+
+    As on the board, an event shows page 1 as it is when sent, here after the next pass.
+    """
+    board = ModelBoard()
+    board.profiles.append([bytes([2, 1]) + b'Second'.ljust(16, b'\x00')])
+    device = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    device.take_events()
+    board.store_profile(2)
+    board.set_dpad_mode(1)
+    assert board.switch_pending() and board.pending     # not held back for the switch
+    states = [hl.decode_state_changed(event).record.state for event in device.take_events()]
+    assert [(state.profile, state.dpad_mode) for state in states] == [(2, 1)]
+
+
+def test_a_keyboard_code_changes_page_11_its_counter_and_the_token():
+    """Test that the code shown writes nothing, and a new one steps page 11's counter and the token, with one event."""
+    board = ModelBoard()
+    device = fake_device(board)
+    device.subscribe([hl.EVENT_STATE_CHANGED])
+    counter = hl.PAGE_KEYBOARD_MAPPING - hl.PAGE_SUMMARY
+    before = device.read_record(hl.PAGE_SUMMARY, 0b10)
+    device.set_keyboard_mapping(1, 0, [board.keyboard_codes[1][0]])
+    assert device.read_record(hl.PAGE_SUMMARY, 0b10) == before and device.take_events() == []
+    device.set_keyboard_mapping(1, 0, [0x04])
+    after = device.read_record(hl.PAGE_SUMMARY, 0b10)
+    stepped = list(before.records[0].changes.counters)
+    stepped[counter] += 1
+    assert after.token != before.token and after.records[0].changes.counters == tuple(stepped)
+    assert [hl.decode_state_changed(event).token for event in device.take_events()] == [after.token]
 
 
 def test_set_animation_wakes_the_animations_at_the_next_render_tick():

@@ -3,13 +3,14 @@
 The checks cover the HELLO capabilities, framing, every page and field mask,
 the pages' cross-references, takeover and keepalive timing, the claim lease
 and generation, shared and exclusive claims, unsaved brightness, staging,
-events and board-feature argument checks, delivery of replies to a second
-handle, then round trip and throughput. run_checks() yields each result as it
-is made, and Checks collects them. The checks run under a LightsClaim the
-caller holds, renewed without KEEPALIVE so that the takeover checks time the
-takeover alone. The measurements maintain the claim between frames.
-hlp-conformance and hlp-bench in gp2040ce_hostlighting.tools.conformance run
-them. Like the device, the checks belong to one thread.
+events, board-feature and keyboard mapping argument checks, delivery of
+replies to a second handle, then round trip and throughput. run_checks()
+yields each result as it is made, and Checks collects them. The checks run
+under a LightsClaim the caller holds, renewed without KEEPALIVE so that the
+takeover checks time the takeover alone. The measurements maintain the claim
+between frames. hlp-conformance and hlp-bench in
+gp2040ce_hostlighting.tools.conformance run them. Like the device, the checks
+belong to one thread.
 
 SPDX-FileCopyrightText: © 2026 Jacob Simpson
 SPDX-License-Identifier: GPL-3.0-or-later
@@ -29,24 +30,25 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             CLAIM_TAKE_OVER, CMD_CLAIM, CMD_CLEAR, CMD_COMMIT, CMD_CONFIGURE, CMD_FILL,
                                             CMD_GET_PAGE, CMD_HELLO, CMD_REBOOT, CMD_RELEASE, CMD_SET_ANIMATION,
                                             CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE,
-                                            CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE, CMD_UNSTAGE, COMMAND_RANGES,
-                                            CONTROLLER_SIZE, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER, FLAG_GENERATION,
-                                            FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE, FLAG_NO_REPLY,
-                                            GENERATION_MAX, HEADER_RECORDS, KEY_EXPANDER, KEY_TRIGGER, MAGIC_INPUT_MODE,
-                                            MAGIC_REBOOT, NAME_ENUMS, NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE,
-                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_RANGES,
-                                            PAGE_STATE, PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW,
-                                            PIXEL_SIZES, PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATE_IDLE,
-                                            STATE_LIVE, STATE_UNSAVED, STATUS_CLAIMED, STATUS_INVALID, STATUS_OK,
-                                            STATUS_STALE_TOKEN, STATUS_UNSUPPORTED, SUMMARY_WHITE_CHANNEL,
-                                            TAKEOVER_OVERLAY, HostLightingClaimedError, HostLightingDevice,
-                                            HostLightingDisconnectedError, HostLightingError, HostLightingRejectedError,
-                                            decode_controller, decode_key, decode_page_header, decode_records,
-                                            decode_state_changed, is_event, key_name, stage_capacity)
+                                            CMD_SET_KEYBOARD_MAPPING, CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE,
+                                            CMD_UNSTAGE, COMMAND_RANGES, CONTROLLER_SIZE, EVENT_STATE_CHANGED,
+                                            FLAG_COMMIT_AFTER, FLAG_GENERATION, FLAG_GENERATION_SHIFT, FLAG_HOLDER,
+                                            FLAG_KEEPALIVE, FLAG_NO_REPLY, GENERATION_MAX, HEADER_RECORDS, KEY_EXPANDER,
+                                            KEY_TRIGGER, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS, NAMES_GPIO_ACTION,
+                                            NAMES_LIGHT_TYPE, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS,
+                                            PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
+                                            PAGE_NAMES, PAGE_PROFILES, PAGE_RANGES, PAGE_STATE, PAGE_SUMMARY, PIN_NONE,
+                                            PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES, PROTOCOL_MAJOR,
+                                            RECORD_AREA, REPLY_FLAG, STATE_IDLE, STATE_LIVE, STATE_UNSAVED,
+                                            STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
+                                            SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY, HostLightingClaimedError,
+                                            HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
+                                            HostLightingRejectedError, decode_controller, decode_key,
+                                            decode_page_header, decode_records, decode_state_changed, is_event,
+                                            key_name, stage_capacity)
 from gp2040ce_hostlighting.records import (ControlInstances, Controller, ControlLights, ControlRecord, Hello,
-                                           InputModeRecord, Instances, LightRecord, Position, Settings, StateRecord,
-                                           Summary)
+                                           InputModeRecord, Instances, KeyboardMappingRecord, LightRecord, Position,
+                                           Settings, StateRecord, Summary)
 
 __all__ = ['CheckResult', 'Checks', 'run_checks', 'measure_round_trips', 'measure_paced_frames',
            'measure_unthrottled_frames']
@@ -61,7 +63,7 @@ _REQUEST_FLAGS = ({flag.bit_length() - 1 for flag in (FLAG_COMMIT_AFTER, FLAG_NO
                   | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1})
 _COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
              CMD_CLEAR, CMD_COMMIT, CMD_RELEASE, CMD_SET_PROFILE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
-             CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_REBOOT}
+             CMD_SET_BRIGHTNESS, CMD_SET_KEYBOARD_MAPPING, CMD_SET_INPUT_MODE, CMD_REBOOT}
 _PAGES = {PAGE_IDENTITY} | set(PAGE_GROUPS)
 _ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION,
                ADDRESSING_KIND}
@@ -144,6 +146,17 @@ def _keep(claim: LightsClaim) -> None:
     """Renew the claim when a renewal is due."""
     claim.maintain()
     _held(claim)
+
+
+def _longest_reply(device: HostLightingDevice, claim: LightsClaim, seconds: float) -> float:
+    """Send HELLO with KEEPALIVE for some seconds, and give the longest round trip. A flash write pauses the replies."""
+    longest, start = 0.0, time.monotonic()
+    while time.monotonic() - start < seconds:
+        sent = time.perf_counter()
+        device.request_ok(CMD_HELLO, flags=FLAG_KEEPALIVE)
+        longest = max(longest, time.perf_counter() - sent)
+        _keep(claim)
+    return longest
 
 
 def _wait(claim: LightsClaim, seconds: float) -> None:
@@ -358,7 +371,7 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
     reply = device.get_page(PAGE_LIGHTS, 1, 0b11, token ^ 1)
     header = decode_page_header(reply)
     echoed = (header.page, header.start, header.token) == (PAGE_LIGHTS, 1, token)
-    yield checks.check(reply[2] == STATUS_STALE_TOKEN and echoed and (header.count, header.groups) == (0, 0),
+    yield checks.check(reply[2] == STATUS_STALE and echoed and (header.count, header.groups) == (0, 0),
                        'stale token: status 3, page and start echoed, no records, no groups')
     changes = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes
     yield checks.check(all(changes.counter(page) == 0 for page in range(PAGE_SUMMARY, PAGE_SUMMARY + 8)
@@ -398,7 +411,7 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     summary = device.read_record(PAGE_SUMMARY).records[0].summary
     yield checks.note(', '.join(f"{item.name} {getattr(summary, item.name)}" for item in fields(summary)))
     tables: _Tables = {page: device.read_table(page).records
-                       for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS)}
+                       for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_ANIMATIONS)}
     for page, key in ((PAGE_PROFILES, 'profiles'), (PAGE_CONTROLS, 'controls'), (PAGE_LIGHTS, 'lights'),
                       (PAGE_ANIMATIONS, 'animations')):
         yield checks.check(len(tables[page]) == getattr(summary, key), f"page {page} total = Summary {key}")
@@ -416,7 +429,10 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     yield checks.check((summary.grid_width, summary.grid_height) == grid, 'grid size = highest light X, Y + 1')
     yield from _check_controls(checks, controls, lights, _unlit_positions(device))
     yield from _check_lights(checks, controls, lights)
-    yield from _check_names(device, checks, controls, lights)
+    actions = [record.button.action for record in tables[PAGE_KEYBOARD_MAPPING]]
+    yield checks.check(len(set(actions)) == len(actions), f"page {PAGE_KEYBOARD_MAPPING} lists each action once",
+                       f"{sorted(action for action in set(actions) if actions.count(action) > 1)}")
+    yield from _check_names(device, checks, controls, lights, tables[PAGE_KEYBOARD_MAPPING])
     yield from _check_ranges(checks, state, summary, tables)
     yield from _check_flags(device, checks)
     yield checks.check(decode_page_header(device.get_page(PAGE_CONTROLS)).token == token,
@@ -523,20 +539,21 @@ def _check_lights(checks: _Checker, controls: tuple[ControlRecord, ...],
 
 
 def _check_ranges(checks: _Checker, state: StateRecord, summary: Summary, tables: _Tables) -> Iterator[CheckResult]:
-    """Check page 1's and page 12's values against the ranges the other pages give them."""
+    """Check page 1's and the Animations page's values against the ranges the other pages give them."""
     shown = state.state
     numbers = [profile.profile.number for profile in tables[PAGE_PROFILES]]
     yield checks.check(shown.profile in numbers, 'page 1 profile listed on page 9', f"{shown.profile}")
     yield checks.check(len(numbers) == len(set(numbers)), 'page 9 profile numbers each once')
     yield checks.check(shown.animation is None or shown.animation < summary.animations,
-                       'page 1 animation off or a page 12 ordinal', f"{shown.animation}")
+                       f"page 1 animation off or a page {PAGE_ANIMATIONS} ordinal", f"{shown.animation}")
     yield checks.check(max(shown.brightness_step_shown, shown.saved_brightness_step) <= summary.brightness_steps,
                        'page 1 brightness steps within the Summary steps',
                        f"{shown.brightness_step_shown} and {shown.saved_brightness_step}")
     fast = [animation.ordinal for animation in tables[PAGE_ANIMATIONS]
             if max(animation.speeds.idle, animation.speeds.pressed, animation.speeds.case)
             > summary.animation_speed_steps]
-    yield checks.check(not fast, 'page 12 speeds within the Summary speed steps', f"not ordinals {fast}")
+    yield checks.check(not fast, f"page {PAGE_ANIMATIONS} speeds within the Summary speed steps",
+                       f"not ordinals {fast}")
 
 
 def _record_bytes(device: HostLightingDevice, page: int, mask: int, offset: int) -> list[int]:
@@ -558,8 +575,8 @@ _FLAGS = (('Controller claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
           ('page 2 flags', PAGE_INPUT_MODES, 0b01, 1, 0b11),
           ('page 9 flags', PAGE_PROFILES, 0b1, 1, 0b1),
           ('page 10 flags', PAGE_CONTROLS, 0b0001, 3, 0b11),
-          ('page 11 flags', PAGE_LIGHTS, 0b000010, 1, 0b1),
-          ('page 12 flags', PAGE_ANIMATIONS, 0b01, 0, 0b1))
+          (f"page {PAGE_LIGHTS} flags", PAGE_LIGHTS, 0b000010, 1, 0b1),
+          (f"page {PAGE_ANIMATIONS} flags", PAGE_ANIMATIONS, 0b01, 0, 0b1))
 
 
 def _check_flags(device: HostLightingDevice, checks: _Checker) -> Iterator[CheckResult]:
@@ -798,12 +815,14 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tabl
                                                                                                   generation])
     device.request_ok(CMD_RELEASE)
     number = _state(device).state.takeover_number
-    # harmless were they executed: the current settings, an empty run, the saved step, a profile and a REBOOT target
-    # that do not exist
+    # harmless were they executed: the current settings, an empty run, the saved step, a profile, keyboard codes and
+    # a REBOOT target that do not exist
     changes = [(CMD_CONFIGURE, struct.pack('<BHB', 0, _KEEPALIVE_MS, 1)),
                (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes(3)), (CMD_CLEAR, b''),
                (CMD_COMMIT, b''), (CMD_RELEASE, b''), (CMD_SET_BRIGHTNESS, bytes([BRIGHTNESS_SAVED])),
                (CMD_SET_PROFILE, bytes([tables['summary'].profiles + 1])),
+               (CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
+                                                      len(tables[PAGE_KEYBOARD_MAPPING]), 0)),
                (CMD_REBOOT, bytes([0xFF]) + MAGIC_REBOOT)]
     wrong = []
     for command, payload in changes:
@@ -887,12 +906,7 @@ def _check_unsaved(device: HostLightingDevice, checks: _Checker, tables: _Tables
                        f"{state.state.saved_brightness_step} vs {saved}")
     yield checks.check(any(event.state.brightness_unsaved for event in _events(device, 0.05)),
                        'STATE_CHANGED for the unsaved step')
-    longest, start = 0.0, time.monotonic()
-    while time.monotonic() - start < 1.5:       # a saved step pauses the replies 175-190 ms a second later
-        sent = time.perf_counter()
-        device.request_ok(CMD_HELLO, flags=FLAG_KEEPALIVE)
-        longest = max(longest, time.perf_counter() - sent)
-        _keep(claim)
+    longest = _longest_reply(device, claim, 1.5)    # a saved step pauses the replies 175-190 ms a second later
     yield checks.check(longest < 0.15, 'it writes nothing to flash: no reply pause', f"longest {longest * 1000:.0f} ms")
     yield checks.check(_state(device).state.brightness_unsaved, 'KEEPALIVE keeps it past the keepalive timeout')
     for _ in range(4):          # 400 ms past the 300 ms timeout, refreshed only by CLEAR, a staging command
@@ -1045,7 +1059,8 @@ def _check_staging(device: HostLightingDevice, checks: _Checker, tables: _Tables
 
 
 def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[ControlRecord, ...],
-                 lights: tuple[LightRecord, ...]) -> Iterator[CheckResult]:
+                 lights: tuple[LightRecord, ...],
+                 keyboard: tuple[KeyboardMappingRecord, ...]) -> Iterator[CheckResult]:
     records = device.read_table(PAGE_NAMES).records
     pairs = [(record.entry.enum, record.entry.value) for record in records]
     yield checks.check(set(NAME_ENUMS) <= {enum for enum, _ in pairs}, 'page 3 lists GpioAction and LightType values',
@@ -1056,14 +1071,17 @@ def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[C
     actions = {value for enum, value in pairs if enum == NAMES_GPIO_ACTION}
     used = {control.input.action for control in controls}
     used |= {light.owner.action for light in lights if light.owner.action is not None}
-    yield checks.check(used <= actions, 'every action on pages 10 and 11 has a name on page 3',
+    used |= {record.button.action for record in keyboard}
+    yield checks.check(used <= actions, f"every action on pages {PAGE_CONTROLS} to {PAGE_LIGHTS} has a name on page 3",
                        f"{sorted(used - actions)}")
     kinds = {value for enum, value in pairs if enum == NAMES_LIGHT_TYPE}
     shown = {light.kind.value for light in lights}
-    yield checks.check(shown <= kinds, 'every light kind on page 11 has a name on page 3', f"{sorted(shown - kinds)}")
+    yield checks.check(shown <= kinds, f"every light kind on page {PAGE_LIGHTS} has a name on page 3",
+                       f"{sorted(shown - kinds)}")
 
 
-def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Tables) -> Iterator[CheckResult]:
+def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Tables,
+                    claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Board features')
     summary, state = tables['summary'], tables['state']
     rejected = (STATUS_INVALID, 3)
@@ -1082,6 +1100,7 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Table
         # with no animations the index is refused first
         yield checks.check(_status(reply) == ((STATUS_INVALID, 5) if summary.animations else rejected),
                            'SET_ANIMATION_SPEED out of range: status 2')
+    yield from _check_keyboard_arguments(device, checks, tables, claim)
     reply = device.request(CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
     yield checks.check(_status(reply) == rejected, 'SET_INPUT_MODE config mode: status 2 at [3]')
     # the current mode, since were the guard broken, the board would save and reboot into the mode it is in
@@ -1092,6 +1111,44 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Table
     reply = device.request(CMD_REBOOT, bytes([0xFF]) + MAGIC_REBOOT)
     yield checks.check(_status(reply) == rejected, 'REBOOT target 0xFF: status 2 at [3]')
     yield from _check_lowest_offset(device, checks, tables)
+
+
+def _check_keyboard_arguments(device: HostLightingDevice, checks: _Checker, tables: _Tables,
+                              claim: LightsClaim) -> Iterator[CheckResult]:
+    """Check SET_KEYBOARD_MAPPING's range and profile checks, and that the codes shown write nothing."""
+    keyboard = tables[PAGE_KEYBOARD_MAPPING]
+    total = len(keyboard)
+    profile = _state(device).state.profile
+    other = 0 if profile else 1                 # never the active profile
+    # the codes are left out, the report's padding standing in for them
+    probes = [('first record at the total: status 2 at [4]', struct.pack('<BHB', profile, total, 1),
+               (STATUS_INVALID, 4)),
+              ('first record at the total under another profile: status 2 at [4], the range checked first',
+               struct.pack('<BHB', other, total, 1), (STATUS_INVALID, 4))]
+    if total:       # with no records, every first record is past the end
+        probes += [('count 0: status 2 at [6]', struct.pack('<BHB', profile, 0, 0), (STATUS_INVALID, 6)),
+                   ('records past the total: status 2 at [6]', struct.pack('<BHB', profile, 0, total + 1),
+                    (STATUS_INVALID, 6)),
+                   # the code shown, so a board that wrote it would change nothing
+                   ('another profile: status 3', struct.pack('<BHB', other, 0, 1) + bytes([keyboard[0].button.code]),
+                    (STATUS_STALE, 0))]
+    for what, payload, expected in probes:
+        yield checks.check(_status(device.request(CMD_SET_KEYBOARD_MAPPING, payload)) == expected,
+                           f"SET_KEYBOARD_MAPPING {what}")
+    if total:
+        before = decode_page_header(device.get_page(PAGE_KEYBOARD_MAPPING)).token
+        counted = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
+        codes = bytes(record.button.code for record in keyboard)
+        sent = time.perf_counter()
+        ok = device.request(CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', profile, 0, total) + codes)[2] == STATUS_OK
+        # from the write on, since the board writes the flash after it answers, and the pause can fall on the next
+        # request
+        longest = max(time.perf_counter() - sent, _longest_reply(device, claim, 0.5))
+        yield checks.check(ok and decode_page_header(device.get_page(PAGE_KEYBOARD_MAPPING)).token == before and
+                           device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters == counted,
+                           'SET_KEYBOARD_MAPPING of the codes shown: OK, and the token and counters unchanged')
+        yield checks.check(longest < 0.15, 'SET_KEYBOARD_MAPPING of the codes shown writes nothing to flash: no '
+                           'reply pause', f"longest {longest * 1000:.0f} ms")
 
 
 def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: _Tables) -> Iterator[CheckResult]:
@@ -1105,7 +1162,10 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: _
               (CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
               # the current mode, since were the guard broken, the board would reboot into the mode it is in
               (CMD_SET_INPUT_MODE, bytes([mode]) + MAGIC_INPUT_MODE[:1] + b'XX' + MAGIC_INPUT_MODE[3:], 5),
-              (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3)]                           # target and magic
+              (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3),                           # target and magic
+              # first record and count, under the active profile
+              (CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
+                                                     len(tables[PAGE_KEYBOARD_MAPPING]), 0), 4)]
     if summary.animation_speed_steps < 254:     # 0xFF means unchanged
         speeds = bytes([summary.animation_speed_steps + 1] * 3)
         probes.append((CMD_SET_ANIMATION_SPEED, struct.pack('<H', summary.animations) + speeds, 3))
@@ -1125,8 +1185,9 @@ def _check_settings(device: HostLightingDevice, checks: _Checker, tables: _Table
                     claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Settings (writes the settings flash)')
     summary, state, animations = tables['summary'], tables['state'], tables[PAGE_ANIMATIONS]
+    yield from _check_keyboard_code(device, checks, tables[PAGE_KEYBOARD_MAPPING])
     if not summary.brightness_steps:
-        yield checks.note('no LED output, so nothing to change')
+        yield checks.note('no LED output, so no brightness, animation or speed to change')
         return
     _events(device, 0.05)
     step = state.state.brightness_step_shown
@@ -1160,12 +1221,13 @@ def _check_settings(device: HostLightingDevice, checks: _Checker, tables: _Table
             reply = device.get_page(PAGE_ANIMATIONS)
             yield checks.check(ok and decode_records(reply)[0].speeds.idle == new and
                                decode_page_header(reply).token != before,
-                               'SET_ANIMATION_SPEED: page 12 and the token change')
+                               f"SET_ANIMATION_SPEED: page {PAGE_ANIMATIONS} and the token change")
             animation_counter = PAGE_ANIMATIONS - PAGE_SUMMARY
             stepped = list(counted)
             stepped[animation_counter] = (counted[animation_counter] + 1) & 0xFF
             changes = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
-            yield checks.check(changes == tuple(stepped), "page 12's change counter steps, and no other",
+            yield checks.check(changes == tuple(stepped),
+                               f"page {PAGE_ANIMATIONS}'s change counter steps, and no other",
                                f"{counted} to {changes}")
             _put_back(device, changed, CMD_SET_ANIMATION_SPEED)
             yield checks.check(decode_page_header(device.get_page(PAGE_ANIMATIONS)).token == before,
@@ -1180,6 +1242,56 @@ def _check_settings(device: HostLightingDevice, checks: _Checker, tables: _Table
             except HostLightingError:
                 logger.warning("could not put back the setting command 0x%02X changed", command)
     _wait(claim, 1.5)             # the board writes its settings flash shortly after a change
+
+
+def _check_keyboard_code(device: HostLightingDevice, checks: _Checker,
+                         keyboard: tuple[KeyboardMappingRecord, ...]) -> Iterator[CheckResult]:
+    """Change one keyboard code and put it back. The Keyboard mapping page, the token and its counter follow."""
+    if not keyboard:
+        return
+    old = keyboard[0].button.code
+    new = (old + 1) & 0xFF
+    profile = _state(device).state.profile
+    before = decode_page_header(device.get_page(PAGE_KEYBOARD_MAPPING)).token
+    counted = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
+    counter = PAGE_KEYBOARD_MAPPING - PAGE_SUMMARY
+    stepped = list(counted)
+    stepped[counter] = (counted[counter] + 1) & 0xFF
+    changed = {CMD_SET_KEYBOARD_MAPPING: old}
+    try:
+        ok = device.request(CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', profile, 0, 1) + bytes([new]))[2] == \
+            STATUS_OK
+        if not ok:
+            changed.clear()             # nothing written, so nothing to put back
+        reply = device.get_page(PAGE_KEYBOARD_MAPPING)
+        yield checks.check(ok and decode_records(reply)[0].button.code == new and
+                           decode_page_header(reply).token != before,
+                           f"SET_KEYBOARD_MAPPING: page {PAGE_KEYBOARD_MAPPING} and the token change")
+        changes = device.read_record(PAGE_SUMMARY, 0b10).records[0].changes.counters
+        yield checks.check(changes == tuple(stepped), f"page {PAGE_KEYBOARD_MAPPING}'s change counter steps, and no "
+                           "other", f"{counted} to {changes}")
+        refused = ''
+        if changed:
+            try:
+                _put_back_code(device, changed, profile)
+            except HostLightingRejectedError as error:
+                refused = str(error)    # the change kept, for the warning below
+        reply = device.get_page(PAGE_KEYBOARD_MAPPING)
+        yield checks.check(not refused and decode_records(reply)[0].button.code == old and
+                           decode_page_header(reply).token == before, 'keyboard code restored: the token returns',
+                           refused)
+    finally:
+        if changed:
+            try:
+                _put_back_code(device, changed, profile)
+            except HostLightingError:
+                logger.warning("could not put back the keyboard code changed")
+
+
+def _put_back_code(device: HostLightingDevice, changed: dict[int, int], profile: int) -> None:
+    """Put page 11's first code back, then forget the change. A refusal raises, the change kept."""
+    device.set_keyboard_mapping(profile, 0, [changed[CMD_SET_KEYBOARD_MAPPING]])
+    del changed[CMD_SET_KEYBOARD_MAPPING]
 
 
 def _put_back(device: HostLightingDevice, changed: dict[int, bytes], command: int) -> None:
@@ -1247,7 +1359,8 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
 
     :param device: the opened device
     :param claim: a LightsClaim on the device that holds the claim
-    :param settings: also change and restore brightness, animation and speeds, which writes the settings flash
+    :param settings: also change and restore a keyboard code, brightness, animation and speeds, which writes the
+        settings flash
     :param quick: shorter timing runs
     :param open_second: opens a second handle on the board, for the delivery checks
     """
@@ -1284,7 +1397,7 @@ def _run_checks(device: HostLightingDevice, checks: _Checker, claim: LightsClaim
     yield from _check_unsaved(device, checks, tables, claim)
     yield from _check_staging(device, checks, tables, claim)
     _keep(claim)
-    yield from _check_features(device, checks, tables)
+    yield from _check_features(device, checks, tables, claim)
     if settings:
         _keep(claim)
         yield from _check_settings(device, checks, tables, claim)

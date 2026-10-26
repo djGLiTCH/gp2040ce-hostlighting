@@ -60,7 +60,7 @@ def commands(board, start=0) -> list:
 def test_start_runs_the_host_flow_and_close_gives_up(board):
     """Test HELLO, the pages, CLAIM, CONFIGURE, SUBSCRIBE and page 1, then the give up at the end of a with block."""
     with session_on(board, settings=Settings(keepalive_ms=900)) as session:
-        assert commands(board) == [hl.CMD_HELLO] + [hl.CMD_GET_PAGE] * 6 + [
+        assert commands(board) == [hl.CMD_HELLO] + [hl.CMD_GET_PAGE] * 8 + [
             hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_GET_PAGE]
         assert board.holder_token == session.claim.token and board.keepalive_ms == 900
         assert session.board_id == testing.BOARD_ID.hex().upper() and len(session.cache.lights) == 2

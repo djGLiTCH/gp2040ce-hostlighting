@@ -13,15 +13,18 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from typing import Any, Optional
 
 from gp2040ce_hostlighting.protocol import (ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LIGHT, ADDRESSING_PIN,
-                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_LIGHTS, PAGE_PROFILES,
-                                            PAGE_SUMMARY, HostLightingDevice, HostLightingError,
-                                            HostLightingIncompatibleError, HostLightingStaleTokenError)
-from gp2040ce_hostlighting.records import AnimationRecord, ControlRecord, Hello, LightRecord, ProfileRecord, Summary
+                                            PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_KEYBOARD_MAPPING,
+                                            PAGE_LIGHTS, PAGE_PROFILES, PAGE_SUMMARY, HostLightingDevice,
+                                            HostLightingError, HostLightingIncompatibleError,
+                                            HostLightingStaleTokenError)
+from gp2040ce_hostlighting.records import (AnimationRecord, ControlRecord, Hello, KeyboardMappingRecord, LightRecord,
+                                           ProfileRecord, Summary)
 
 __all__ = ['ConfigurationCache']
 
 # the configuration pages 2.0 defines, the Summary first
-_CONFIGURATION_PAGES = (PAGE_SUMMARY, PAGE_PROFILES, PAGE_CONTROLS, PAGE_LIGHTS, PAGE_ANIMATIONS)
+_CONFIGURATION_PAGES = (PAGE_SUMMARY, PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
+                        PAGE_ANIMATIONS)
 # the configuration pages with change counters in the Summary, 8 to 15
 _COUNTED_PAGES = range(PAGE_SUMMARY, PAGE_SUMMARY + 8)
 # the Lights groups a profile switch changes: kind and flags, owner, owner instances
@@ -99,6 +102,24 @@ class ConfigurationCache:
         return tuple(control for control in controls if (key is None or control.input.key == key) and
                      (action is None or control.input.action == action))
 
+    def keyboard_code(self, action: int) -> Optional[int]:
+        """Give the code of a page 10 action's button, from the page 11 record with that action, if there is one.
+
+        A control sends it while the gamepad holds the button, with the exceptions the specification gives for page
+        11. Up to Right on a GPIO pin or a Hall-effect trigger hold their D-pad direction only in the digital D-pad
+        mode (page 1's State dpad_mode), and an I/O-expander pin's in every mode. A Digital Direction action on a
+        GPIO pin holds the D-pad direction of that name, which page 3's names join, unless an add-on that runs
+        later sets the D-pad, which no page reports. A Dual Directional action, a macro action and a custom button
+        combo hold buttons no page reports. An I/O-expander pin holds only the buttons of BUTTON_PRESS_UP to
+        BUTTON_PRESS_R3, and other actions on an add-on input hold no button page 11 lists.
+
+        :return: the code, or None when page 11 has no record with the action or while its group is not read
+        """
+        mapping = self.keyboard_mapping
+        if mapping is None or not all(record.has('button') for record in mapping):
+            return None
+        return next((record.button.code for record in mapping if record.button.action == action), None)
+
     @property
     def profiles(self) -> Optional[tuple[ProfileRecord, ...]]:
         """The page 9 records, or None until read."""
@@ -110,13 +131,18 @@ class ConfigurationCache:
         return self._tables.get(PAGE_CONTROLS)
 
     @property
-    def lights(self) -> Optional[tuple[LightRecord, ...]]:
+    def keyboard_mapping(self) -> Optional[tuple[KeyboardMappingRecord, ...]]:
         """The page 11 records, or None until read."""
+        return self._tables.get(PAGE_KEYBOARD_MAPPING)
+
+    @property
+    def lights(self) -> Optional[tuple[LightRecord, ...]]:
+        """The page 12 records, or None until read."""
         return self._tables.get(PAGE_LIGHTS)
 
     @property
     def animations(self) -> Optional[tuple[AnimationRecord, ...]]:
-        """The page 12 records, or None until read."""
+        """The page 13 records, or None until read."""
         return self._tables.get(PAGE_ANIMATIONS)
 
     def clear(self) -> None:

@@ -12,6 +12,7 @@ import pytest
 from gp2040ce_hostlighting import claim as claim_module
 from gp2040ce_hostlighting import conformance as hl_conformance
 from gp2040ce_hostlighting import protocol as hl
+from gp2040ce_hostlighting import testing
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
 from gp2040ce_hostlighting.testing import (control_record, fake_device, hello_reply, light_record, name_record,
                                            summary_record)
@@ -23,7 +24,7 @@ def test_conformance_passes_on_a_conforming_board(hlp_run_on_model_board, hlp_mo
     hlp_model_board.after[0xFF] = [hello_reply(77)]     # another application's reply during the framing checks
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'FAIL' not in out and 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'FAIL' not in out and 'RESULT: ALL PASS (189 passed, 0 failed)' in out
     assert 'input modes: 0 XINPUT (lighting once a PC is detected), 3 KEYBOARD (lighting), 4 PS4\n' in out
     assert '1 reports for another application ignored' in out and '20 pipelined: 16 answered' in out
     assert 'expiry seen after 3' in out and 'round trip: median 1.00 ms' in out
@@ -36,7 +37,7 @@ def test_conformance_settings_change_and_restore(hlp_run_on_model_board, hlp_mod
     before = (hlp_model_board.state[0][2:7], list(hlp_model_board.animations))
     hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
     out = capsys.readouterr().out
-    assert 'Settings (writes the settings flash):' in out and 'RESULT: ALL PASS (188 passed, 0 failed)' in out
+    assert 'Settings (writes the settings flash):' in out and 'RESULT: ALL PASS (200 passed, 0 failed)' in out
     hlp_model_board._refresh()
     assert (hlp_model_board.state[0][2:7], list(hlp_model_board.animations)) == before
 
@@ -171,7 +172,7 @@ def test_conformance_passes_holding_an_exclusive_claim(hlp_run_on_model_board, h
     """Test hlp-conformance --exclusive: every check passes under its own exclusive claim, given up after."""
     hlp_run_on_model_board(conformance.conformance, '--quick', '--exclusive')
     out = capsys.readouterr().out
-    assert 'FAIL' not in out and 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'FAIL' not in out and 'RESULT: ALL PASS (189 passed, 0 failed)' in out
     assert hlp_model_board.sent(hl.CMD_CLAIM)[0][24] == hl.CLAIM_EXCLUSIVE and hlp_model_board.holder_token == 0
 
 
@@ -227,7 +228,7 @@ def test_conformance_passes_a_board_with_later_additions(hlp_run_on_model_board,
     hlp_model_board.answer = later
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'RESULT: ALL PASS (189 passed, 0 failed)' in out
     assert 'commands beyond 2.0: [6]' in out and 'pages beyond 2.0: [4]' in out
     assert 'pixel formats beyond 2.0: [3]' in out and 'events beyond 2.0: [1]' in out
     assert 'unlisted command 0x07: status 1' in out and 'unlisted page 5: status 2 at [3]' in out
@@ -292,18 +293,18 @@ def test_conformance_reports_pages_that_disagree(hlp_run_on_model_board, hlp_mod
                                              lit_controls=1, unlit_controls=2, lights=3, animations=1)
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
-    assert 'FAIL  page 11 total = Summary lights' in capsys.readouterr().out
+    assert 'FAIL  page 12 total = Summary lights' in capsys.readouterr().out
 
 
 def test_conformance_reports_page_flags_and_ranges(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test a page 9 flag beyond bit 0, a page 12 speed above the Summary's steps and an unlisted profile."""
+    """Test a page 9 flag beyond bit 0, a page 13 speed above the Summary's steps and an unlisted profile."""
     hlp_model_board.profiles = [[bytes([2, 0x03]) + b'Base'.ljust(16, b'\x00')]]
     hlp_model_board.animations = [[bytes([1, 2, 1, 2]), bytes([5, 11, 5])]]
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert 'FAIL  page 9 flags: defined bits alone' in out and 'FAIL  page 1 profile listed on page 9' in out
-    assert 'FAIL  page 12 speeds within the Summary speed steps' in out
+    assert 'FAIL  page 13 speeds within the Summary speed steps' in out
     assert 'PASS  page 10 flags: defined bits alone' in out
     assert 'PASS  Controller claim flags: defined bits alone' in out
 
@@ -507,7 +508,8 @@ def test_conformance_on_a_board_without_led_output(hlp_run_on_model_board, hlp_m
     hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
     out = capsys.readouterr().out
     # no lights: the light run, entry and UNSTAGE checks have nothing to address
-    assert 'no LED output, so nothing to change' in out and 'RESULT: ALL PASS (166 passed, 0 failed)' in out
+    assert 'no LED output, so no brightness, animation or speed to change' in out
+    assert 'RESULT: ALL PASS (178 passed, 0 failed)' in out
 
 
 def test_conformance_passes_a_board_with_lights_past_the_limit(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -522,7 +524,7 @@ def test_conformance_passes_a_board_with_lights_past_the_limit(hlp_run_on_model_
                                    unlit_controls=0, lights=4, animations=1)
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'RESULT: ALL PASS (189 passed, 0 failed)' in out
     assert 'PASS  light run: every light within the limit applies, the rest are skipped' in out
 
 
@@ -535,7 +537,7 @@ def test_conformance_passes_a_board_with_a_light_of_no_leds(hlp_run_on_model_boa
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
     assert 'PASS  extent = highest LED below the limit + 1' in out
-    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in out
+    assert 'RESULT: ALL PASS (189 passed, 0 failed)' in out
 
 
 def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -667,7 +669,7 @@ def test_conformance_catches_a_change_counter_that_does_not_step(hlp_run_on_mode
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
     out = capsys.readouterr().out
-    assert "FAIL  page 12's change counter steps, and no other" in out
+    assert "FAIL  page 13's change counter steps, and no other" in out
     assert 'FAIL  the counter steps again: it counts changes, the token follows the content' in out
     assert 'PASS  speeds restored: the token returns' in out
 
@@ -838,10 +840,105 @@ def test_conformance_prints_json_and_the_usual_lines_to_stderr(hlp_run_on_model_
     hlp_run_on_model_board(conformance.conformance, '--quick', '--json')
     captured = capsys.readouterr()
     data = json.loads(captured.out)
-    assert (data['passed'], data['failed'], data['quick'], data['settings']) == (180, 0, True, False)
-    assert sum(1 for result in data['results'] if result['passed']) == 180
+    assert (data['passed'], data['failed'], data['quick'], data['settings']) == (189, 0, True, False)
+    assert sum(1 for result in data['results'] if result['passed']) == 189
     assert {'section', 'what', 'passed', 'detail'} == set(data['results'][0])
-    assert 'RESULT: ALL PASS (180 passed, 0 failed)' in captured.err
+    assert 'RESULT: ALL PASS (189 passed, 0 failed)' in captured.err
+
+
+def test_conformance_fails_a_keyboard_mapping_that_checks_nothing(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test page 11 listing an action twice, and SET_KEYBOARD_MAPPING that takes any range and keeps no code."""
+    hlp_model_board.keyboard_actions[1] = hlp_model_board.keyboard_actions[0]
+    hlp_model_board._set_keyboard_mapping = lambda request: 0
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
+    out = capsys.readouterr().out
+    assert 'FAIL  page 11 lists each action once  ([1])' in out
+    assert 'FAIL  SET_KEYBOARD_MAPPING count 0: status 2 at [6]' in out
+    assert 'FAIL  SET_KEYBOARD_MAPPING first record at the total under another profile' in out
+    assert 'FAIL  SET_KEYBOARD_MAPPING another profile: status 3' in out
+    assert 'FAIL  several invalid bytes: status 2 at the lowest' in out
+    assert 'FAIL  SET_KEYBOARD_MAPPING: page 11 and the token change' in out
+    assert 'PASS  SET_KEYBOARD_MAPPING of the codes shown: OK, and the token and counters unchanged' in out
+
+
+def test_conformance_fails_a_board_that_ignores_the_profile(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test a board with range checks that are right, which writes the active profile whatever [3] names."""
+    checked = hlp_model_board._set_keyboard_mapping
+    hlp_model_board._set_keyboard_mapping = lambda request: checked(
+        request[:3] + bytes([hlp_model_board.applied_profile()]) + request[4:])
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'FAIL  SET_KEYBOARD_MAPPING another profile: status 3' in out
+    assert 'RESULT: FAIL (188 passed, 1 failed)' in out
+
+
+def test_conformance_fails_a_board_checking_the_profile_first(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test a board that refuses another profile with status 3 before it checks the first record and count."""
+    checked = hlp_model_board._set_keyboard_mapping
+    hlp_model_board._set_keyboard_mapping = lambda request: (
+        testing._STALE if request[3] != hlp_model_board.applied_profile() else checked(request))
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'FAIL  SET_KEYBOARD_MAPPING first record at the total under another profile' in out
+    assert 'RESULT: FAIL (188 passed, 1 failed)' in out
+
+
+def test_conformance_reports_a_refused_keyboard_put_back_and_runs_on(hlp_run_on_model_board, hlp_model_board,
+                                                                     capsys, caplog):
+    """Test a profile hotkey just after the keyboard code change: the put-back is refused, warned and failed."""
+    hlp_model_board.profiles.append([bytes([2, 1]) + b'Second'.ljust(16, b'\x00')])
+    hlp_model_board.summary = summary_record(led_extent=4, grid_width=2, grid_height=2, profiles=2, controls=3,
+                                             lit_controls=1, unlit_controls=2, lights=2, animations=1)
+    changed = (hlp_model_board.keyboard_codes[1][0] + 1) & 0xFF
+
+    def hotkey(board, request):
+        last = board.requests[-1] if board.requests else b''
+        if last[:1] == bytes([hl.CMD_SET_KEYBOARD_MAPPING]) and last[7] == changed and board.stored_profile == 1:
+            board.store_profile(2)
+    hlp_model_board.hooks.append(hotkey)
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
+    out = capsys.readouterr().out
+    assert 'FAIL  keyboard code restored: the token returns  (command 0x34 (SET_KEYBOARD_MAPPING) rejected: STALE)' \
+        in out
+    assert 'could not put back the keyboard code changed' in caplog.text
+    assert 'Timing:' in out and 'FAIL  the checks ran to the end' not in out
+
+
+def test_conformance_passes_a_keyboard_mapping_of_one_record_or_none(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test the SET_KEYBOARD_MAPPING range checks on a page 11 of one record, and of none."""
+    for actions in ([1], []):
+        hlp_model_board.keyboard_actions = actions
+        hlp_model_board.keyboard_codes = {1: [0x52] * len(actions)}
+        hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
+        out = capsys.readouterr().out
+        assert 'FAIL' not in out and 'RESULT: ALL PASS' in out
+
+
+def test_conformance_fails_a_write_of_the_codes_shown(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test a board that writes its flash for SET_KEYBOARD_MAPPING of the codes it has. That reply or the next waits."""
+    every = struct.pack('<BHB', 1, 0, len(hlp_model_board.keyboard_actions))
+    for at_the_next_pass in (False, True):
+        written = []
+
+        def flash_write(board, request, at_the_next_pass=at_the_next_pass, written=written):
+            if written:
+                written.clear()
+                board.now += 0.2            # the reply pause of a settings flash write
+            if request[0] == hl.CMD_SET_KEYBOARD_MAPPING and request[3:7] == every:
+                if at_the_next_pass:
+                    written.append(True)
+                else:
+                    board.now += 0.2
+        hlp_model_board.hooks[:] = [flash_write]
+        with pytest.raises(SystemExit):
+            hlp_run_on_model_board(conformance.conformance, '--quick')
+        out = capsys.readouterr().out
+        assert 'FAIL  SET_KEYBOARD_MAPPING of the codes shown writes nothing to flash: no reply pause' in out
+        assert 'RESULT: FAIL (188 passed, 1 failed)' in out
 
 
 def test_conformance_fails_an_action_page_3_does_not_name(hlp_run_on_model_board, hlp_model_board, capsys):
@@ -851,5 +948,5 @@ def test_conformance_fails_an_action_page_3_does_not_name(hlp_run_on_model_board
     with pytest.raises(SystemExit):
         hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
-    assert 'FAIL  every action on pages 10 and 11 has a name on page 3  ([13])' in out
+    assert 'FAIL  every action on pages 10 to 12 has a name on page 3  ([13])' in out
     assert 'FAIL  page 3 lists each value once' in out

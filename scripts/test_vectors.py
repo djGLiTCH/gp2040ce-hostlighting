@@ -28,7 +28,11 @@ VECTORS = os.path.join(ROOT, 'test-vectors', 'vectors.json')
 A, B = 0x48A1A1A1, 0x48B2B2B2
 NAME_A, NAME_B = b'vec-a', b'vec-b'
 RECORDS = 12                    # a page reply's, and an event's, first record
-SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 12 (test-vectors/README.md)
+# page 1's groups: State, then Controller (its holder token and name, flags at +20, generation at +21), then
+# Settings
+STATE_SIZE, CONTROLLER_SIZE, SETTINGS_SIZE = hl.PAGE_GROUPS[hl.PAGE_STATE]
+HOLDER = RECORDS + STATE_SIZE
+SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 13 (test-vectors/README.md)
 BOARD_IDLE_TIMEOUT = 'idle_timeout'          # board_before: the animations' idle timeout fires
 FILL_RED = bytes([hl.PIXEL_RGB << 4]) + bytes([8, 0, 0])
 
@@ -379,6 +383,40 @@ def idle_and_set_animation(d: Driver) -> None:
     d.page1('page 1: off and idle')
 
 
+def keyboard_mapping(d: Driver) -> None:
+    """Page 11 in two reads, and SET_KEYBOARD_MAPPING refused at [4] or [6], or for profile 0, unwritten."""
+    first = d.req('page 11 from record 0: sixteen records', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
+    d.req('page 11 from record 16: the other sixteen', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING, 16))
+    # first records and counts past any board's records, which one report bounds, so a replay writes nothing
+    d.req('SET_KEYBOARD_MAPPING from record 0xFFFF, past the last: status 2 at [4]', hl.CMD_SET_KEYBOARD_MAPPING,
+          struct.pack('<BHB', 1, 0xFFFF, 1))
+    d.req('SET_KEYBOARD_MAPPING of no records: status 2 at [6]', hl.CMD_SET_KEYBOARD_MAPPING,
+          struct.pack('<BHB', 1, 0, 0))
+    d.req('SET_KEYBOARD_MAPPING of 255 records, past the last: status 2 at [6]', hl.CMD_SET_KEYBOARD_MAPPING,
+          struct.pack('<BHB', 1, 0, 0xFF))
+    d.req('SET_KEYBOARD_MAPPING with profile, first record and count wrong: status 2 at [4], the range checked '
+          'before the profile', hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 0, 0xFFFF, 0))
+    # record 0's code as the board shows it, so even a board that does not check the profile writes nothing new
+    d.req('SET_KEYBOARD_MAPPING for profile 0, never active: status 3, nothing written',
+          hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 0, 0, 1) + bytes([first[RECORDS + 2]]))
+
+
+def keyboard_code_change(d: Driver) -> None:
+    """Model only. The code shown writes nothing. A new code changes page 11, its counter and the token."""
+    d.req('SUBSCRIBE to STATE_CHANGED', hl.CMD_SUBSCRIBE, struct.pack('<H', 1 << hl.EVENT_STATE_CHANGED))
+    d.req('page 8: the change counters', hl.CMD_GET_PAGE, page(hl.PAGE_SUMMARY))
+    d.req('SET_KEYBOARD_MAPPING record 4 (B1) to its code shown, 0xE1: OK, nothing changes',
+          hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 1, 4, 1) + bytes([0xE1]))
+    d.req('SET_KEYBOARD_MAPPING record 4 to 0x04: OK, then one STATE_CHANGED with a new token',
+          hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 1, 4, 1) + bytes([0x04]))
+    d.wait(0.05)
+    d.req('page 11: record 4 has code 0x04', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
+    d.req("page 8: page 11's change counter stepped", hl.CMD_GET_PAGE, page(hl.PAGE_SUMMARY))
+    d.req('SET_KEYBOARD_MAPPING record 4 back to 0xE1: OK, the token returns', hl.CMD_SET_KEYBOARD_MAPPING,
+          struct.pack('<BHB', 1, 4, 1) + bytes([0xE1]))
+    d.wait(0.05)
+
+
 def full_reply_queue(d: Driver) -> None:
     """Model only. 16 replies wait unread; the 17th request needing a reply is discarded, neither run nor answered."""
     for i in range(16):
@@ -389,10 +427,11 @@ def full_reply_queue(d: Driver) -> None:
 SCENARIOS: list[Callable[[Driver], None]] = [
     hello, claim_echo, other_token_under_shared_claim, change_of_holder_resets, exclusive_claim, keepalive_by_holder,
     other_claims_flags, other_claims_flags_exclusive, lost_claim_reply, takeover_between_claim_and_configure,
-    lapse_taken_again_by_a_renewal, led_limit, stale_token, state_changed, idle_and_set_animation, full_reply_queue]
+    lapse_taken_again_by_a_renewal, led_limit, stale_token, state_changed, idle_and_set_animation, keyboard_mapping,
+    keyboard_code_change, full_reply_queue]
 NAMES = {other_claims_flags: 'other_claims_flags_shared'}
-MODEL_ONLY = {idle_and_set_animation, full_reply_queue}
-EVENTS_COMPARED = {state_changed}
+MODEL_ONLY = {idle_and_set_animation, keyboard_code_change, full_reply_queue}
+EVENTS_COMPARED = {state_changed, keyboard_code_change}
 IDLE_COMPARED = {idle_and_set_animation}
 SETUP = {idle_and_set_animation: SETUP_SECOND_ANIMATION}
 
@@ -429,9 +468,10 @@ def _holder(r: bytes, at: int, gen0: int) -> tuple[Any, ...]:
 
 def _state(r: bytes, gen0: int, number0: int, idle: bool) -> tuple[Any, ...]:
     """Give page 1's record, in a reply or an event: its flags, takeover number, holder and settings."""
-    rec = r[RECORDS:RECORDS + 35]
-    flags = rec[0] & (hl.STATE_LIVE | hl.STATE_UNSAVED | (hl.STATE_IDLE if idle else 0))
-    return (flags, (rec[7] - number0) % 256) + _holder(r, RECORDS + 9, gen0) + (rec[31:35].hex(),)
+    settings = HOLDER + CONTROLLER_SIZE
+    flags = r[RECORDS] & (hl.STATE_LIVE | hl.STATE_UNSAVED | (hl.STATE_IDLE if idle else 0))
+    return ((flags, (r[RECORDS + 7] - number0) % 256) + _holder(r, HOLDER, gen0) +
+            (r[settings:settings + SETTINGS_SIZE].hex(),))
 
 
 def view(report: str, gen0: int, number0: int, idle: bool = False) -> tuple[Any, ...]:
@@ -461,7 +501,7 @@ def start_of(d: Driver) -> tuple[int, int]:
     d.recording = False
     r = d.page1()
     d.recording = True
-    return r[RECORDS + 30], r[RECORDS + 7]
+    return r[HOLDER + 21], r[RECORDS + 7]
 
 
 def reset(d: Driver) -> None:
@@ -469,8 +509,8 @@ def reset(d: Driver) -> None:
     d.recording = False
     for token in (A, B):
         r = d.page1()
-        if struct.unpack_from('<I', r, RECORDS + 9)[0] == token:
-            claim(d, 'reset', hl.CLAIM_GIVE_UP, token, b'', as_holder(r[RECORDS + 30], bool(r[RECORDS + 29] & 1)))
+        if struct.unpack_from('<I', r, HOLDER)[0] == token:
+            claim(d, 'reset', hl.CLAIM_GIVE_UP, token, b'', as_holder(r[HOLDER + 21], bool(r[HOLDER + 20] & 1)))
     d.req('reset', hl.CMD_RELEASE)
     d.req('reset', hl.CMD_CLEAR, settle=0.1)
     d.recording = True

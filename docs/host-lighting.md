@@ -15,11 +15,12 @@ board's lights. The on-board animations return when the host stops.
 - The board's own animations return when the host releases control or
   disconnects. When the host stops or crashes they return within a timeout, 2 s
   by default.
-- The board describes its LED layout, controls, profiles and animations from
-  its live configuration, user remaps included. Host software needs no
-  per-board configuration and no update when a new board is released.
+- The board describes its LED layout, controls, keyboard mapping, profiles and
+  animations from its live configuration, user remaps included. Host software
+  needs no per-board configuration and no update when a new board is released.
 - A host can also switch the input profile, animation, animation speed and
-  brightness as the board's hotkeys do, and change the input mode.
+  brightness as the board's hotkeys do, set the codes the Keyboard input mode
+  sends, and change the input mode.
 
 Users need only this section, How it works and Supported modes. Host developers
 continue with Discovery and Typical host flow, and use the Protocol reference
@@ -145,7 +146,7 @@ sharing a board, events and a clean shutdown.
 
 1. Discover by usage page and usage. Send `HELLO`. Require the `GPHL` magic and
    major 2, check the capabilities the host uses, and bind by the board ID.
-2. Read page 8 with `GET_PAGE`. Read pages 0, 2, 3 and 9-12 as the use case
+2. Read page 8 with `GET_PAGE`. Read pages 0, 2, 3 and 9-13 as the use case
    needs (table below).
 3. Send `CLAIM`. Make it exclusive to keep applications that do not claim from
    changing the board.
@@ -201,15 +202,16 @@ pages and their change counters, which start again at 0 with each boot.
 |---|---|
 | Light a control by name | `HELLO`, then `STAGE` by action. No pages |
 | Stream a whole frame | 8 |
-| Per-light effects with geometry | 8, 11 |
+| Per-light effects with geometry | 8, 12 |
 | Hand single lights back to the animation | `UNSTAGE` in overlay takeover. No pages |
 | Configure host inputs from the board | 9, 10 |
+| Read or set the codes the Keyboard input mode sends | `SET_KEYBOARD_MAPPING`; 1, 10, 11 |
 | Switch the input profile | `SET_PROFILE`; 9 |
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
-| Set an animation's speeds | `SET_ANIMATION_SPEED`; 12 for the speeds, 8 for the step count |
+| Set an animation's speeds | `SET_ANIMATION_SPEED`; 13 for the speeds, 8 for the step count |
 | Switch the input mode | `SET_INPUT_MODE`; 2 |
 | Name actions and light kinds | 3 |
-| Full inventory and UI | 0, 2, 3, 8-12 |
+| Full inventory and UI | 0, 2, 3, 8-13 |
 | Share a board with other applications | `CLAIM`, the generation; 1 |
 | Keep applications that do not claim off the board | `CLAIM` exclusive, `HOLDER` and the generation; 1 |
 | Stay current | `SUBSCRIBE`, or poll 1 |
@@ -248,8 +250,8 @@ Request flags, the same on every command:
 | 4-6 | Generation | The claim generation the sender acts under, 1-7; 0 none (`CLAIM`) |
 | 7 | - | Reserved for extending the request flags. A host must send it as zero unless `HELLO` `[18]` lists it. A board that does not list it ignores it |
 
-Status: `0` OK, `1` unsupported command, `2` invalid argument, `3` stale token
-(see Pages), `4` claimed (see `CLAIM`).
+Status: `0` OK, `1` unsupported command, `2` invalid argument, `3` stale (see
+Pages and `SET_KEYBOARD_MAPPING`), `4` claimed (see `CLAIM`).
 
 - A command whose status is not 0 changes nothing, answered or not, and neither
   `COMMIT_AFTER` nor `KEEPALIVE` applies.
@@ -267,7 +269,7 @@ Each quantity has one width wherever it appears:
 |---|---|
 | 3-bit | Claim generation (request flags bits 4-6; the low bits of its Controller byte) |
 | 4-bit | Addressing mode, pixel format (`[3]` of `STAGE`, `UNSTAGE` and `FILL`) |
-| 8-bit | Pin, key, kind, grid coordinate, enumerated value, string byte; sequence, takeover number, versions, page, profile, brightness, animation speed, player, palette slot, button layout, change counter, reply queue limit; counts, offsets and strides within one report |
+| 8-bit | Pin, key, kind, grid coordinate, enumerated value, string byte; sequence, takeover number, versions, page, profile, brightness, animation speed, player, palette slot, button layout, keyboard code, change counter, reply queue limit; counts, offsets and strides within one report |
 | 16-bit | LED index and count, light ordinal and count, animation ordinal, record index and count, control instance and instances, grid size, render rate, time in ms |
 | 16-bit, signed | Action, page 3 value |
 | 32-bit | State token, host token |
@@ -305,7 +307,7 @@ be another application's. Each reply carries the following to tell them apart.
 
 | Reply | Identified by |
 |---|---|
-| `GET_PAGE` | Command and sequence; the echoed page, start and field groups (page and start alone in a stale-token reply) |
+| `GET_PAGE` | Command and sequence; the echoed page, start and field groups (page and start alone in a status 3 reply) |
 | `CLAIM` | Command and sequence; the echoed action and token |
 | Status 4, to any command | Command and sequence; the holder shown refusing the request (below) |
 | Every other reply | Command and sequence only |
@@ -357,9 +359,9 @@ until then. A host must set request timeouts of 250 ms or more, or it takes
 such a write for a lost board.
 
 The board writes about a second after a change of animation, animation speed or
-saved brightness. It writes at once after a profile switch or another setting a
-hotkey changes. This holds whether a host or the board's own hotkeys made the
-change.
+saved brightness. It writes at once after a profile switch, a keyboard mapping
+change or another setting a hotkey changes. This holds whether a host or the
+board's own hotkeys made the change.
 
 A streaming host should send each frame's staging reports with `NO_REPLY` and
 set `COMMIT_AFTER` on the last one, without `NO_REPLY`. That report stages,
@@ -425,6 +427,7 @@ flash counts toward no timeout.
 | 0x31 | SET_ANIMATION | `[3..4]` index | - |
 | 0x32 | SET_ANIMATION_SPEED | `[3..4]` index, `[5]` idle, `[6]` pressed, `[7]` case speed (0xFF unchanged) | - |
 | 0x33 | SET_BRIGHTNESS | `[3]` brightness step (0xFF the saved step), `[4]` save (0 no, 1 yes) | - |
+| 0x34 | SET_KEYBOARD_MAPPING | `[3]` expected profile, `[4..5]` first record, `[6]` count, `[7..]` one code per record | - |
 | | **Privileged management, magic-guarded (0x70-0x7F)** | | |
 | 0x70 | SET_INPUT_MODE | `[3]` InputMode, `[4..7]="MODE"` | - |
 | 0x71 | REBOOT | `[3]` target (0 gamepad, 1 web configurator, 2 BOOTSEL), `[4..7]="BOOT"` | - |
@@ -586,25 +589,28 @@ state lists what ends a takeover.
 
 `SET_PROFILE` selects the input profile as GP2040-CE's profile hotkeys do. The
 choice is applied live and saved. A profile that does not exist or is not
-enabled is an invalid argument. Page 9 lists the profiles.
+enabled is an invalid argument. Page 9 lists the profiles. A switch, from
+`SET_PROFILE` or any other source such as a profile hotkey, applies at the
+board's next main-loop pass. State `+2` then changes, with pages 10 to 12 and
+the state token where they differ.
 
 `SET_ANIMATION` selects the on-board animation, which shows outside a takeover
-and under unstaged pixels in overlay. The index is a page 12 ordinal, or 0xFFFF
+and under unstaged pixels in overlay. The index is a page 13 ordinal, or 0xFFFF
 for off. Off is the state GP2040-CE's animation hotkeys reach after the last
 enabled animation. In it no animation lights anything, and only the board's RGB
 player and turbo indicators still show. The choice is applied live and saved.
 The index of the animation shown changes nothing, and does not wake the
 animations from the idle timeout.
 Any other index at or above the page's total, or of an animation not enabled
-(page 12 flag bit 0), is an invalid argument.
+(page 13 flag bit 0), is an invalid argument.
 
 `SET_ANIMATION_SPEED` sets the idle, pressed and case speeds of one on-board
 animation. These are the speeds the web configurator's LED page shows and
 GP2040-CE's animation speed hotkeys step. They are applied live and saved. The
-index is a page 12 ordinal. A speed of 0xFF leaves that speed as it is. An
+index is a page 13 ordinal. A speed of 0xFF leaves that speed as it is. An
 index at or above the page's total, or a speed other than 0xFF above the
 Summary's speed steps (`+10`), is an invalid argument. The speeds are on page
-12, so a change also changes the state token.
+13, so a change also changes the state token.
 
 `SET_BRIGHTNESS` sets the brightness step the board shows, live.
 
@@ -624,18 +630,35 @@ whether the two differ (State flag bit 1). Host pixels follow the step shown
 when `CONFIGURE` `[6]` is 1.
 
 A board without LED output reports no brightness steps, no speed steps and no
-animations (Summary `+9`, `+10`, page 12 empty). On it `SET_BRIGHTNESS` accepts
+animations (Summary `+9`, `+10`, page 13 empty). On it `SET_BRIGHTNESS` accepts
 only 0 and 0xFF, `SET_ANIMATION` only 0xFFFF and `SET_ANIMATION_SPEED` no
 index.
 
-`SET_PROFILE`, `SET_ANIMATION`, `SET_ANIMATION_SPEED` and a saved
-`SET_BRIGHTNESS` write the board's settings flash.
+`SET_KEYBOARD_MAPPING` sets the codes of consecutive page 11 records in the
+active profile's mapping, the one the web configurator edits for that profile.
+`[3]` is the profile the host expects, as State `+2` shows it. It sets `[6]`
+records from record `[4..5]`, one code per byte from `[7]`. The codes apply at
+once and are saved. Any 8-bit code is accepted. A count of 0, or records past
+the page's total, is an invalid argument. One command can set the whole
+mapping, which writes the flash once.
+
+A valid command returns status 3 and changes nothing while a profile switch is
+pending (see `SET_PROFILE`) or when `[3]` is not the active profile. A status 3
+reply carries nothing more. The `STATE_CHANGED` event for a switch follows its
+application when it changes page 1, and a host must read page 1 and page 11
+again before it sends the command again. That answers either cause, so a host
+need not tell them apart.
+
+`SET_PROFILE`, `SET_ANIMATION`, `SET_ANIMATION_SPEED`, `SET_KEYBOARD_MAPPING`
+and a saved `SET_BRIGHTNESS` write the board's settings flash.
 
 - A value equal to the current one succeeds and writes nothing. For
-  `SET_BRIGHTNESS` the current value is the saved step, and a saved step still
-  ends an unsaved one.
-- Any other value is saved, a profile at once and the others about a second
-  later. The board answers nothing for about 200 ms while it writes (Replies).
+  `SET_PROFILE` the current value is the profile last selected, a switch still
+  to apply included. For `SET_BRIGHTNESS` it is the saved step, and a saved
+  step still ends an unsaved one.
+- Any other value is saved, a profile and a keyboard mapping at once and the
+  others about a second later. The board answers nothing for about 200 ms
+  while it writes (Replies).
 - Every write wears the flash. A host should send these commands for a user's
   choice and not as an effect. To dim the animations for a session, it sends an
   unsaved `SET_BRIGHTNESS`, which writes nothing. To dim or animate its own
@@ -667,23 +690,24 @@ before it reboots. A host must confirm success by the device re-enumerating.
 |---|---|---|---|
 | | **Board (0-7)** | | |
 | 0 | Identity | The board and its firmware: label, board config, platform, version and build | For display and diagnostics. It changes only with the firmware |
-| 1 | State | What is happening now: input mode, profile, player, animation, brightness, takeover and its `CONFIGURE` settings, the application holding `CLAIM` and the claim generation | To poll, or as the `STATE_CHANGED` payload. It changes at any time |
+| 1 | State | What is happening now: input mode, profile, player, animation, brightness, takeover and its `CONFIGURE` settings, the D-pad mode, the application holding `CLAIM` and the claim generation | To poll, or as the `STATE_CHANGED` payload. It changes at any time |
 | 2 | Input modes | The input modes `SET_INPUT_MODE` accepts: value, name, and whether each presents the lighting interface | Before `SET_INPUT_MODE`. It changes only with the firmware and its settings |
 | 3 | Names | The names of the `GpioAction` and `LightType` values the pages carry, as GP2040-CE's `proto/enums.proto` gives them | To name actions and light kinds. It changes only with the firmware |
 | 4-7 | - | Free for board pages | - |
 | | **Configuration (8-15)** | | |
-| 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, each configuration page's record count, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
+| 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, the record counts of pages 9, 10, 12 and 13, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
 | 10 | Controls | Every control in the active profile, lit or not. A control is a GPIO pin or add-on input with an action. Each record gives which instance of its action it is, where it sits, and its lights | To configure host inputs, or to show where each control sits |
-| 11 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
-| 12 | Animations | The on-board animations: enabled, idle, pressed and case effects, and their speeds | To show or pick the idle animation (`SET_ANIMATION`) or set its speeds (`SET_ANIMATION_SPEED`) |
-| 13-15 | - | Free for configuration pages | - |
+| 11 | Keyboard mapping | The code the Keyboard input mode sends for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`) |
+| 12 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
+| 13 | Animations | The on-board animations: enabled, idle, pressed and case effects, and their speeds | To show or pick the idle animation (`SET_ANIMATION`) or set its speeds (`SET_ANIMATION_SPEED`) |
+| 14-15 | - | Free for configuration pages | - |
 | | **Diagnostics (16-23)** | None in 2.0 | - |
 | | **Reserved (24-31)** | For new groups (see Number spaces) | - |
 
 A host should cache the configuration pages. The state token changes whenever
-anything on them changes, a profile switch and an animation speed included. The
-Summary's change counters say which pages changed.
+anything on them changes, a change by a profile switch or an animation speed
+included. The Summary's change counters say which pages changed.
 
 Every reply has the same header:
 
@@ -750,7 +774,7 @@ ID is in the `HELLO` reply.
 
 | Bit | Group | Bytes |
 |---|---|---|
-| 0 | State | 9 |
+| 0 | State | 10 |
 | 1 | Controller | 22 |
 | 2 | Settings | 4 |
 
@@ -760,12 +784,20 @@ State:
 |---|---|
 | +0 | Flags: bit 0 a host frame is shown; bit 1 the brightness step shown is unsaved; bit 2 the animations are idle; rest zero |
 | +1 | Current InputMode |
-| +2 | Active input profile (page 9). 1 is the base mapping |
+| +2 | Active input profile (page 9), the one pages 10 to 12 report. 1 is the base mapping |
 | +3 | Player number the host assigned, 0 none (below) |
 | +4..5 | Current animation index; 0xFFFF off (`SET_ANIMATION`) |
 | +6 | Brightness step shown, 0 to the Summary's step count |
 | +7 | Takeover number, incremented at every takeover start |
 | +8 | Saved brightness step. The board returns to it when an unsaved step ends. Equal to `+6` otherwise |
+| +9 | Current D-pad mode (`DpadMode`), verbatim |
+
+A held `SUSTAIN_DP_MODE_*` button sets the D-pad mode, `SUSTAIN_DP_MODE_DP`
+before `SUSTAIN_DP_MODE_LS` and `SUSTAIN_DP_MODE_RS`. With none held it is
+`GamepadOptions.dpadMode`, which the D-pad hotkeys change and save.
+`proto/enums.proto` lists the modes. Page 11 depends only on whether the mode
+is `DPAD_MODE_DIGITAL`. A host must treat a mode it does not know as one it
+cannot name.
 
 The player number is the one the input mode's driver records.
 
@@ -831,10 +863,9 @@ mode.
 A host that offers a mode switch should list these modes and warn for one
 without flag bit 0.
 
-**Page 3 - Names**, one record per value of the GP2040-CE enums whose values
-the pages carry: `GpioAction` (pages 10 and 11), then `LightType` (page 11),
-each in the order `proto/enums.proto` gives. The records are fixed for the
-firmware.
+**Page 3 - Names**, one record per value of `GpioAction` (pages 10 to 12),
+then of `LightType` (page 12), each in the order `proto/enums.proto` gives.
+The records are fixed for the firmware.
 
 | Bit | Group | Bytes |
 |---|---|---|
@@ -881,8 +912,8 @@ Summary:
 | +20..21 | Controls: page 10's total |
 | +22..23 | Lit controls |
 | +24..25 | Unlit controls |
-| +26..27 | Lights: page 11's total |
-| +28..29 | Animations: page 12's total |
+| +26..27 | Lights: page 12's total |
+| +28..29 | Animations: page 13's total |
 
 Changes:
 
@@ -931,7 +962,7 @@ afterwards.
 
 **Page 9 - Profiles**, one 18-byte record per input profile, in profile order.
 Input profiles are GP2040-CE's button mappings. Profile 1 is the base mapping,
-and each other profile remaps the pins.
+and each other profile remaps the pins and has its own keyboard mapping.
 
 | Off | Field |
 |---|---|
@@ -940,9 +971,9 @@ and each other profile remaps the pins.
 | +2..17 | Label, up to 16 bytes, NUL-padded |
 
 Every defined profile is listed, enabled or not. Profile 1 is always enabled.
-`SET_PROFILE` selects one and State `+2` shows the active one. The Controls and
-Lights pages report the active profile's mapping. Add-on inputs have one
-mapping for every profile.
+`SET_PROFILE` selects one and State `+2` shows the active one. The Controls,
+Keyboard mapping and Lights pages report the active profile's mappings. Add-on
+inputs have one mapping for every profile.
 
 **Page 10 - Controls**, one record per input whose action is greater than zero,
 lit or not, in key order. An input is a GPIO pin or an add-on input. An add-on
@@ -1006,7 +1037,55 @@ its inputs from this page alone. The page comes from the pin map and the add-on
 settings, so a board with no lights still lists every control, unlit and
 without a position.
 
-**Page 11 - Lights**, one record per light. A light is one entry of the board's
+**Page 11 - Keyboard mapping**, one record per button of the Keyboard input
+mode's mapping (`KeyboardMapping`), in `KeyboardMapping` field order, from the
+active profile. The records' actions and total are fixed for the firmware, and
+only their codes change. Page 8 does not count them. Each reply gives the
+total.
+
+| Bit | Group | Bytes |
+|---|---|---|
+| 0 | Action (signed 16-bit), code | 3 |
+
+The group makes a 3-byte record, sixteen per reply.
+
+| Field | Meaning |
+|---|---|
+| Action | The `GpioAction` of the button, verbatim: `BUTTON_PRESS_UP` for `keyDpadUp` to `BUTTON_PRESS_E12` for `keyButtonE12` |
+| Code | The code the Keyboard input mode sends for the button, 8-bit, as `KeyboardDriver` presses it. 4-0xE7 a HID keyboard usage (usage page 0x07, the modifiers 0xE0-0xE7 included). 1-3 HID's keyboard error usages, which are not keys. Above 0xE7 a media key where GP2040-CE defines one (`KEYBOARD_MULTIMEDIA_*`) and none otherwise. 0 none |
+
+Profile 1 has the base mapping and each other profile its own. The page gives
+the active profile's codes in every input mode, so a host can read them before
+it switches to the Keyboard input mode. A profile switch or
+`SET_KEYBOARD_MAPPING` can change them, and the state token with them.
+
+The Keyboard input mode presses the code of each button the gamepad holds
+after GP2040-CE's D-pad mode, 4-way mode, axis inversion, SOCD cleaning and
+add-ons have run. Field order differs from action order, with L3 and R3 before
+A1 and A2. Each action appears at most once, so a host finds the code of a
+control's button by joining page 10's action to it, never by ordinal. A
+control sends that code while the gamepad holds its button, with these
+exceptions.
+
+- `BUTTON_PRESS_UP` to `BUTTON_PRESS_RIGHT` on a GPIO pin or a Hall-effect
+  trigger hold their D-pad direction only in `DPAD_MODE_DIGITAL` (State `+9`).
+  In the analog modes they move a stick and send no code.
+- `DIGITAL_DIRECTION_*` on a GPIO pin holds the D-pad direction of that name in
+  every D-pad mode, unless an add-on that runs later sets the D-pad, which no
+  page reports.
+- `BUTTON_PRESS_DDI_*`, `BUTTON_PRESS_MACRO*` and `CUSTOM_BUTTON_COMBO` on a
+  GPIO pin hold the buttons their own settings give, which no page reports.
+- A Hall-effect trigger holds the button of any action this page lists. An
+  I/O-expander pin holds only the buttons of `BUTTON_PRESS_UP` to
+  `BUTTON_PRESS_R3`, the page 11 actions `PCF8575Addon` reads, and holds its
+  D-pad directions in every D-pad mode. Other actions on an add-on input hold
+  no button this page lists.
+
+One media key is sent at a time. A pending volume step of the Rotary Encoder
+add-on sends its own. Otherwise it is that of the last pressed button in field
+order whose code is above 0xE7, and none when that code is not a media key.
+
+**Page 12 - Lights**, one record per light. A light is one entry of the board's
 LED layout, a run of LEDs with a kind and a grid position. A button or turbo
 light is tied to a pin. A case or player light takes a palette slot instead. A
 light's identity is its record ordinal, which is also its `STAGE` address.
@@ -1051,7 +1130,7 @@ The lights are fixed while the interface exists. A profile switch changes only
 the owner action, the owner instances and flag bit 0. After a token change a
 host reads groups 1-3 again and keeps the rest.
 
-**Page 12 - Animations**, one record per on-board animation, the board's stored
+**Page 13 - Animations**, one record per on-board animation, the board's stored
 animation profiles. The ordinal is the `SET_ANIMATION` and
 `SET_ANIMATION_SPEED` index.
 
@@ -1101,7 +1180,7 @@ Lights and controls are named by GP2040-CE's own values, reported verbatim.
 | 2 | Turbo |
 | 3-6 | Player LEDs 1-4 |
 
-Page 12's effects are GP2040-CE's own values too (`proto/enums.proto`). The
+Page 13's effects are GP2040-CE's own values too (`proto/enums.proto`). The
 idle and case effects are `AnimationNonPressedEffects` values. The pressed
 effect is an `AnimationPressedEffects` value.
 
@@ -1263,18 +1342,21 @@ Polling page 1 remains supported.
 |---|---|---|---|
 | Board | Factory-unique ID | `HELLO` | Bind persistently by it |
 | Input mode | `InputMode` | Page 2 records, State `+1`, `SET_INPUT_MODE` | - |
-| Profile | Profile number | Page 9 records, State `+2`, `SET_PROFILE` | - |
-| Control | Page 10 key: GPIO pin or add-on input | Page 10 records, page 11 owner pin, `STAGE` by pin | Page 11 owner pin = page 10 key |
-| Light | Page 11 ordinal | `STAGE` light and light run, page 10 first light ordinal | - |
-| LED | Chain index | Page 11 first LED and count, page 8 extent, `STAGE` LED run | A light covers its first LED and the `count - 1` after it |
-| Animation | Page 12 ordinal | `SET_ANIMATION`, `SET_ANIMATION_SPEED`, page 1 animation index | - |
+| Profile | Profile number | Page 9 records, State `+2`, `SET_PROFILE`, `SET_KEYBOARD_MAPPING` `[3]` | - |
+| Control | Page 10 key: GPIO pin or add-on input | Page 10 records, page 12 owner pin, `STAGE` by pin | Page 12 owner pin = page 10 key |
+| Keyboard mapping record | Page 11 ordinal, the `KeyboardMapping` field order | Page 11 records, `SET_KEYBOARD_MAPPING` | Page 11 action = page 10 action |
+| Light | Page 12 ordinal | `STAGE` light and light run, page 10 first light ordinal | - |
+| LED | Chain index | Page 12 first LED and count, page 8 extent, `STAGE` LED run | A light covers its first LED and the `count - 1` after it |
+| Animation | Page 13 ordinal | `SET_ANIMATION`, `SET_ANIMATION_SPEED`, page 1 animation index | - |
 | Controlling application | Host token | `CLAIM`, page 1 Controller | - |
 
-An action and a kind are attributes and not keys. `STAGE` by either reaches
-every light carrying it, and `UNSTAGE` takes the same addresses. Player, turbo
-and case lights are lights, keyed by ordinal. Player and case lights have no
-pin. A turbo light is tied to a pin as a button light is, and joins its control
-by that pin. An I/O-expander control has no lights. No join uses a sentinel.
+An action and a kind are attributes and not keys. Page 11 carries each action
+at most once, so a page 10 action finds its keyboard code there, if it has one.
+`STAGE` by an action or a kind reaches every light carrying it, and `UNSTAGE`
+takes the same addresses. Player, turbo and case lights are lights, keyed by
+ordinal. Player and case lights have no pin. A turbo light is tied to a pin as
+a button light is, and joins its control by that pin. An I/O-expander control
+has no lights. No join uses a sentinel.
 0xFF, 0xFFFF and 0x8000 mean none and never equal a key.
 
 ### Number spaces
@@ -1288,9 +1370,9 @@ reserved range.
 | Request flags, bits 0-7 | 0-3 flags, 4-6 the claim generation | 7 |
 | Status, 0-255 | - | 5-255 |
 | Claim flags, bits 0-7 | - | 1-7 |
-| Commands | `0x01-0x0F` session and discovery, `0x10-0x1F` frame staging, `0x20-0x2F` frame lifecycle, `0x30-0x4F` board features, `0x50-0x6F` reserved for new groups, `0x70-0x7F` privileged management; `0x00` is never a command | `0x06-0x0F`, `0x14-0x1F`, `0x22-0x2F`, `0x34-0x4F`, `0x72-0x7F` |
+| Commands | `0x01-0x0F` session and discovery, `0x10-0x1F` frame staging, `0x20-0x2F` frame lifecycle, `0x30-0x4F` board features, `0x50-0x6F` reserved for new groups, `0x70-0x7F` privileged management; `0x00` is never a command | `0x06-0x0F`, `0x14-0x1F`, `0x22-0x2F`, `0x35-0x4F`, `0x72-0x7F` |
 | `HELLO` reply | `[3..16]` identity, `[17]` limits, `[18..44]` capabilities, `[45..46]` session | `[47..63]` |
-| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 4-7, 13-15, 16-23 |
+| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 4-7, 14-15, 16-23 |
 | Page 3 enums, 0-255 | - | 2-255 |
 | Field groups, bits 0-15 of each page | In the order of the page's record | After each page's last group |
 | Addressing (`STAGE`, `UNSTAGE`), 0-15 | 0-3 runs, 4-15 entries | 2-3, 8-15 |
@@ -1313,9 +1395,9 @@ Each report is 64 bytes, and every byte not shown is zero.
              xx xx xx xx xx xx xx xx  [9..16]  board ID
              10 7f                    [17..18] queue limit 16; flags 0-3 and
                                                the claim generation
-             3e 00 0f 00 03 00 0f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
-             00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x33, 0x70-0x71
-             0f 1f 00 00              [35..38] pages 0-3 and 8-12
+             3e 00 0f 00 03 00 1f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
+             00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x34, 0x70-0x71
+             0f 3f 00 00              [35..38] pages 0-3 and 8-13
              f3 00 07 00 01 00        [39..44] addressing 0, 1 and 4-7; pixel
                                                formats 0-2; event 0
              00 00                    [45..46] no events enabled
@@ -1338,8 +1420,8 @@ Each report is 64 bytes, and every byte not shown is zero.
              01 00 15 00 10 00 05 00  [30..37] 1 profile; 21 controls, 16 lit
                                                and 5 unlit
              10 00 04 00              [38..41] 16 lights, 4 animations
-             00 00 00 00 02 00 00 00  [42..49] change counters, pages 8-15,
-                                               page 12's at 2
+             00 00 00 00 00 02 00 00  [42..49] change counters, pages 8-15,
+                                               page 13's at 2
              xx xx xx xx              [60..63] state token
 
 `STAGE` of LEDs 0-3 as red, green, blue and white, published by
@@ -1396,26 +1478,26 @@ yet seen the change, and its next frame is refused:
 
     event    80 00 00                 event 0, STATE_CHANGED
              01 00 00 01 00           [3..7]   page 1, start 0, total 1
-             01 23 07 00              [8..11]  1 record, stride 35, groups 0-2
+             01 24 07 00              [8..11]  1 record, stride 36, groups 0-2
              00 00 01 02              [12..15] no frame shown; XInput; profile
                                                1; player 2
-             00 00 0a 01 0a           [16..20] animation 0; brightness step 10;
+             00 00 0a 01 0a 00        [16..21] animation 0; brightness step 10;
                                                takeover number 1; saved step
-                                               10
-             b2 00 00 00              [21..24] the holder's token, 0xB2
-             42 65 74 61              [25..40] the holder's name, "Beta"
-             00 03                    [41..42] shared; generation 3
-             00 d0 07 01              [43..46] whole-frame; 2000 ms; brightness
+                                               10; digital D-pad mode
+             b2 00 00 00              [22..25] the holder's token, 0xB2
+             42 65 74 61              [26..41] the holder's name, "Beta"
+             00 03                    [42..43] shared; generation 3
+             00 d0 07 01              [44..47] whole-frame; 2000 ms; brightness
                                                applied
              xx xx xx xx              [60..63] state token
 
-`GET_PAGE` 11 with a field mask, for the kind and flags of every light:
+`GET_PAGE` 12 with a field mask, for the kind and flags of every light:
 
     request  02 47 00                 GET_PAGE, sequence 0x47, no flags
-             0b 00 00                 [3..5]   page 11, start record 0
+             0c 00 00                 [3..5]   page 12, start record 0
              00 00 00 00 02 00        [6..11]  no token check; mask: group 1
     reply    82 47 00                 its reply: sequence 0x47, status 0
-             0b 00 00 10 00           [3..7]   page 11, start 0, total 16
+             0c 00 00 10 00           [3..7]   page 12, start 0, total 16
              10 02 02 00              [8..11]  16 records, stride 2, group 1
              00 00 00 00 00 00 00 01  [12..43] kind 0 (button) and flags of
              00 00 00 00 00 00 00 00           each light. 3, 12, 13 and 15
@@ -1453,8 +1535,8 @@ yet seen the change, and its next frame is refused:
   never exceed the 48-byte record area, since `STATE_CHANGED` carries all of
   them.
 - Values carried from GP2040-CE are those of the running firmware: actions,
-  kinds, `InputMode`, colour format, effect IDs, button layouts and their
-  orientation, and reboot targets.
+  keyboard codes, kinds, `InputMode`, `DpadMode`, colour format, effect IDs,
+  button layouts and their orientation, and reboot targets.
 - A host must send unused and reserved bytes and bits as zero. The board
   ignores unknown flag bits, mask bits, bits and bytes a layout marks zero, and
   trailing payload bytes. It zeroes every unused reply byte and bit.

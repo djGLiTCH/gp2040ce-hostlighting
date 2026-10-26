@@ -18,12 +18,13 @@ the board and lists its capabilities. GET_PAGE reads the pages:
 * page 2 (input modes): every mode SET_INPUT_MODE accepts, named by the firmware
 * page 8 (summary): LED extent and limit, render rate, colour format and white
   channel, brightness and speed steps, the display's button layouts and their
-  orientation, grid size, each configuration page's total, and a change
-  counter per configuration page
+  orientation, grid size, the profile, control, light and animation totals,
+  and a change counter per configuration page
 * page 9 (profiles), page 10 (controls: every input with an action, lit or
-  not, keyed by GPIO pin, Hall-effect trigger or expander pin), page 11
-  (lights: every light's LEDs, kind, owner and grid cell) and page 12 (the
-  on-board animations and their speeds)
+  not, keyed by GPIO pin, Hall-effect trigger or expander pin), page 11 (the
+  keyboard mapping: the code the Keyboard input mode sends for each button),
+  page 12 (lights: every light's LEDs, kind, owner and grid cell) and page 13
+  (the on-board animations and their speeds)
 
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
@@ -50,10 +51,11 @@ from typing import Any, Callable, Final, Iterable, Literal, Optional, Protocol, 
 
 from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, ControlInstances,
                                            Controller, ControlLights, ControlRecord, Effects, EnumValue, GridCell,
-                                           Hello, Identity, InputModeFlags, InputModeRecord, Instances, LedRange,
-                                           LightKind, LightRecord, NameRecord, Owner, PageHeader, PageRead, PaletteSlot,
-                                           Position, Profile, ProfileRecord, Requirements, Settings, Speeds,
-                                           StageOutcome, State, StateChanged, StateRecord, Summary, SummaryRecord)
+                                           Hello, Identity, InputModeFlags, InputModeRecord, Instances, KeyboardButton,
+                                           KeyboardMappingRecord, LedRange, LightKind, LightRecord, NameRecord, Owner,
+                                           PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
+                                           Requirements, Settings, Speeds, StageOutcome, State, StateChanged,
+                                           StateRecord, Summary, SummaryRecord)
 
 __all__ = [
     # the interface, framing and replies
@@ -62,14 +64,16 @@ __all__ = [
     # commands, flags, statuses, events
     'CMD_HELLO', 'CMD_GET_PAGE', 'CMD_CLAIM', 'CMD_CONFIGURE', 'CMD_SUBSCRIBE', 'CMD_STAGE', 'CMD_UNSTAGE', 'CMD_FILL',
     'CMD_CLEAR', 'CMD_COMMIT', 'CMD_RELEASE', 'CMD_SET_PROFILE', 'CMD_SET_ANIMATION', 'CMD_SET_ANIMATION_SPEED',
-    'CMD_SET_BRIGHTNESS', 'CMD_SET_INPUT_MODE', 'CMD_REBOOT', 'COMMAND_NAMES', 'COMMAND_RANGES',
+    'CMD_SET_BRIGHTNESS', 'CMD_SET_KEYBOARD_MAPPING', 'CMD_SET_INPUT_MODE', 'CMD_REBOOT', 'COMMAND_NAMES',
+    'COMMAND_RANGES',
     'FLAG_COMMIT_AFTER', 'FLAG_NO_REPLY', 'FLAG_KEEPALIVE', 'FLAG_HOLDER', 'FLAG_GENERATION', 'FLAG_GENERATION_SHIFT',
-    'GENERATION_MAX', 'STATUS_OK', 'STATUS_UNSUPPORTED', 'STATUS_INVALID', 'STATUS_STALE_TOKEN', 'STATUS_CLAIMED',
+    'GENERATION_MAX', 'STATUS_OK', 'STATUS_UNSUPPORTED', 'STATUS_INVALID', 'STATUS_STALE', 'STATUS_CLAIMED',
     'STATUS_NAMES', 'EVENT_STATE_CHANGED',
     # pages
     'NAMES_GPIO_ACTION', 'NAMES_LIGHT_TYPE', 'NAME_ENUMS',
     'PAGE_IDENTITY', 'PAGE_STATE', 'PAGE_INPUT_MODES', 'PAGE_NAMES', 'PAGE_SUMMARY', 'PAGE_PROFILES', 'PAGE_CONTROLS',
-    'PAGE_LIGHTS', 'PAGE_ANIMATIONS', 'PAGE_RANGES', 'PAGE_GROUPS', 'HEADER_RECORDS', 'RECORD_AREA', 'HEADER_TOKEN',
+    'PAGE_KEYBOARD_MAPPING', 'PAGE_LIGHTS', 'PAGE_ANIMATIONS', 'PAGE_RANGES', 'PAGE_GROUPS', 'HEADER_RECORDS',
+    'RECORD_AREA', 'HEADER_TOKEN',
     'IDENTITY_GROUPS', 'IDENTITY_STRING_MAX', 'STATE_LIVE', 'STATE_UNSAVED', 'STATE_IDLE', 'SUMMARY_WHITE_CHANNEL',
     'KEY_SOURCES', 'KEY_TRIGGER', 'KEY_EXPANDER', 'KEY_PREFIXES', 'PIN_NONE', 'SLOT_NONE', 'INDEX_NONE',
     'ACTION_NONE', 'ANIMATION_OFF', 'SPEED_UNCHANGED', 'BRIGHTNESS_SAVED',
@@ -127,6 +131,7 @@ CMD_SET_PROFILE = 0x30          # board features, 0x30-0x4F
 CMD_SET_ANIMATION = 0x31
 CMD_SET_ANIMATION_SPEED = 0x32
 CMD_SET_BRIGHTNESS = 0x33
+CMD_SET_KEYBOARD_MAPPING = 0x34
 CMD_SET_INPUT_MODE = 0x70       # privileged (magic-guarded), 0x70-0x7F
 CMD_REBOOT = 0x71
 # the command groups. An addition takes the next free number in its group, and 0x50-0x6F is reserved for new
@@ -135,7 +140,8 @@ COMMAND_NAMES = {CMD_HELLO: 'HELLO', CMD_GET_PAGE: 'GET_PAGE', CMD_CLAIM: 'CLAIM
                  CMD_SUBSCRIBE: 'SUBSCRIBE', CMD_STAGE: 'STAGE', CMD_UNSTAGE: 'UNSTAGE', CMD_FILL: 'FILL',
                  CMD_CLEAR: 'CLEAR', CMD_COMMIT: 'COMMIT', CMD_RELEASE: 'RELEASE', CMD_SET_PROFILE: 'SET_PROFILE',
                  CMD_SET_ANIMATION: 'SET_ANIMATION', CMD_SET_ANIMATION_SPEED: 'SET_ANIMATION_SPEED',
-                 CMD_SET_BRIGHTNESS: 'SET_BRIGHTNESS', CMD_SET_INPUT_MODE: 'SET_INPUT_MODE', CMD_REBOOT: 'REBOOT'}
+                 CMD_SET_BRIGHTNESS: 'SET_BRIGHTNESS', CMD_SET_KEYBOARD_MAPPING: 'SET_KEYBOARD_MAPPING',
+                 CMD_SET_INPUT_MODE: 'SET_INPUT_MODE', CMD_REBOOT: 'REBOOT'}
 COMMAND_RANGES = ((0x01, 0x0F), (0x10, 0x1F), (0x20, 0x2F), (0x30, 0x4F), (0x50, 0x6F), (0x70, 0x7F))
 
 # request flags, the same on every command
@@ -154,10 +160,10 @@ EVENT_MARKER = 0x80             # [0] of an event. There is no command 0x00
 STATUS_OK = 0
 STATUS_UNSUPPORTED = 1
 STATUS_INVALID = 2
-STATUS_STALE_TOKEN = 3
+STATUS_STALE = 3
 STATUS_CLAIMED = 4
 STATUS_NAMES = {STATUS_OK: 'OK', STATUS_UNSUPPORTED: 'UNSUPPORTED', STATUS_INVALID: 'INVALID_ARG',
-                STATUS_STALE_TOKEN: 'STALE_TOKEN', STATUS_CLAIMED: 'CLAIMED'}
+                STATUS_STALE: 'STALE', STATUS_CLAIMED: 'CLAIMED'}
 EVENT_STATE_CHANGED = 0
 
 # pages. Final, so that a type checker reads each as its value and knows the records read_table() returns
@@ -168,8 +174,9 @@ PAGE_NAMES: Final = 3
 PAGE_SUMMARY: Final = 8
 PAGE_PROFILES: Final = 9
 PAGE_CONTROLS: Final = 10
-PAGE_LIGHTS: Final = 11
-PAGE_ANIMATIONS: Final = 12
+PAGE_KEYBOARD_MAPPING: Final = 11
+PAGE_LIGHTS: Final = 12
+PAGE_ANIMATIONS: Final = 13
 PAGE_RANGES = ((0, 7), (8, 15), (16, 23), (24, 31))     # board, configuration, diagnostics, reserved
 
 # every page reply's header. The records area is [12..59] and the state token [60..63]
@@ -180,12 +187,13 @@ HEADER_TOKEN = 60
 # each page's field groups, in mask bit order, and their widths in bytes. Page 0's groups are
 # strings of up to 48 bytes each
 PAGE_GROUPS = {
-    PAGE_STATE: (9, 22, 4),
+    PAGE_STATE: (10, 22, 4),
     PAGE_INPUT_MODES: (2, 22),
     PAGE_NAMES: (3, 40),
     PAGE_SUMMARY: (30, 8),
     PAGE_PROFILES: (18,),
     PAGE_CONTROLS: (4, 4, 6, 4),
+    PAGE_KEYBOARD_MAPPING: (3,),
     PAGE_LIGHTS: (4, 2, 3, 4, 2, 1),
     PAGE_ANIMATIONS: (4, 3),
 }
@@ -218,6 +226,12 @@ ACTION_NONE = -32768            # 0x8000 as a signed 16-bit action
 ANIMATION_OFF = 0xFFFF
 SPEED_UNCHANGED = 0xFF          # SET_ANIMATION_SPEED: leave this speed as it is
 BRIGHTNESS_SAVED = 0xFF         # SET_BRIGHTNESS: show the saved step
+# SET_KEYBOARD_MAPPING: the codes start at [7], after the expected profile [3], the first record [4..5] and the
+# count [6]
+_KEYBOARD_CODES = 7
+# SET_KEYBOARD_MAPPING waits this long before sending again after STALE, as a profile switch may be pending. The
+# board applies a switch at its next main-loop pass
+_PROFILE_SWITCH_WAIT = 0.02
 
 # staging: [3] bits 0-3 addressing, bits 4-7 pixel format
 ADDRESSING_LED_RUN = 0
@@ -553,7 +567,7 @@ def _state(data: bytes) -> State:
     return State(takeover_live=bool(data[0] & STATE_LIVE), brightness_unsaved=bool(data[0] & STATE_UNSAVED),
                  animations_idle=bool(data[0] & STATE_IDLE), input_mode=data[1], profile=data[2], player=data[3],
                  animation=None if animation == ANIMATION_OFF else animation, brightness_step_shown=data[6],
-                 takeover_number=data[7], saved_brightness_step=data[8])
+                 takeover_number=data[7], saved_brightness_step=data[8], dpad_mode=data[9])
 
 
 def decode_controller(data: bytes) -> Controller:
@@ -652,6 +666,10 @@ def _control_lights(data: bytes) -> ControlLights:
     return ControlLights(first_light=None if first == INDEX_NONE else first, light_count=_u16(data, 2))
 
 
+def _keyboard_button(data: bytes) -> KeyboardButton:
+    return KeyboardButton(action=_s16(data, 0), code=data[2])
+
+
 def _led_range(data: bytes) -> LedRange:
     return LedRange(first_led=_u16(data, 0), led_count=_u16(data, 2))
 
@@ -690,6 +708,7 @@ _PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], .
     PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
     PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _control_instances),
                                     ('position', _position), ('lights', _control_lights))),
+    PAGE_KEYBOARD_MAPPING: (KeyboardMappingRecord, (('button', _keyboard_button),)),
     PAGE_LIGHTS: (LightRecord, (('leds', _led_range), ('kind', _light_kind), ('owner', _owner),
                                 ('owner_instances', _instances), ('grid', _grid_cell), ('palette', _palette_slot))),
     PAGE_ANIMATIONS: (AnimationRecord, (('effects', _effects), ('speeds', _speeds))),
@@ -703,7 +722,7 @@ def decode_records(reply: bytes) -> tuple[Any, ...]:
     reply's start plus its index in the reply). Reading a group the reply did not echo raises
     HostLightingGroupNotReadError.
 
-    :param reply: the reply report of a table page (1, 2, 8-12)
+    :param reply: the reply report of a table page (1-3, 8-13)
     :return: the records
     :raises HostLightingError: for a page that is not a table, a stride narrower than the groups it echoes, or
         more records than the reply holds
@@ -1273,7 +1292,7 @@ class HostLightingDevice:
         :param start: first record
         :param mask: field groups to return, or 0 for every group
         :param token: expected state token, 0 for no check
-        :return: the reply report, with status 0 or 3 (STALE_TOKEN)
+        :return: the reply report, with status 0 or 3 (STALE)
         :raises HostLightingRejectedError: on any other status
         :raises ValueError: for a value its field cannot hold
         """
@@ -1283,12 +1302,12 @@ class HostLightingDevice:
         _check_range('token', token, 0xFFFFFFFF)
 
         def echoes(reply: bytes) -> bool:
-            if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
+            if reply[2] not in (STATUS_OK, STATUS_STALE):
                 return True
             header = decode_page_header(reply)
             if header.page != page or header.start != start:
                 return False
-            if reply[2] == STATUS_STALE_TOKEN:
+            if reply[2] == STATUS_STALE:
                 return bool(token) and header.token != token
             if token and header.token != token:
                 return False
@@ -1299,7 +1318,7 @@ class HostLightingDevice:
             return header.groups & known == (mask or known) & known and not (mask and header.groups & ~mask)
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
-        if reply[2] not in (STATUS_OK, STATUS_STALE_TOKEN):
+        if reply[2] not in (STATUS_OK, STATUS_STALE):
             raise self.rejected(CMD_GET_PAGE, reply)
         return reply
 
@@ -1329,10 +1348,14 @@ class HostLightingDevice:
 
     @overload
     def read_table(self, page: Literal[11], mask: int = 0, token: int = 0,
-                   attempts: int = 5) -> PageRead[LightRecord]: ...
+                   attempts: int = 5) -> PageRead[KeyboardMappingRecord]: ...
 
     @overload
     def read_table(self, page: Literal[12], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[LightRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[13], mask: int = 0, token: int = 0,
                    attempts: int = 5) -> PageRead[AnimationRecord]: ...
 
     @overload
@@ -1342,7 +1365,7 @@ class HostLightingDevice:
         """Read every record of a table page as one coherent snapshot.
 
         Without a token, the walk names the state token of its first reply in every later read. If the board's
-        state changes mid-walk, the board answers STALE_TOKEN and the walk starts again, so the records never mix
+        state changes mid-walk, the board answers STALE and the walk starts again, so the records never mix
         two states. With a token, a host that read page 1 or 8 under it reads under the same token, so
         everything it holds describes one state, and a change raises HostLightingStaleTokenError instead. A mask
         that names no group the board defines reads no records.
@@ -1372,13 +1395,13 @@ class HostLightingDevice:
         With follow false, every read goes without a token, for a page the token does not cover (page 3).
 
         :return: the decoded records and their state token, or the board's current token when it answers
-            STALE_TOKEN
+            STALE
         """
         records: list[Any] = []
         while True:
             reply = self.get_page(page, len(records), mask, token)
             header = decode_page_header(reply)
-            if reply[2] == STATUS_STALE_TOKEN:
+            if reply[2] == STATUS_STALE:
                 return header.token
             if follow:
                 token = header.token
@@ -1654,7 +1677,7 @@ class HostLightingDevice:
     def set_animation(self, index: Optional[int]) -> None:
         """Select the on-board animation, applied live and saved about a second later.
 
-        :param index: a page 12 ordinal, or None or ANIMATION_OFF for off
+        :param index: a page 13 ordinal, or None or ANIMATION_OFF for off
         :raises ValueError: for an index over 0xFFFF
         """
         if index is not None:
@@ -1665,7 +1688,7 @@ class HostLightingDevice:
                             case: Optional[int] = None) -> None:
         """Set one on-board animation's speeds, applied live and saved about a second later.
 
-        :param index: a page 12 ordinal
+        :param index: a page 13 ordinal
         :param idle: the idle speed, or None to leave it
         :param pressed: the pressed speed, or None to leave it
         :param case: the case speed, or None to leave it
@@ -1687,6 +1710,39 @@ class HostLightingDevice:
         :param save: save the step, as the brightness hotkeys do
         """
         self.request_ok(CMD_SET_BRIGHTNESS, bytes([step, int(save)]))
+
+    def set_keyboard_mapping(self, profile: int, first: int, codes: Sequence[int], attempts: int = 3) -> None:
+        """Set the codes of consecutive page 11 records in the active profile's mapping, applied live and saved.
+
+        The board writes its settings flash at once, a whole mapping in one write, and answers nothing for about
+        200 ms meanwhile. Codes equal to the current ones write nothing. The board answers STALE while a profile
+        switch is pending or when the profile is not the active one, and writes nothing. The request is sent
+        again after a short wait, so it applies once a pending switch to that profile does.
+
+        :param profile: the profile expected to be active, as page 1 shows it
+        :param first: the page 11 ordinal of the first code
+        :param codes: one code per record, from first
+        :param attempts: how many times to send it in all while the board answers STALE, at least 1
+        :raises ValueError: for a profile over 255, a first ordinal over 0xFFFF, no codes, more than one request
+            carries, a code over 255, or attempts below 1
+        :raises HostLightingRejectedError: if the board refuses it, STALE when the profile is not active by the
+            last attempt
+        """
+        _check_range('profile', profile, 0xFF)
+        _check_range('first record', first, 0xFFFF)
+        _check_range('code count', len(codes), REPORT_SIZE - _KEYBOARD_CODES, 1)
+        for code in codes:
+            _check_range('code', code, 0xFF)
+        if attempts < 1:
+            raise ValueError(f"attempts {attempts} is below 1")
+        payload = struct.pack('<BHB', profile, first, len(codes)) + bytes(codes)
+        for attempt in range(1, attempts + 1):
+            reply = self.request(CMD_SET_KEYBOARD_MAPPING, payload)
+            if reply[2] != STATUS_STALE or attempt == attempts:
+                break
+            time.sleep(_PROFILE_SWITCH_WAIT)
+        if reply[2] != STATUS_OK:
+            raise self.rejected(CMD_SET_KEYBOARD_MAPPING, reply)
 
     def set_input_mode(self, mode: int, allow_no_lighting: bool = False) -> bool:
         """Save an input mode and reboot the board into it.

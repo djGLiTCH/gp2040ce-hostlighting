@@ -67,6 +67,42 @@ def test_board_feature_calls(hlp_fake_device, hlp_fake_board):
         hlp_fake_device.set_profile(9)
 
 
+def test_set_keyboard_mapping_sends_codes_and_sends_again_while_a_switch_is_pending(hlp_fake_device, hlp_fake_board):
+    """Test SET_KEYBOARD_MAPPING: the profile, first record, count and codes, page 11 after it, STALE sent again.
+
+    A refusal past the attempts, and the board's range checks, raise.
+    """
+    device, board = hlp_fake_device, hlp_fake_board
+    base = list(board.keyboard_codes[1])
+    records = device.read_table(hl.PAGE_KEYBOARD_MAPPING).records
+    assert [(record.button.action, record.button.code) for record in records] == list(
+        zip(board.keyboard_actions, base))
+    device.set_keyboard_mapping(1, 4, [0x04, 0x05])
+    assert board.sent(hl.CMD_SET_KEYBOARD_MAPPING)[-1][3:9] == struct.pack('<BHB', 1, 4, 2) + bytes([4, 5])
+    codes = [record.button.code for record in device.read_table(hl.PAGE_KEYBOARD_MAPPING).records]
+    assert codes == base[:4] + [4, 5] + base[6:]
+    board.reject[hl.CMD_SET_KEYBOARD_MAPPING] = hl.STATUS_STALE
+
+    def switched(fake, request):
+        if request[0] == hl.CMD_SET_KEYBOARD_MAPPING and len(fake.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 2:
+            del fake.reject[hl.CMD_SET_KEYBOARD_MAPPING]       # the switch applied before the second attempt
+    board.hooks.append(switched)
+    device.set_keyboard_mapping(1, 0, [0x06])
+    assert len(board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 3 and board.keyboard_codes[1][0] == 0x06
+    board.hooks.clear()
+    board.reject[hl.CMD_SET_KEYBOARD_MAPPING] = hl.STATUS_STALE
+    with pytest.raises(hl.HostLightingRejectedError, match='STALE'):
+        device.set_keyboard_mapping(1, 0, [0x07], attempts=2)
+    assert len(board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 5
+    del board.reject[hl.CMD_SET_KEYBOARD_MAPPING]
+    for first, codes, offset in ((len(base), [1], 4), (len(base) - 1, [1, 2], 6)):
+        sent = len(board.sent(hl.CMD_SET_KEYBOARD_MAPPING))
+        with pytest.raises(hl.HostLightingRejectedError) as caught:
+            device.set_keyboard_mapping(1, first, codes)
+        # refused at once, not sent again
+        assert caught.value.offset == offset and len(board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == sent + 1
+
+
 def test_set_input_mode_refuses_a_mode_without_lighting(hlp_fake_device, hlp_fake_board):
     """Test that SET_INPUT_MODE reads page 2 first and refuses a mode without the interface unless allowed."""
     with pytest.raises(ValueError, match='input mode 4 has no lighting interface'):
@@ -299,7 +335,7 @@ def test_get_page_takes_only_its_own_reply(hlp_fake_board):
     lights = hlp_fake_board.lights
     hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, lights, mask=0b10, sequence=1)]
     assert hl.decode_page_header(device.get_page(hl.PAGE_LIGHTS, 0, 0b11)).groups == 0b11
-    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_STATE, [], sequence=2, status=hl.STATUS_STALE_TOKEN)]
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_STATE, [], sequence=2, status=hl.STATUS_STALE)]
     assert len(device.read_record(hl.PAGE_STATE).records) == 1
     token = hlp_fake_board.token
     hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, lights, token=token ^ 1, sequence=3)]

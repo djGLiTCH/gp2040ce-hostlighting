@@ -2,9 +2,11 @@
 
 Exact request and reply reports for HELLO, the claim and its refusals,
 `KEEPALIVE`, lost replies, staging at the LED limit, a stale state token,
-`STATE_CHANGED`, the idle flag and the reply queue, for hosts that test against
-their own board model. `vectors.json` is generated from the library's
-`ModelBoard` by `scripts/test_vectors.py`. A test keeps the two in step.
+`STATE_CHANGED`, the idle flag, the keyboard mapping and
+`SET_KEYBOARD_MAPPING`, and the reply queue, for hosts that test against their
+own board model.
+`vectors.json` is generated from the library's `ModelBoard` by
+`scripts/test_vectors.py`. A test keeps the two in step.
 
     python scripts/test_vectors.py               write the vectors
     python scripts/test_vectors.py --board ID    replay them on a board
@@ -32,7 +34,7 @@ The codes are fixed; a replay acts on them.
 
 | Code | In | Means |
 |---|---|---|
-| `second_animation` | `setup` | The board has a second animation (page 12), so `SET_ANIMATION` can change it |
+| `second_animation` | `setup` | The board has a second animation (page 13), so `SET_ANIMATION` can change it |
 | `idle_timeout` | `board_before` | The animations' idle timeout fires, turning them off and setting page 1's idle flag |
 
 Reports are hex without the report ID `0x00` that Windows adds. Each scenario
@@ -46,16 +48,20 @@ A board's own state changes some bytes. Compare these as steps from the
 scenario's start, or not at all:
 
 - the claim generation (`CLAIM` reply `[29]`, status 4 reply `[24]`, page 1
-  `+30`) and the takeover number (page 1 `+7`): as steps from the start
+  `+31`) and the takeover number (page 1 `+7`): as steps from the start
 - the board ID (`HELLO` `[9..16]`), the subscription (`HELLO` `[45..46]`), the
   state token (page replies `[60..63]`), the records of every page but page 1,
-  and page 1's input mode, profile, player, animation and brightness fields
+  and page 1's input mode, profile, player, animation, brightness and D-pad
+  mode fields
 - the LED limit (page 8 `+2..3`): `led_limit` stages at the limit page 8
   gives, so its `STAGE` requests carry the model's limit of 100 and a replay
   sends the board's
 - the state token in a request: `stale_token`'s `GET_PAGE` requests carry the
   model's token and a token other than it, so a replay sends its board's
   token, read from page 1 `[60..63]`, and a token other than that
+- the code in `keyboard_mapping`'s profile 0 step: a replay sends its board's
+  page 11 record 0 code, read in the scenario's first step, so the step writes
+  nothing new even on a board that does not check the profile
 - the idle flag (page 1 State `+0` bit 2): the board's own idle timeout can
   set it at any time, so it is compared only where `idle_compared` is true
 - events: when one arrives between replies depends on timing
@@ -86,6 +92,8 @@ page 1 is compared.
 | `stale_token` | A page read under another token: status 3 with the page and start; the same read under the current token; page 3 without a token |
 | `state_changed` | After `SUBSCRIBE`, a claim and its give up each raise one `STATE_CHANGED`, laid out as page 1 |
 | `idle_and_set_animation` | Model only. The idle flag and its events; `SET_ANIMATION` with the animation shown, another (shown at once, awake at the next render tick), and off |
+| `keyboard_mapping` | Page 11 in two reads. `SET_KEYBOARD_MAPPING` from past the last record is refused at [4], of no records or of records past the last at [6], and with the profile, first record and count wrong at [4], the range checked first. For profile 0, never active, it is refused with status 3 |
+| `keyboard_code_change` | Model only. `SET_KEYBOARD_MAPPING` of the code shown changes nothing. A new code steps page 11's counter and the token, with one `STATE_CHANGED`, and the old code again puts the token back |
 | `full_reply_queue` | Model only. 16 `HELLO` requests are sent and their replies left unread; the 17th, which needs a reply, is discarded |
 
 The settings write's pause is not modelled, and is not among the vectors.

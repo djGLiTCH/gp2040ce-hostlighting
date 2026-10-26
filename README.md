@@ -157,7 +157,10 @@ moved counter, kept or not. A host calls it after each change of the state
 token, and calls `clear()` after a reconnect. `lights_reached()` gives the
 lights a `STAGE` entry reaches, as the board resolves it: by ordinal, pin,
 action or kind, leaving out a light with no LED below the addressable limit.
-`controls_with()` gives the controls with a key or an action. The Summary's
+`controls_with()` gives the controls with a key or an action, and
+`keyboard_code()` the code the Keyboard input mode sends for an action's
+button, from page 11. Up to Right on a GPIO pin or Hall-effect trigger send
+their codes only in the digital D-pad mode (page 1). The Summary's
 `brightness_scale()` gives the scale the board applies at a brightness step,
 and `stream_rate()` the render rate, past which frames are not shown.
 
@@ -368,9 +371,10 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   command round trip.
 * `hlp-caps` decodes everything the board reports about itself: the HELLO
   capabilities, identity, state, input modes, summary, input profiles,
-  controls, lights and on-board animations. The state includes the application
-  holding the claim and the claim generation. The summary includes the
-  display's button layouts and each configuration page's change counter.
+  controls, keyboard mapping, lights and on-board animations. The state
+  includes the D-pad mode, the application holding the claim and the claim
+  generation. The summary includes the display's button layouts and each
+  configuration page's change counter.
   Controls are listed lit or not. Each light is listed with its LEDs, kind,
   owner and grid cell, and each animation with its speeds.
 * `hlp-fill` fills the LEDs with a colour
@@ -391,21 +395,26 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   every light its own hue (one light run), then the buttons the board lights
   among B1-B4, L1, R1, L2 and R2 white over the running animations (overlay
   takeover).
-* `hlp-settings` shows the input profile, animation, animation speeds and
-  brightness with the values each accepts, and changes them (`--profile`,
-  `--animation N|off`, `--speed ORDINAL --idle/--pressed/--case`,
-  `--brightness`). `--profile` switches the live button mapping. Each differing
-  value is written to the board's settings flash shortly after, so use it for a
+* `hlp-settings` shows the input profile, animation, animation speeds,
+  brightness and the active profile's keyboard codes with the values each
+  accepts, with the D-pad mode the codes of Up to Right depend on, and changes
+  them (`--profile`, `--animation N|off`,
+  `--speed ORDINAL --idle/--pressed/--case`, `--brightness`,
+  `--keyboard-code ORDINAL=CODE`, repeated as needed, consecutive ordinals
+  sent in one request). `--profile` switches the live button mapping. Each
+  differing value is written to the board's settings flash, a profile or
+  keyboard code at once and the others about a second later, so use it for a
   user's choice and not as an effect. `--brightness N --unsaved` shows step N
   unsaved for `--seconds` (default 5) and writes nothing. The command holds the
   claim meanwhile, so `--force` and `--exclusive` apply. The board shows the
   saved step again when the command ends, Ctrl-C and a killed command included.
 * `hlp-watch` subscribes to the board's `STATE_CHANGED` event and prints what
   each one changes: input mode, profile, player, animation, the brightness step
-  shown and the saved one, takeover, the application holding the claim, whether
-  its claim is exclusive, the claim generation, the `CONFIGURE` settings and
-  the state token. The subscription is shared. Every application with the
-  interface open receives the event until the board's USB session ends.
+  shown and the saved one, the D-pad mode, takeover, the application holding
+  the claim, whether its claim is exclusive, the claim generation, the
+  `CONFIGURE` settings and the state token. The subscription is shared. Every
+  application with the interface open receives the event until the board's USB
+  session ends.
 * `hlp-input-mode` sets the board's input mode and reboots into it. It accepts
   the modes the board lists. A mode without the lighting interface needs
   `--force`, because these tools cannot switch the board back from one.
@@ -422,9 +431,9 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   on the board receives every reply, which is the operating system's part of
   sharing a board, then measures round trip and throughput. It holds the claim
   while it runs and renews it without keeping a takeover alive, so run it with
-  no other lighting application. `--settings` also changes and restores
-  brightness, animation and a speed, which writes the settings flash, and
-  checks the change counters. `--quick` shortens the timing runs.
+  no other lighting application. `--settings` also changes and restores a
+  keyboard code, brightness, animation and a speed, which writes the settings
+  flash, and checks the change counters. `--quick` shortens the timing runs.
 * `hlp-bench` measures round trip (median and p95) and frame rates: whole
   frames paced at 60 fps, then back to back with every report answered and
   pipelined. `--leds` sets the frame size (default: the LED extent).
