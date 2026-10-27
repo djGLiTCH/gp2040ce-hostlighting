@@ -447,7 +447,8 @@ The tools that drive the LEDs (`hlp-fill`, `hlp-set-light`, `hlp-stream`,
   on-board animations and the `CONFIGURE` defaults.
 * Their requests carry the claim generation. Once another application takes
   over a tool's claim, the tool is refused at once and cannot stage into that
-  application's frame.
+  application's frame. `hlp-fill` and `hlp-set-light` then end their hold at
+  the next renewal and name the new holder.
 * A tool takes its own claim again at its next renewal when it lapsed, on a
   stalled PC for example, and sends its `CONFIGURE` settings again.
 * While another application holds the claim, MESH for example, they leave the
@@ -540,11 +541,11 @@ unthrottled, pipelined: 249 frames/s
 claim given up, on-board animations restored
 
 % hlp-fill --scope case 0000FF
-filled case with #0000FF for 3.0 s
+filling case with #0000FF for 3.0 s
 claim given up, on-board animations restored
 
 % hlp-set-light --by action 1:FFFFFF00 17:00000080 99:FF0000
-2 applied, 1 skipped for 3.0 s
+2 applied, 1 skipped, holding for 3.0 s
 skipped addresses (no light, or none below the LED limit): [99]
 claim given up, on-board animations restored
 ```

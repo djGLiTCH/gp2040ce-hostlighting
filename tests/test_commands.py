@@ -54,7 +54,7 @@ def test_fill_scopes(hlp_run_on_fake_board, hlp_fake_board, capsys):
     hlp_run_on_fake_board(tools.fill, '--scope', 'players', '00FF00')
     stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
     assert stage[3:5] == bytes([hl.ADDRESSING_KIND, 4]) and stage[5:9] == bytes([3, 0, 0xFF, 0])
-    assert 'filled players with #00FF00' in capsys.readouterr().out
+    assert 'filling players with #00FF00 for 3.0 s' in capsys.readouterr().out
     hlp_run_on_fake_board(tools.fill, '--scope', 'turbo', '0000FF')
     stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
     assert stage[3:5] == bytes([hl.ADDRESSING_KIND, 1]) and stage[5:9] == bytes([hl.KIND_TURBO, 0, 0, 0xFF])
@@ -92,7 +92,7 @@ def test_caps_shows_an_unsaved_step_and_an_exclusive_claim(hlp_run_on_fake_board
 def test_set_light_reports_skipped_addresses(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test hlp-set-light by ordinal, and by action with an RGBW colour."""
     hlp_run_on_fake_board(tools.set_light, '0:FF0000', '5:00FF00')
-    assert '1 applied, 1 skipped' in capsys.readouterr().out
+    assert '1 applied, 1 skipped, holding for 3.0 s' in capsys.readouterr().out
     hlp_run_on_fake_board(tools.set_light, '--by', 'action', '--', '1:FF000080', '-10:000000FF')
     out = capsys.readouterr().out
     stage = hlp_fake_board.sent(hl.CMD_STAGE)[-1]
@@ -149,12 +149,18 @@ def test_tools_leave_another_applications_lights_alone(hlp_run_on_fake_board, hl
 
 
 def test_hold_stops_when_taken_over(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
-    """Test that a tool with its claim taken over prints the new holder, and neither releases nor gives up."""
+    """Test that a tool taken over ends at the next renewal, names the new holder, and neither releases nor gives up."""
     def sleep(seconds):
         hlp_fake_board.holder_token, hlp_fake_board.holder_name = 0xB2, b'Other'.ljust(16, b'\x00')
     monkeypatch.setattr(tools.time, 'sleep', sleep)
     hlp_run_on_fake_board(tools.fill, 'FF0000')
-    assert "'Other' took the lights over" in capsys.readouterr().out
+    assert "filling all with #FF0000 for 3.0 s\n'Other' took the lights over\n" in capsys.readouterr().out
+    assert [claim[3] for claim in hlp_fake_board.sent(hl.CMD_CLAIM)] == [hl.CLAIM_TAKE, hl.CLAIM_TAKE]
+    assert not hlp_fake_board.sent(hl.CMD_RELEASE) and hlp_fake_board.holder_token == 0xB2
+    hlp_fake_board.holder_token = 0
+    hlp_run_on_fake_board(tools.set_light, '0:FF0000')
+    assert "1 applied, 0 skipped, holding for 3.0 s\n'Other' took the lights over\n" in capsys.readouterr().out
+    assert [claim[3] for claim in hlp_fake_board.sent(hl.CMD_CLAIM)[2:]] == [hl.CLAIM_TAKE, hl.CLAIM_TAKE]
     assert not hlp_fake_board.sent(hl.CMD_RELEASE) and hlp_fake_board.holder_token == 0xB2
 
 

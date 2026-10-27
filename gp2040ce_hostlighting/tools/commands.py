@@ -669,7 +669,8 @@ def watch() -> None:
 @hlp_command
 def fill() -> None:
     """Fill a board's LEDs with one colour as a quick visual test."""
-    parser = device_parser("Fill a GP2040-CE board's LEDs with a colour, hold, then restore animations.")
+    parser = device_parser("Fill a GP2040-CE board's LEDs with a colour, hold, then restore animations. The hold "
+                           "ends early if another application takes the lights over.")
     parser.add_argument('--scope', choices=['all', 'buttons', 'turbo', 'case', 'players'], default='all',
                         help="which lights to fill (default: all)")
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the fill (default: 3)")
@@ -690,7 +691,7 @@ def fill() -> None:
     try:
         with LightsClaim(device, 'hlp-fill', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
             stage()
-            print(f"filled {args.scope} with #{args.colour.upper()} for {args.seconds} s")
+            print(f"filling {args.scope} with #{args.colour.upper()} for {args.seconds} s")
             claim.keep(args.seconds, stage)
     finally:
         device.close()
@@ -700,7 +701,8 @@ def fill() -> None:
 def set_light() -> None:
     """Colour individual lights by ordinal, pin, action or kind."""
     parser = device_parser(f"Colour lights on a GP2040-CE board by their page {PAGE_LIGHTS} ordinal (or by pin, action "
-                           "or kind), hold, then restore animations.")
+                           "or kind), hold, then restore animations. The hold ends early if another application takes "
+                           "the lights over.")
     parser.add_argument('--by', choices=['light', 'pin', 'action', 'kind'], default='light',
                         help=f"what the addresses name (default: light, the page {PAGE_LIGHTS} ordinal)")
     parser.add_argument('--seconds', type=float, default=3.0, help="how long to hold the colours (default: 3)")
@@ -729,7 +731,7 @@ def set_light() -> None:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome.applied for outcome in outcomes)
             skipped = sum(outcome.skipped for outcome in outcomes)
-            print(f"{applied} applied, {skipped} skipped for {args.seconds} s")
+            print(f"{applied} applied, {skipped} skipped, holding for {args.seconds} s")
             if skipped:
                 capacity = stage_capacity(addressing, pixel_format)
                 missing = [entries[report * capacity + bit][0]
