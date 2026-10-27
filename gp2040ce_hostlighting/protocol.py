@@ -562,6 +562,28 @@ def decode_page_header(reply: bytes) -> PageHeader:
                       stride=reply[9], groups=_u16(reply, 10), token=_u32(reply, HEADER_TOKEN))
 
 
+def _stride_error(header: PageHeader) -> Optional[str]:
+    """Say why a table page reply's stride is one its echoed field groups cannot have in this layout.
+
+    The stride is the total width of the groups returned, and each group's width is fixed, so another stride
+    comes from firmware that lays the page out differently. Groups this library does not know, which newer
+    firmware returns for mask 0, only make the stride wider.
+
+    :param header: the reply header of a page in PAGE_GROUPS
+    :return: the message naming the page, or None when the stride fits
+    """
+    widths = PAGE_GROUPS[header.page]
+    expected = sum(width for bit, width in enumerate(widths) if header.groups >> bit & 1)
+    unknown = header.groups >> len(widths)
+    fits = header.stride > expected if unknown else header.stride == expected
+    if fits:
+        return None
+    needed = f"more than {expected} bytes with the groups it does not know" if unknown else f"{expected} bytes"
+    return (f"page {header.page} has records of {header.stride} bytes for field groups 0x{header.groups:04X}, where "
+            f"this library's layout needs {needed}. The board's firmware lays the page out differently, so update "
+            "the firmware or this library to match")
+
+
 def _state(data: bytes) -> State:
     animation = _u16(data, 4)
     return State(takeover_live=bool(data[0] & STATE_LIVE), brightness_unsaved=bool(data[0] & STATE_UNSAVED),
@@ -879,7 +901,7 @@ class HostLightingUnansweredError(HostLightingDisconnectedError):
 
 
 class HostLightingIncompatibleError(HostLightingError):
-    """The board speaks another protocol major, or lacks a capability the host requires."""
+    """The board speaks another protocol major, lacks a capability the host requires, or has another page layout."""
 
 
 class HostLightingMagicError(HostLightingIncompatibleError):
@@ -1294,6 +1316,8 @@ class HostLightingDevice:
         :param token: expected state token, 0 for no check
         :return: the reply report, with status 0 or 3 (STALE)
         :raises HostLightingRejectedError: on any other status
+        :raises HostLightingIncompatibleError: when a table page's reply echoes this request at a stride its field
+            groups cannot have in this library's layout, from firmware that lays the page out differently
         :raises ValueError: for a value its field cannot hold
         """
         _check_range('page', page, 0xFF)
@@ -1313,6 +1337,10 @@ class HostLightingDevice:
                 return False
             if page not in PAGE_GROUPS:
                 return not mask or not header.groups & ~mask        # page 0: the strings that fit
+            # firmware with this layout never sends it: taken as the reply and refused below, unless it echoes groups
+            # this request did not ask for, which another application's mask returned
+            if _stride_error(header) and not (mask and header.groups & ~mask):
+                return True
             # a table page returns every group asked for that it defines, and with mask 0 newer firmware's too
             known = (1 << len(PAGE_GROUPS[page])) - 1
             return header.groups & known == (mask or known) & known and not (mask and header.groups & ~mask)
@@ -1320,6 +1348,9 @@ class HostLightingDevice:
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
         if reply[2] not in (STATUS_OK, STATUS_STALE):
             raise self.rejected(CMD_GET_PAGE, reply)
+        error = _stride_error(decode_page_header(reply)) if reply[2] == STATUS_OK and page in PAGE_GROUPS else None
+        if error:
+            raise HostLightingIncompatibleError(error)
         return reply
 
     @overload

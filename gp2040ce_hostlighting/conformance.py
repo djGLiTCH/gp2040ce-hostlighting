@@ -43,9 +43,9 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
                                             SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY, HostLightingClaimedError,
                                             HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
-                                            HostLightingRejectedError, decode_controller, decode_key,
-                                            decode_page_header, decode_records, decode_state_changed, is_event,
-                                            key_name, stage_capacity)
+                                            HostLightingIncompatibleError, HostLightingRejectedError, decode_controller,
+                                            decode_key, decode_page_header, decode_records, decode_state_changed,
+                                            is_event, key_name, stage_capacity)
 from gp2040ce_hostlighting.records import (ControlInstances, Controller, ControlLights, ControlRecord, Hello,
                                            InputModeRecord, Instances, KeyboardMappingRecord, LightRecord, Position,
                                            Settings, StateRecord, Summary)
@@ -350,15 +350,24 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
     checks.section('Pages')
     token = decode_page_header(device.get_page(PAGE_SUMMARY)).token
     yield checks.check(token != 0, 'state token non-zero')
+    # get_page refuses a stride the layout cannot have, which fails that page's check and the pages after it are
+    # still checked. A later read of that page ends the run
     for page, widths in PAGE_GROUPS.items():
         if len(widths) > 1:
             masks = list(range(1, 1 << len(widths))) + [0]
-            yield checks.check(all(_mask_ok(device, page, mask, widths, token) for mask in masks),
-                               f"page {page}: every mask, stride, count, echo and token")
+            try:
+                ok, detail = all(_mask_ok(device, page, mask, widths, token) for mask in masks), ''
+            except HostLightingIncompatibleError as error:
+                ok, detail = False, str(error)
+            yield checks.check(ok, f"page {page}: every mask, stride, count, echo and token", detail)
         else:
             # group 0 alone, since mask 0 would also return any group newer firmware adds
-            stride = decode_page_header(device.get_page(page, 0, 1)).stride
-            yield checks.check(stride == widths[0], f"page {page}: record of {widths[0]} bytes", f"{stride}")
+            try:
+                stride = decode_page_header(device.get_page(page, 0, 1)).stride
+                ok, detail = stride == widths[0], f"{stride}"
+            except HostLightingIncompatibleError as error:
+                ok, detail = False, str(error)
+            yield checks.check(ok, f"page {page}: record of {widths[0]} bytes", detail)
     for page in _unlisted(hello.pages, PAGE_RANGES):
         reply = device.request(CMD_GET_PAGE, struct.pack('<BHIH', page, 0, 0, 0))
         yield checks.check(_status(reply) == (STATUS_INVALID, 3), f"unlisted page {page}: status 2 at [3]")

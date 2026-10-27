@@ -216,7 +216,8 @@ class Session:
         board is unclaimed. A failure after the claim is taken gives it up before the error is raised.
 
         :return: the session, for a with block
-        :raises HostLightingIncompatibleError: for a board of another major or without what is required
+        :raises HostLightingIncompatibleError: for a board of another major, without what is required, or with a
+            page at a stride this library's layout cannot have
         :raises HostLightingClaimedError: when another application holds the claim, and it is neither to be
             taken over nor waited for, or takes it over during the start and wait_when_taken_over is false
         :raises HostLightingTimeoutError: when a request is not answered

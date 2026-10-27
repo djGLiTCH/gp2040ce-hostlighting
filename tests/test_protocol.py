@@ -671,6 +671,56 @@ def test_get_page_takes_only_the_groups_it_asked_for(hlp_fake_device, hlp_fake_b
     assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS, mask=0b1)).groups == 1
 
 
+def test_get_page_refuses_another_page_layout(hlp_fake_device, hlp_fake_board):
+    """Test that a reply at a stride its groups cannot have in this library's layout is refused."""
+    # page 12 laid out as two groups of 4 and 3 bytes, first in reply to another start, which is passed over
+    other = page_reply(hl.PAGE_LIGHTS, [[bytes(4), bytes(3)]] * 2, start=1, widths=(4, 3))
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [other]
+    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS)).stride == 16
+    hlp_fake_device.sequence = 0
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, [[bytes(4), bytes(3)]], widths=(4, 3))]
+    message = "page 12 has records of 7 bytes for field groups 0x0003, where this library's layout needs 6 bytes"
+    with pytest.raises(hl.HostLightingIncompatibleError, match=message):
+        hlp_fake_device.get_page(hl.PAGE_LIGHTS, mask=0b111)
+    assert not hlp_fake_device._awaited              # taken as the reply, so a later report is not kept for it
+    # page 1 with a 9-byte State group
+    narrow_state = [bytes(9), bytes(22), bytes(4)]
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_STATE, [narrow_state], widths=(9, 22, 4),
+                                                         sequence=2)]
+    with pytest.raises(hl.HostLightingIncompatibleError, match='page 1 has records of 35 bytes .* needs 36 bytes'):
+        hlp_fake_device.get_page(hl.PAGE_STATE)
+
+
+def test_get_page_passes_over_another_requests_reply_at_another_stride(hlp_fake_device, hlp_fake_board):
+    """Test that a reply at a stride this layout cannot have is passed over when it answers another request."""
+    token = hlp_fake_board.token
+    # under another token
+    other = page_reply(hl.PAGE_LIGHTS, [[bytes(4), bytes(3)]], token=token ^ 1, widths=(4, 3))
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [other]
+    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS, token=token)).stride == 16
+    # to a mask with groups this request did not ask for
+    wide = bytearray(page_reply(hl.PAGE_LIGHTS, hlp_fake_board.lights, token=token, sequence=2))
+    wide[9] += 1
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [bytes(wide)]
+    assert hl.decode_page_header(hlp_fake_device.get_page(hl.PAGE_LIGHTS, mask=0b1)).stride == 4
+
+
+def test_get_page_takes_the_wider_stride_of_unknown_groups(hlp_fake_device, hlp_fake_board):
+    """Test that groups this library does not know only have to widen the stride, as newer firmware's do for mask 0."""
+    widths = (*hl.PAGE_GROUPS[hl.PAGE_LIGHTS], 2)
+    reply = page_reply(hl.PAGE_LIGHTS, [light_record(0) + [bytes(2)]], widths=widths)
+    header = hl.decode_page_header(reply)
+    assert (header.stride, header.groups) == (18, 0x7F)
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [reply]
+    assert hlp_fake_device.get_page(hl.PAGE_LIGHTS) == reply
+    unwidened = bytearray(reply)
+    unwidened[1], unwidened[9] = 2, 16      # the next request's sequence, a stride the unknown group adds nothing to
+    hlp_fake_board.before[hl.CMD_GET_PAGE] = [bytes(unwidened)]
+    message = "records of 16 bytes for field groups 0x007F, where this library's layout needs more than 16 bytes"
+    with pytest.raises(hl.HostLightingIncompatibleError, match=message):
+        hlp_fake_device.get_page(hl.PAGE_LIGHTS)
+
+
 def test_sequence_wraps_past_zero(hlp_fake_device, hlp_fake_board):
     """Test that sequence numbers run 1-255 and never 0."""
     hlp_fake_device.sequence = 254

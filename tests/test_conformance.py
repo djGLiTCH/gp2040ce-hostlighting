@@ -256,6 +256,23 @@ def test_conformance_reports_a_missing_capability(hlp_run_on_model_board, hlp_mo
     assert "FAIL  request flags bitmap lists all of 2.0's  (missing [3])" in out
 
 
+def test_conformance_fails_a_page_stride_and_goes_on(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test that a page reply at a stride its groups cannot have fails that page's check, and the pages after run."""
+    answer = hlp_model_board.answer
+
+    def wide_profiles(command, sequence, request):
+        reply = answer(command, sequence, request)
+        if command == hl.CMD_GET_PAGE and reply[3] == hl.PAGE_PROFILES:
+            reply = reply[:9] + bytes([reply[9] + 1]) + reply[10:]
+        return reply
+    hlp_model_board.answer = wide_profiles
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'FAIL  page 9: record of 18 bytes  (page 9 has records of 19 bytes for field groups 0x0001' in out
+    assert 'PASS  page 10: every mask, stride, count, echo and token' in out
+
+
 def test_conformance_catches_a_no_reply_request_left_undone(hlp_run_on_model_board, hlp_model_board, capsys):
     """Test that a board skipping a request sent with NO_REPLY fails the check that it still executes."""
     answer = hlp_model_board.answer

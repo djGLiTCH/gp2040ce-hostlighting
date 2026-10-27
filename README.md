@@ -92,9 +92,11 @@ A host drives the lights in these steps:
    in the page, and one attribute per field group, named after the
    specification's, such as `light.owner.pin`. Reading a group the reply did
    not return raises `HostLightingGroupNotReadError`, and `record.has(group)`
-   says whether it was returned. A type checker knows each page's record type,
-   such as `LightRecord` for `read_table(PAGE_LIGHTS)`. A host without a
-   `Session` checks the HELLO reply with `require_capabilities()`.
+   says whether it was returned. A page reply at a record stride this
+   library's layout cannot have raises `HostLightingIncompatibleError`, naming
+   the page. A type checker knows each page's record type, such as
+   `LightRecord` for `read_table(PAGE_LIGHTS)`. A host without a `Session`
+   checks the HELLO reply with `require_capabilities()`.
 3. Take the claim with `LightsClaim(device, name, settings).take()`, where the
    name is up to 16 bytes. `take()` claims, then sends the CONFIGURE settings,
    and drops the events received by then, which are older than the claim.
