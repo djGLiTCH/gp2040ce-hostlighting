@@ -28,7 +28,7 @@ def page_reply(page: int, records: Sequence[Sequence[bytes]], start: int = 0, ma
                sequence: int = 1, status: int = hl.STATUS_OK, widths: tuple[int, ...] = ()) -> bytes:
     """Build a GET_PAGE reply as the firmware does: groups in bit order while one record fits in 48 bytes.
 
-    widths, when given, replaces the page's 2.0 group widths, for a later 2.x board's groups.
+    widths, when given, replaces the page's group widths, for a board with other or more groups.
     """
     widths = widths or hl.PAGE_GROUPS.get(page, ())                                # page 0 only when stale
     wanted = (mask or (1 << len(widths)) - 1) if status == hl.STATUS_OK else 0     # a stale reply echoes no groups
@@ -230,7 +230,7 @@ class _Outbox(list[bytes]):
 
 
 class FakeBoard:
-    """Answer HLP 2.0 requests the way the firmware does.
+    """Answer HLP requests the way the firmware does.
 
     Each request is answered and checked as the firmware does: the commands it lists, the arguments, the staging
     capacities and the addressable LED limit, page 0's start, CONFIGURE's settings on page 1, the takeover and its
@@ -301,7 +301,7 @@ class FakeBoard:
         # command -> reports that arrive between it and its reply, and reports queued after its reply (events)
         self.before: dict[int, list[bytes]] = {}
         self.after: dict[int, list[bytes]] = {}
-        # page -> a group a later 2.x board adds, the same bytes in every record
+        # page -> a group newer firmware adds, the same bytes in every record
         self.later_groups: dict[int, bytes] = {}
         self.board_id = BOARD_ID
         # LED index -> colour, the staged frame, and every frame published

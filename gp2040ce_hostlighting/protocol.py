@@ -1,7 +1,7 @@
 """Talk to a GP2040-CE board's Host Lighting interface over HID.
 
 The Host Lighting add-on exposes a vendor HID interface (usage page 0xFF47,
-usage 0x0002) carrying the Host Lighting Protocol (HLP) 2.0: fixed 64-byte
+usage 0x0002) carrying the Host Lighting Protocol (HLP): fixed 64-byte
 reports that stage and commit LED frames and describe the board from its own
 configuration.
 
@@ -626,8 +626,8 @@ def _profile(data: bytes) -> Profile:
 def decode_key(key: int) -> tuple[str, int]:
     """Decode a page 10 key as (source, index).
 
-    :return: ('gpio', pin), ('hall_effect', trigger) or ('expander', pin), or ('unknown', key) for a key protocol
-        2.0 does not define, which a later 2.x board may use
+    :return: ('gpio', pin), ('hall_effect', trigger) or ('expander', pin), or ('unknown', key) for a key this
+        library does not define, which newer firmware may use
     """
     for source, base, count in KEY_SOURCES:
         if base <= key < base + count:
@@ -1313,7 +1313,7 @@ class HostLightingDevice:
                 return False
             if page not in PAGE_GROUPS:
                 return not mask or not header.groups & ~mask        # page 0: the strings that fit
-            # a table page returns every group asked for that it defines, and with mask 0 a later 2.x board's too
+            # a table page returns every group asked for that it defines, and with mask 0 newer firmware's too
             known = (1 << len(PAGE_GROUPS[page])) - 1
             return header.groups & known == (mask or known) & known and not (mask and header.groups & ~mask)
 

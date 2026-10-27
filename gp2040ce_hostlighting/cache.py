@@ -22,7 +22,7 @@ from gp2040ce_hostlighting.records import (AnimationRecord, ControlRecord, Hello
 
 __all__ = ['ConfigurationCache']
 
-# the configuration pages 2.0 defines, the Summary first
+# the configuration pages, the Summary first
 _CONFIGURATION_PAGES = (PAGE_SUMMARY, PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
                         PAGE_ANIMATIONS)
 # the configuration pages with change counters in the Summary, 8 to 15
@@ -49,7 +49,7 @@ class ConfigurationCache:
         self.hello = hello
         every = {page: (1 << len(PAGE_GROUPS[page])) - 1 for page in _CONFIGURATION_PAGES}
         self.masks = {page: (masks or {}).get(page) or mask for page, mask in every.items()}
-        # the configuration pages to keep, of those 2.0 defines. The Summary is read whatever this holds
+        # the configuration pages to keep, of those this library defines. The Summary is read whatever this holds
         self.pages = frozenset(page for page in _CONFIGURATION_PAGES if page in hello.pages)
         self.summary: Optional[Summary] = None
         self.token: Optional[int] = None
@@ -162,7 +162,7 @@ class ConfigurationCache:
         :param device: the opened device
         :param attempts: how many times to start from the Summary before giving up
         :return: the pages read again, with page 8 when the Summary itself changed
-        :raises ValueError: for a kept page outside the pages 2.0 defines, which the library cannot decode
+        :raises ValueError: for a kept page outside the pages this library defines, which it cannot decode
         :raises HostLightingError: when the configuration keeps changing under the reads
         """
         unknown = sorted(self.pages - set(_CONFIGURATION_PAGES))

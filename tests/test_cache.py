@@ -12,7 +12,7 @@ from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.cache import ConfigurationCache
 from gp2040ce_hostlighting.testing import ModelBoard, control_record, fake_device, light_record, summary_record
 
-# the configuration pages 2.0 defines, which a refresh reads first
+# the configuration pages, which a refresh reads first
 EVERY_PAGE = {hl.PAGE_SUMMARY, hl.PAGE_PROFILES, hl.PAGE_CONTROLS, hl.PAGE_KEYBOARD_MAPPING, hl.PAGE_LIGHTS,
               hl.PAGE_ANIMATIONS}
 
@@ -160,7 +160,7 @@ def test_the_keyboard_code_of_an_action_follows_the_mapping(hlp_fake_device):
     device.set_keyboard_mapping(1, b1, [0x04])
     assert cache.refresh(device) == {hl.PAGE_KEYBOARD_MAPPING} and cache.moved == {hl.PAGE_KEYBOARD_MAPPING}
     assert cache.keyboard_code(5) == 0x04
-    board.later_groups[hl.PAGE_KEYBOARD_MAPPING] = bytes([1])     # a later 2.x board's group, read alone
+    board.later_groups[hl.PAGE_KEYBOARD_MAPPING] = bytes([1])     # a group newer firmware adds, read alone
     unread = ConfigurationCache(device.hello(), masks={hl.PAGE_KEYBOARD_MAPPING: 0b10})
     unread.refresh(device)
     assert unread.keyboard_mapping and unread.keyboard_code(5) is None

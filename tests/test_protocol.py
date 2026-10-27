@@ -143,7 +143,7 @@ def test_decode_controls_and_lights_none_values():
 
 
 def test_decode_keys():
-    """Test page 10 keys: GPIO pins, Hall-effect triggers, expander pins and keys 2.0 does not define."""
+    """Test page 10 keys: GPIO pins, Hall-effect triggers, expander pins and keys the library does not define."""
     for key, decoded, name in ((0, ('gpio', 0), 'GP0'), (47, ('gpio', 47), 'GP47'),
                                (48, ('unknown', 48), 'key 0x30'), (0x80, ('hall_effect', 0), 'HE0'),
                                (0x9F, ('hall_effect', 31), 'HE31'), (0xA0, ('unknown', 0xA0), 'key 0xA0'),
@@ -809,7 +809,7 @@ def test_a_short_reply_is_an_error_naming_what_was_short():
 
 
 def test_the_claim_generation_is_its_bytes_low_three_bits():
-    """Test that the Controller group's generation ignores the byte's other bits, which a later 2.x board may use."""
+    """Test that the Controller group's generation ignores the byte's other bits, which newer firmware may use."""
     group = (0xA1).to_bytes(4, 'little') + b'Alpha'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 0xF3])
     holder = hl.decode_controller(group)
     assert (holder.holder_token, holder.exclusive, holder.claim_generation) == (0xA1, True, 3)

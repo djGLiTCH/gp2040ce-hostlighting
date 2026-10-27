@@ -1,4 +1,4 @@
-"""Generate the HLP 2.0 test vectors from the library's ModelBoard, or replay them on a board.
+"""Generate the HLP test vectors from the library's ModelBoard, or replay them on a board.
 
 Each scenario starts from an unclaimed board with the CONFIGURE defaults and sends exact requests. On the model every
 request is recorded, then every report the board sent after it, replies and events, as hex. On a board the same

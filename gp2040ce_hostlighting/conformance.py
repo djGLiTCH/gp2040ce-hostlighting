@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # the pages and records the checks read once, by name or page number
 _Tables = dict[Union[str, int], Any]
 
-# what a protocol 2.0 board implements, from the protocol reference. A later 2.x board lists more
+# what a board implements, from the protocol reference. Newer firmware lists more
 _REQUEST_FLAGS = ({flag.bit_length() - 1 for flag in (FLAG_COMMIT_AFTER, FLAG_NO_REPLY, FLAG_KEEPALIVE, FLAG_HOLDER)}
                   | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1})
 _COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
@@ -286,7 +286,7 @@ def _answered(device: HostLightingDevice, command: int, sequence: int, timeout: 
 def _check_hello(device: HostLightingDevice, checks: _Checker) -> Generator[CheckResult, None, Hello]:
     """Check HELLO and return it.
 
-    A later 2.x board may list more than 2.0 does. Additions take free numbers, and hosts gate on the bitmaps.
+    Newer firmware may list more. Additions take free numbers, and hosts gate on the bitmaps.
     """
     checks.section('HELLO')
     hello = device.hello()
@@ -334,7 +334,7 @@ def _check_framing(device: HostLightingDevice, checks: _Checker, hello: Hello) -
 def _mask_ok(device: HostLightingDevice, page: int, mask: int, widths: tuple[int, ...], token: int) -> bool:
     """Check one field mask: the groups asked for, their stride, as many records as fit, and the token.
 
-    Mask 0 asks for every group, so a later 2.x board also returns the groups it adds after 2.0's.
+    Mask 0 asks for every group, so newer firmware also returns the groups it adds after these.
     """
     header = decode_page_header(device.get_page(page, 0, mask))
     known = (1 << len(widths)) - 1
@@ -356,7 +356,7 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
             yield checks.check(all(_mask_ok(device, page, mask, widths, token) for mask in masks),
                                f"page {page}: every mask, stride, count, echo and token")
         else:
-            # group 0 alone, since mask 0 would also return any group a later 2.x board adds
+            # group 0 alone, since mask 0 would also return any group newer firmware adds
             stride = decode_page_header(device.get_page(page, 0, 1)).stride
             yield checks.check(stride == widths[0], f"page {page}: record of {widths[0]} bytes", f"{stride}")
     for page in _unlisted(hello.pages, PAGE_RANGES):

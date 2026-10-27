@@ -200,7 +200,7 @@ def test_conformance_reports_a_board_that_refuses_at_a_higher_offset(hlp_run_on_
 
 
 def test_conformance_passes_a_board_with_later_additions(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that a board with a command, page, pixel format, event and field groups beyond 2.0 passes.
+    """Test that a board with a command, page, pixel format, event and field groups beyond the library's passes.
 
     The unlisted probes skip what it lists, and mask 0 takes its added groups.
     """
@@ -237,7 +237,7 @@ def test_conformance_passes_a_board_with_later_additions(hlp_run_on_model_board,
 
 
 def test_conformance_reports_a_missing_capability(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that a board with a HELLO that leaves out a 2.0 command and request flag fails both bitmaps."""
+    """Test that a HELLO leaving out a command and request flag the library expects fails both bitmaps."""
     answer = hlp_model_board.answer
 
     def without_brightness(command, sequence, request):
@@ -382,8 +382,8 @@ def test_conformance_reports_controls_out_of_key_order(hlp_run_on_model_board, h
     assert 'FAIL  Controls in ascending key order, each key once' in capsys.readouterr().out
 
 
-def test_conformance_notes_a_key_beyond_2_0(hlp_run_on_model_board, hlp_model_board, capsys):
-    """Test that a control key protocol 2.0 does not define passes and is named: a later 2.x board may use it."""
+def test_conformance_notes_an_unknown_key(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test that a control key the library does not define passes and is named: newer firmware may use it."""
     hlp_model_board.controls[1] = control_record(0x40, 13, lit=0, light_count=0)
     hlp_run_on_model_board(conformance.conformance, '--quick')
     out = capsys.readouterr().out
