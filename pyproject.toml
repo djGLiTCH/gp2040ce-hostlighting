@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gp2040ce-hostlighting"
-description = "Tools for GP2040-CE's Host Lighting add-on: live RGB LED control from host software."
+description = "Python library and tools for the GP2040-CE Host Lighting add-on, which lets host software drive a board's RGB LEDs live over a vendor HID interface."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSES/*.txt"]

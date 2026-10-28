@@ -553,3 +553,9 @@ claim given up, on-board animations restored
 The controls page shows that this board wires two buttons to action 1 (Up) and
 two to action 17 (L3). `hlp-set-light --by action 1` lights both, and
 `--by pin` or a light ordinal addresses one.
+
+## Licence
+
+GPL-3.0-or-later, © 2026 Jacob Simpson. Each file carries its SPDX header,
+and `REUSE.toml` covers the files that cannot. The licence text is in
+`LICENSES/`.
