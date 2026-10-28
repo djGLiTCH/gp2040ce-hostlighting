@@ -8,16 +8,17 @@
 
 """The hlp-* commands for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
-hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light, hlp-stream, hlp-buttons, hlp-input-mode and
-hlp-reboot. Given GP2040-CE's .proto files (`-P`), they print enum names beside the values. The commands that drive
-the LEDs hold a LightsClaim and print its INFO lines as part of their output. tools.conformance shares
-hlp_command, device_parser, add_claim_arguments and ranged.
+hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light, hlp-stream, hlp-show, hlp-buttons,
+hlp-input-mode and hlp-reboot. Given GP2040-CE's .proto files (`-P`), they print enum names beside the values. The
+commands that drive the LEDs hold a LightsClaim and print its INFO lines as part of their output.
+tools.conformance shares hlp_command, device_parser, add_claim_arguments and ranged.
 """
 import argparse
 import colorsys
 import functools
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -191,6 +192,17 @@ def ranged(low: int, high: int) -> Callable[[str], int]:
             raise argparse.ArgumentTypeError(f"{text} is outside {low}-{high}")
         return value
     return parse
+
+
+def _duration(text: str) -> float:
+    """Parse a number of seconds above 0, for a command that streams frames for that long."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text}") from None
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError(f"{text} is not a number of seconds above 0")
+    return value
 
 
 def _animation(text: str) -> int:
@@ -756,7 +768,7 @@ def stream() -> None:
                            "fills, then a rainbow at 60 fps, then give the claim up. Each frame is LED runs "
                            "sent with NO_REPLY, COMMIT_AFTER on the last report, which alone is answered and is "
                            "sent once more when unanswered.")
-    parser.add_argument('--seconds', type=float, default=5.0, help="how long the rainbow runs (default: 5)")
+    parser.add_argument('--seconds', type=_duration, default=5.0, help="how long the rainbow runs (default: 5)")
     parser.add_argument('--leds', type=ranged(1, 0xFFFF), help="LEDs per frame (default: the LED extent)")
     parser.add_argument('--timeout-test', action='store_true',
                         help="after the rainbow, go silent and time how long the board keeps the frame")
@@ -788,12 +800,14 @@ def _stream(claim: LightsClaim, leds: int, seconds: float, timeout_test: bool) -
             _time_expiry(claim.device)
 
 
-def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
-    """Stream a moving rainbow at about 60 fps, renewing the claim when due.
+def _play(claim: LightsClaim, seconds: float, frame_at: Callable[[int], Frame], what: str, extent: str) -> bool:
+    """Stream frame_at(0), frame_at(1) and on at about 60 fps for seconds, renewing the claim when due.
 
     Each frame goes as the specification has a streaming host send it. A frame unacknowledged after its resend is
     not shown, and the board is lost only when a HELLO then goes unanswered too.
 
+    :param what: names the frames in the closing line, such as "rainbow"
+    :param extent: what each frame covers, in the closing line, such as "46 LEDs"
     :return: False when another application took the lights over
     :raises HostLightingUnansweredError: when the board answers neither a frame nor the HELLO after it
     """
@@ -802,10 +816,8 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
     acknowledged = 0
     failure = ''
     for index in range(frames):
-        frame = Frame()
-        frame.run(ADDRESSING_LED_RUN, 0, [_hue(led + index * leds / 120, leds) for led in range(leds)])
         try:
-            if publish_frame(claim.device, frame).acknowledged:
+            if publish_frame(claim.device, frame_at(index)).acknowledged:
                 acknowledged += 1
             else:
                 failure = failure or "no acknowledgement, the last report sent twice"
@@ -817,10 +829,95 @@ def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
         if claim.state is not ClaimState.HELD:
             return False
         time.sleep(max(0.0, start + (index + 1) / 60 - time.monotonic()))
-    print(f"rainbow: {acknowledged} of {frames} frames acknowledged ({leds} LEDs)")
+    print(f"{what}: {acknowledged} of {frames} frames acknowledged ({extent})")
     if failure:
         print(f"  the first unacknowledged frame: {failure}")
     return True
+
+
+def _rainbow(claim: LightsClaim, leds: int, seconds: float) -> bool:
+    """Stream a rainbow moving along the LEDs at about 60 fps.
+
+    :return: False when another application took the lights over
+    """
+    def frame_at(index: int) -> Frame:
+        """Build the rainbow's frame index."""
+        frame = Frame()
+        frame.run(ADDRESSING_LED_RUN, 0, [_hue(led + index * leds / 120, leds) for led in range(leds)])
+        return frame
+    return _play(claim, seconds, frame_at, "rainbow", f"{leds} LEDs")
+
+
+def _lit(hue: float, level: float) -> tuple[int, int, int]:
+    """Give a fully saturated hue, from 0 to 1 round the colour wheel, at a brightness level from 0 to 1."""
+    red, green, blue = colorsys.hsv_to_rgb(hue % 1.0, 1.0, level)
+    return round(red * 255), round(green * 255), round(blue * 255)
+
+
+def show_colours(lights: Sequence[LightRecord], elapsed: float) -> list[tuple[int, int, int]]:
+    """Colour each light for hlp-show at a moment of the show.
+
+    The button lights each take their own hue, left to right across the grid, drifting round the colour wheel, and
+    a peak travels across them, six lights a second, lighting its neighbours in part. The case lights and lights of
+    other kinds carry a rainbow wave, its brightness a cosine-cubed pulse travelling along them. The player and turbo
+    lights pulse cyan once a second.
+
+    :param lights: the page 12 records. A light read without its kind group joins the wave, and a button without
+        its grid group goes before the others.
+    :param elapsed: seconds since the show started
+    :return: a colour per light ordinal, from 0 to the highest, black for an ordinal not given; none for no lights
+    """
+    if not lights:
+        return []
+    colours = [(0, 0, 0)] * (max(light.ordinal for light in lights) + 1)
+    kinds = {light.ordinal: light.kind.value if light.has('kind') else None for light in lights}
+    buttons = sorted((light for light in lights if kinds[light.ordinal] == KIND_BUTTON),
+                     key=lambda light: (light.grid.x, light.grid.y, light.ordinal) if light.has('grid') else
+                     (-1, -1, light.ordinal))
+    pulsing = [light for light in lights if kinds[light.ordinal] == KIND_TURBO or kinds[light.ordinal] in KIND_PLAYERS]
+    skip = {light.ordinal for light in buttons + pulsing}
+    wave = [light for light in lights if light.ordinal not in skip]
+    for index, light in enumerate(buttons):
+        distance = (elapsed * 6 - index) % len(buttons)
+        level = max(0.15, 1 - min(distance, len(buttons) - distance))
+        colours[light.ordinal] = _lit(index / len(buttons) + elapsed / 10, level)
+    for index, light in enumerate(wave):
+        pulse = ((math.cos(2 * math.pi * (index / len(wave) - elapsed * 0.3)) + 1) / 2) ** 3
+        colours[light.ordinal] = _lit(index / len(wave) + elapsed / 5, max(0.05, pulse))
+    cyan = round(255 * (1 - math.cos(2 * math.pi * elapsed)) / 2)
+    for light in pulsing:
+        colours[light.ordinal] = (0, cyan, cyan)
+    return colours
+
+
+@hlp_command
+def show() -> None:
+    """Run a light show across a board's buttons, case, player and turbo lights, as a visual test."""
+    parser = device_parser("Take a GP2040-CE board's lights over for a light show at 60 fps, then give the claim "
+                           "up: a rainbow chase across the buttons, a rainbow wave along the case lights, and the "
+                           "player and turbo lights pulsing cyan. A board that reports no lights on page 12 shows "
+                           "a rainbow moving along its LEDs.")
+    parser.add_argument('--seconds', type=_duration, default=15.0, help="how long the show runs (default: 15)")
+    add_claim_arguments(parser)
+    args = parser.parse_args()
+    device = open_device(args.board_id)
+    try:
+        lights = device.read_table(PAGE_LIGHTS).records if PAGE_LIGHTS in device.hello().pages else ()
+        leds = 0 if lights else device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
+        with LightsClaim(device, 'hlp-show', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+            if lights:
+                _play(claim, args.seconds, functools.partial(_show_frame, lights), "show", f"{len(lights)} lights")
+            else:
+                _rainbow(claim, leds, args.seconds)
+    finally:
+        device.close()
+
+
+def _show_frame(lights: Sequence[LightRecord], index: int) -> Frame:
+    """Build the show's frame index, every light in one light run."""
+    frame = Frame()
+    frame.run(ADDRESSING_LIGHT_RUN, 0, show_colours(lights, index / 60))
+    return frame
 
 
 def _answers_hello(claim: LightsClaim) -> None:

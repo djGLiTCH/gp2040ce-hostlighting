@@ -511,6 +511,65 @@ def test_stream_frame_size(hlp_run_on_model_board, hlp_model_board, capsys):
                      bytes([hl.ADDRESSING_LED_RUN, 38, 0, 2])]
 
 
+def _light(ordinal, kind, x=0):
+    """Make a page 12 record with the groups hlp-show reads."""
+    return records.LightRecord(ordinal=ordinal, kind=records.LightKind(value=kind, duplicated=False),
+                               grid=records.GridCell(x=x, y=0))
+
+
+def test_show_colours():
+    """Test the show's colours: a chase left to right across the buttons, a wave along the case, a cyan pulse."""
+    lights = [_light(0, hl.KIND_BUTTON, x=2), _light(1, hl.KIND_BUTTON, x=0), _light(2, hl.KIND_BUTTON, x=1),
+              _light(3, hl.KIND_CASE), _light(4, hl.KIND_CASE), _light(5, hl.KIND_PLAYERS[0]), _light(6, hl.KIND_TURBO)]
+    start = tools.show_colours(lights, 0.0)
+    assert len(start) == 7
+    assert start[1] == (255, 0, 0) and start[2] == (0, 38, 0) and start[0] == (0, 0, 38)     # the peak on x 0
+    assert start[3] == (255, 0, 0) and start[4] == (0, 13, 13)                                  # crest, then trough
+    assert start[5] == start[6] == (0, 0, 0)
+    later = tools.show_colours(lights, 1 / 6)                   # one button on, the peak on x 1
+    assert max(later[2]) == 255 and max(later[1]) == max(later[0]) == 38
+    assert tools.show_colours(lights, 0.5)[5] == (0, 255, 255)
+
+
+def test_show_colours_for_odd_pages():
+    """Test the show's colours for one button, ordinals from 3, a light read without its kind, and no lights."""
+    colours = tools.show_colours([_light(3, hl.KIND_BUTTON), records.LightRecord(ordinal=4)], 0.0)
+    assert colours[:3] == [(0, 0, 0)] * 3 and colours[3] == (255, 0, 0) and colours[4] == (255, 0, 0)
+    assert max(tools.show_colours([_light(0, hl.KIND_BUTTON)], 0.5)[0]) >= 128     # one button: never below half
+    assert tools.show_colours([], 0.0) == []
+
+
+def test_show_splits_a_light_run_and_refuses_a_bad_duration(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test hlp-show on 25 lights, a light run of two reports per frame, and --seconds of 0 and nan refused."""
+    hlp_model_board.lights = [light_record(index, kind=1, x=index) for index in range(25)]
+    hlp_run_on_model_board(tools.show, '--seconds', '0.25')
+    assert 'show: 15 of 15 frames acknowledged (25 lights)' in capsys.readouterr().out
+    frame = [stage[3:7] for stage in hlp_model_board.sent(hl.CMD_STAGE)][-2:]
+    assert frame == [bytes([hl.ADDRESSING_LIGHT_RUN, 0, 0, 19]), bytes([hl.ADDRESSING_LIGHT_RUN, 19, 0, 6])]
+    for seconds in ('0', 'nan'):
+        with pytest.raises(SystemExit, match='^2$'):
+            hlp_run_on_model_board(tools.show, '--seconds', seconds)
+        assert 'is not a number of seconds above 0' in capsys.readouterr().err
+
+
+def test_show_streams_light_runs_and_gives_up(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test hlp-show: every light in one light run per frame under the claim, then the give up."""
+    hlp_run_on_model_board(tools.show, '--seconds', '1')
+    out = capsys.readouterr().out
+    assert 'show: 60 of 60 frames acknowledged (2 lights)' in out and 'given up' in out
+    frames = [stage[3:7] for stage in hlp_model_board.sent(hl.CMD_STAGE)]
+    assert len(frames) == 60 and set(frames) == {bytes([hl.ADDRESSING_LIGHT_RUN, 0, 0, 2])}
+    assert not hlp_model_board.live and hlp_model_board.holder_token == 0
+
+
+def test_show_streams_a_rainbow_without_lights(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test hlp-show on a board that reports no lights: a rainbow along its LED extent."""
+    hlp_model_board.lights = []
+    hlp_run_on_model_board(tools.show, '--seconds', '0.5')
+    assert 'rainbow: 30 of 30 frames acknowledged (4 LEDs)' in capsys.readouterr().out
+    assert {stage[3] for stage in hlp_model_board.sent(hl.CMD_STAGE)} == {hl.ADDRESSING_LED_RUN}
+
+
 def test_buttons_runs_three_phases(hlp_run_on_model_board, hlp_model_board, capsys):
     """Test hlp-buttons: lit actions, a light run, then the overlay. Giving up restores whole-frame."""
     hlp_run_on_model_board(tools.buttons, '--seconds', '1')

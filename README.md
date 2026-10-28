@@ -403,6 +403,11 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   answered. `--leds` sets the frame size (default: the LED extent).
   `--timeout-test` then goes silent and times how long the board keeps the
   frame, which is the keepalive timeout.
+* `hlp-show` runs a light show at 60 fps as a visual test, from the lights on
+  page 12: a rainbow chase across the buttons, left to right, a rainbow wave
+  along the case lights, and the player and turbo lights pulsing cyan.
+  `--seconds` sets how long (default: 15). A board that reports no lights shows
+  a rainbow along its LEDs.
 * `hlp-buttons` gives every lit control its own hue (staged by action), then
   every light its own hue (one light run), then the buttons the board lights
   among B1-B4, L1, R1, L2 and R2 white over the running animations (overlay
@@ -451,7 +456,8 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   pipelined. `--leds` sets the frame size (default: the LED extent).
 
 The tools that drive the LEDs (`hlp-fill`, `hlp-set-light`, `hlp-stream`,
-`hlp-buttons`, `hlp-bench`, `hlp-conformance`) claim the board while they do.
+`hlp-show`, `hlp-buttons`, `hlp-bench`, `hlp-conformance`) claim the board while
+they do.
 
 * They give the claim up afterwards, Ctrl-C included, which restores the
   on-board animations and the `CONFIGURE` defaults.

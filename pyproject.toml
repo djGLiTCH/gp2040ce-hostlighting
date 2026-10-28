@@ -52,6 +52,7 @@ hlp-ping = "gp2040ce_hostlighting.tools.commands:ping"
 hlp-reboot = "gp2040ce_hostlighting.tools.commands:reboot"
 hlp-set-light = "gp2040ce_hostlighting.tools.commands:set_light"
 hlp-settings = "gp2040ce_hostlighting.tools.commands:settings"
+hlp-show = "gp2040ce_hostlighting.tools.commands:show"
 hlp-stream = "gp2040ce_hostlighting.tools.commands:stream"
 hlp-watch = "gp2040ce_hostlighting.tools.commands:watch"
 
