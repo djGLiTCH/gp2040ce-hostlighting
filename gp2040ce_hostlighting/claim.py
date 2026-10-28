@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: claim.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Keep a claim on a board's lights: take it, renew it, follow what changes it and give it up.
 
 Applications sharing a board coordinate through CLAIM. The claim is a lease that only the holder's own CLAIM
@@ -8,9 +16,6 @@ return a ClaimChange that tells the host to stage the whole frame again. Each ch
 
 A LightsClaim belongs to one thread, as the device it uses does. No call sleeps but keep(), and each request
 blocks for its round trip.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import enum
 import logging

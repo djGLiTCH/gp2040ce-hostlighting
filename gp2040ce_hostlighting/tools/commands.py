@@ -1,12 +1,17 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: commands.py
+# Folder: gp2040ce_hostlighting/tools
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """The hlp-* commands for GP2040-CE's Host Lighting add-on, built on the protocol module.
 
 hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light, hlp-stream, hlp-buttons, hlp-input-mode and
 hlp-reboot. Given GP2040-CE's .proto files (`-P`), they print enum names beside the values. The commands that drive
 the LEDs hold a LightsClaim and print its INFO lines as part of their output. tools.conformance shares
 hlp_command, device_parser, add_claim_arguments and ranged.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import argparse
 import colorsys

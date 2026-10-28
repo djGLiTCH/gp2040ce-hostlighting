@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: records.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """The records and replies that gp2040ce_hostlighting.protocol decodes.
 
 Fields are named after the specification's. A page record has its ordinal and one attribute per field group, in
@@ -6,9 +14,6 @@ HostLightingGroupNotReadError, which is an AttributeError too, so hasattr() says
 `has()` and `groups`. Inside a group, None is the value the specification marks none, such as an unlit control's
 first LED. A record's `merged()` takes the groups a later read returned, as a host does after reading some
 groups again. Records are immutable, compare equal when their page, ordinal and groups are, and copy and pickle.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload

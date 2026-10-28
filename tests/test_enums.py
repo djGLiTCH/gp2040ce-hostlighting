@@ -1,8 +1,12 @@
-"""Test reading GP2040-CE's enum names from its .proto files.
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: test_enums.py
+# Folder: tests
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
-"""
+"""Test reading GP2040-CE's enum names from its .proto files."""
 from gp2040ce_hostlighting.enums import parse_enum_names, read_enum_names
 
 

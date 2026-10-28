@@ -1,10 +1,17 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: REUSE.toml
+# Folder: (repository root)
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 version = 1
 SPDX-PackageName = "gp2040ce-hostlighting"
 SPDX-PackageSupplier = "Jacob Simpson <28767380+djGLiTCH@users.noreply.github.com>"
 SPDX-PackageDownloadLocation = "https://github.com/djGLiTCH/gp2040ce-hostlighting"
 
 [[annotations]]
-path = [".gitattributes", ".git_archival.txt", ".gitignore", "pyproject.toml", "REUSE.toml", "*.md", "docs/*.md",
-        "gp2040ce_hostlighting/py.typed", "test-vectors/*"]
-SPDX-FileCopyrightText = "© 2026 Jacob Simpson"
+path = [".git_archival.txt", "docs/*.md", "gp2040ce_hostlighting/py.typed", "test-vectors/vectors.json"]
+SPDX-FileCopyrightText = "© 2026 Jacob Simpson (DJ GLiTCH)"
 SPDX-License-Identifier = "GPL-3.0-or-later"

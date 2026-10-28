@@ -1,11 +1,16 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: layout.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """The board's LED layout grid: lights by cell, and a canvas painted by cell and sampled onto the lights.
 
 Page 12 gives each light a cell of the grid the Summary sizes (grid_width x grid_height). lights_by_cell() maps
 each cell to its lights. A Canvas holds one colour per cell, and frame() builds a Frame that colours each light
 with its cell's colour.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 from typing import Iterable, Optional
 

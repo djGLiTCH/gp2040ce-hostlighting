@@ -1,8 +1,12 @@
-"""Test that the test vectors are what scripts/test_vectors.py generates from ModelBoard.
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: test_vectors.py
+# Folder: tests
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
-"""
+"""Test that the test vectors are what scripts/test_vectors.py generates from ModelBoard."""
 import importlib.util
 import json
 import os

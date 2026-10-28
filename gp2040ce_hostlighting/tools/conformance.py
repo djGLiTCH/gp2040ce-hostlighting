@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: conformance.py
+# Folder: gp2040ce_hostlighting/tools
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """The hlp-conformance and hlp-bench commands, built on gp2040ce_hostlighting.conformance.
 
 hlp-conformance checks one board against the protocol and reports each rule it checks: the HELLO
@@ -6,9 +14,6 @@ the claim lease and generation, shared and exclusive claims, unsaved brightness,
 board-feature argument checks, delivery of replies to a second handle, then round trip and throughput.
 hlp-bench runs the round trip and frame-rate measurements on their own, at length. Both hold the claim while
 they run, so other applications leave the lights alone, and give it up at the end.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import contextlib
 import json

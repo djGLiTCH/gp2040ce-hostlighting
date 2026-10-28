@@ -1,8 +1,12 @@
-"""Test the hlp-* commands.
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: test_commands.py
+# Folder: tests
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
-"""
+"""Test the hlp-* commands."""
 import json
 import struct
 

@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: session.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Run the specification's full host flow: handshake, claim, settings, events, cache, frames and shutdown.
 
 A Session is optional. It is built on the device, LightsClaim, ConfigurationCache and publish_frame(), and
@@ -6,9 +14,6 @@ keeps that itself.
 
 Like the device, a Session belongs to one thread. poll() and show() never sleep, but each request they send
 blocks for its round trip.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import functools
 import logging

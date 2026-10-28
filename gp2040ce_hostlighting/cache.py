@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: cache.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Keep a board's configuration pages, reading again only the pages that changed.
 
 The state token changes whenever anything a configuration page reports changes, and the Summary's change
@@ -6,9 +14,6 @@ under the Summary's token, so that the pages it keeps never mix two states. Ligh
 groups 1 to 3 alone, the groups a profile switch changes.
 
 Like the device, a cache belongs to one thread.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 from typing import Any, Optional
 

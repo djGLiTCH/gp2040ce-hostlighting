@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: frames.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Build a whole frame and publish it as the specification has a streaming host do.
 
 A Frame collects entries and runs, and stages them in the order they were added, since a later entry wins where
@@ -5,9 +13,6 @@ lights share an LED. publish_frame() sends every report but the last with NO_REP
 COMMIT_AFTER, which alone is answered, and sends that report once more when its acknowledgement does not come.
 
 Like the device, a Frame belongs to one thread.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional

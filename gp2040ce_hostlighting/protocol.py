@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: protocol.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Talk to a GP2040-CE board's Host Lighting interface over HID.
 
 The Host Lighting add-on exposes a vendor HID interface (usage page 0xFF47,
@@ -36,9 +44,6 @@ See docs/host-lighting.md for the full protocol reference. The hlp-*
 commands are in gp2040ce_hostlighting.tools.commands, and hlp-conformance
 and hlp-bench in gp2040ce_hostlighting.tools.conformance. Requires the
 `hidapi` package (`pip install hidapi`).
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import logging
 import operator

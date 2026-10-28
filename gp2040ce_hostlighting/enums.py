@@ -1,11 +1,16 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: enums.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Read GP2040-CE's enum names from its .proto files, to name the values the pages report.
 
 The pages carry GP2040-CE's enum values verbatim: actions, light types, LED formats, input modes and animation
 effects among them. Their names come from GP2040-CE's own enums.proto, which a host gives, so the library keeps
 no list of its own that could fall behind the firmware.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import logging
 import pathlib

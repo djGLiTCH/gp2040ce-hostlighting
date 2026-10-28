@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: test_vectors.py
+# Folder: scripts
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Generate the HLP test vectors from the library's ModelBoard, or replay them on a board.
 
 Each scenario starts from an unclaimed board with the CONFIGURE defaults and sends exact requests. On the model every
@@ -7,9 +15,6 @@ scenarios run, and each report is compared with the model's by what the board's 
 
   python scripts/test_vectors.py               write test-vectors/vectors.json from the model
   python scripts/test_vectors.py --board ID    replay the vectors on the board with this ID and print the comparison
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import json
 import os

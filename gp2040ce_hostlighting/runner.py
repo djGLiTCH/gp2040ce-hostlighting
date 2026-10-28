@@ -1,12 +1,17 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: runner.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Run sessions on threads of their own: one board from a GUI or an asyncio program, or every board on the bus.
 
 A device belongs to one thread, and every call on it blocks. A SessionRunner gives a Session a thread that owns
 its device: the host posts the latest frame and new settings from any thread, and receives each SessionUpdate
 through a callback and a queue. AsyncSession puts a runner behind awaitables. BoardWatcher follows the boards on
 the bus by board ID, and SessionGroup keeps a runner for each.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import asyncio
 import logging

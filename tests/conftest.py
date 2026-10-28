@@ -1,8 +1,12 @@
-"""Fixtures for the Host Lighting tests.
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: conftest.py
+# Folder: tests
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
-"""
+"""Fixtures for the Host Lighting tests."""
 import logging
 
 import pytest

@@ -1,10 +1,15 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: hlp-tools.spec
+# Folder: packaging
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Build the hlp-* commands as standalone executables with PyInstaller.
 
 One folder holds an executable per command. They share one Python runtime and one copy of the modules. Run from
 the repository's root: pyinstaller packaging/hlp-tools.spec
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import pathlib
 import sys

@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: testing.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Fake GP2040-CE boards and build Host Lighting reports, to test host software without a board.
 
 FakeBoard answers requests as the firmware does. ModelBoard also follows the
@@ -5,9 +13,6 @@ protocol's timing, claim and staging rules, on a clock the caller controls.
 fake_device gives a HostLightingDevice connected to either, and attach()
 puts fake boards on a fake bus, so discovery finds them. The record builders
 make the pages' records, the replies and the events.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import struct
 import zlib

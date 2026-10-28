@@ -1,3 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: conformance.py
+# Folder: gp2040ce_hostlighting
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
 """Check a GP2040-CE board's Host Lighting implementation against the protocol, and measure it.
 
 The checks cover the HELLO capabilities, framing, every page and field mask,
@@ -11,9 +19,6 @@ takeover checks time the takeover alone. The measurements maintain the claim
 between frames. hlp-conformance and hlp-bench in
 gp2040ce_hostlighting.tools.conformance run them. Like the device, the checks
 belong to one thread.
-
-SPDX-FileCopyrightText: © 2026 Jacob Simpson
-SPDX-License-Identifier: GPL-3.0-or-later
 """
 import contextlib
 import logging
