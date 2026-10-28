@@ -174,7 +174,7 @@ sharing a board, events and a clean shutdown.
    - A host that stages only the pixels that change watches the takeover number
      (`COMMIT`).
 7. When the state token changes, as an event or a page 1 poll shows, read the
-   Summary. Read again the cached pages whose change counter moved, passing the
+   Summary. Read again the cached pages with a moved change counter, passing the
    new token as the expected one. For Lights, read groups 1-3 only. Stage the
    whole frame again when the Controls or Lights counter moved.
 8. On shutdown, send `CLAIM` give up. When a host stops without a clean
@@ -236,7 +236,7 @@ All transfers are 64-byte reports:
     event    [0] 0x80          [1] event     [2] 0       [3..63] payload
 
 The host chooses the sequence byte and the reply echoes it. There is no command
-0x00, so `[0]` = 0x80 always marks an event. The board ignores a report whose
+0x00, so `[0]` = 0x80 always marks an event. The board ignores a report if
 `[0]` is 0x00 or has bit 7 set, and sends no reply to it.
 
 Request flags, the same on every command:
@@ -253,8 +253,8 @@ Request flags, the same on every command:
 Status: `0` OK, `1` unsupported command, `2` invalid argument, `3` stale (see
 Pages and `SET_KEYBOARD_MAPPING`), `4` claimed (see `CLAIM`).
 
-- A command whose status is not 0 changes nothing, answered or not, and neither
-  `COMMIT_AFTER` nor `KEEPALIVE` applies.
+- A command with a status other than 0 changes nothing, answered or not, and
+  neither `COMMIT_AFTER` nor `KEEPALIVE` applies.
 - On `CLAIM` they apply as `CLAIM` sets out.
 - A status 2 reply carries at `[3]` the offset of the invalid request byte, the
   lowest when several are invalid.
@@ -332,7 +332,8 @@ once.
 | Board features (0x30-0x4F) | Write nothing for a value already in effect |
 | `SET_INPUT_MODE`, `REBOOT` | Reboot the board again. A host must confirm these by the re-enumeration instead |
 
-A streaming host whose frame acknowledgement does not come acts in this order.
+When a streaming host's frame acknowledgement does not come, the host acts in
+this order.
 
 1. It sends that report once more.
 2. If that too goes unanswered, it takes the frame as not shown and stages the
@@ -490,8 +491,8 @@ The claim generation is a number from 1 to 7. After 7 it steps to 1. The
 - An application that holds no claim must send 0. This includes one that
   never claims, one that gave its claim up, and one that was refused and
   found another holder.
-- A request other than `CLAIM` whose generation is neither 0 nor the current
-  one is refused with status 4. This applies to every command, reads
+- A request other than `CLAIM` with a generation that is neither 0 nor the
+  current one is refused with status 4. This applies to every command, reads
   included, whether or not a claim is held.
 - `CLAIM` ignores the generation.
 
@@ -829,9 +830,9 @@ it until it ends (Session state). Bit 1 is set while the step shown differs
 from the saved step, from an unsaved `SET_BRIGHTNESS` until the step ends.
 Bit 2 is set while the animations' idle timeout
 (`AnimationOptions.autoDisableTime`) has the on-board animations off. A press
-of a lit control (page 10 flag bit 1), or `SET_ANIMATION` changing the
-animation to one other than off, wakes them and restarts the timeout. Frames,
-takeovers and other commands do not.
+of a lit control (page 10 flag bit 1), an animation hotkey, or `SET_ANIMATION`
+changing the animation to one other than off, wakes them and restarts the
+timeout. Frames, takeovers and other commands do not.
 While the animations are off, an overlay's unstaged pixels show only the
 board's RGB player and turbo indicators. Going idle and waking each raise
 `STATE_CHANGED`.
@@ -856,7 +857,7 @@ reply.
 
 Flag bit 0, lighting, is set for a mode that presents this interface. XInput
 presents it when the `XInput Lighting` setting is Auto or Always On. Flag bit
-1, detected, is set for a mode whose interface appears only once the board has
+1, detected, marks a mode if its interface appears only once the board has
 detected a PC, a few seconds after it enumerates. XInput under Auto is such a
 mode.
 
@@ -948,14 +949,14 @@ page reports has changed. Page 8's counter covers its Summary group.
   the same token, so a cached page and its counter are good for one connection
   only.
 
-After the state token changes, a host reads again the cached pages whose
-counter differs from the one it read with its copy. It needs no read while the
-token is the one it holds.
+After the state token changes, a host reads again the cached pages with a
+counter that differs from the one it read with its copy. It needs no read
+while the token is the one it holds.
 
 Positions are cells of GP2040-CE's LED layout **grid**, as the web
 configurator's LED Configuration page shows it. Cell (0,0) is at the top left,
 X runs right and Y runs down, and the cells are square. Positions give the
-lights' arrangement, not distances. On a board whose configuration gives only
+lights' arrangement, not distances. Where a board's configuration gives only
 per-button LED indexes, GP2040-CE approximates the grid from the button layout.
 Nothing reports which boards those are, since the user can edit either grid
 afterwards.
@@ -975,7 +976,7 @@ Every defined profile is listed, enabled or not. Profile 1 is always enabled.
 Keyboard mapping and Lights pages report the active profile's mappings. Add-on
 inputs have one mapping for every profile.
 
-**Page 10 - Controls**, one record per input whose action is greater than zero,
+**Page 10 - Controls**, one record per input with an action greater than zero,
 lit or not, in key order. An input is a GPIO pin or an add-on input. An add-on
 input is a Hall-effect trigger or an I/O-expander pin.
 
@@ -1014,9 +1015,10 @@ does not know as a control it cannot name.
 - An add-on input's action comes from its add-on and not from the profile. The
   state token changes whenever it does. The input is listed while its add-on
   runs.
-- The Hall Effect Trigger add-on runs while enabled. It reads `muxChannels`
-  triggers on each of up to four muxes, 32 at most, with `muxChannels` 1, 4, 8
-  or 16. Only those triggers are listed, and none under another `muxChannels`.
+- The Hall Effect Trigger add-on runs while enabled, with `muxChannels` 1, 4,
+  8 or 16. It reads `muxChannels` triggers on each mux it scans that has an ADC
+  pin, 32 at most. Only those triggers are listed, and none under another
+  `muxChannels`.
 - The PCF8575 add-on runs when it is enabled and its chip is found on I2C at
   boot. An expander pin set as an output mirrors a button and is not an input.
 - A light follows a GPIO pin or a Hall-effect trigger. An I/O-expander
@@ -1083,7 +1085,7 @@ exceptions.
 
 One media key is sent at a time. A pending volume step of the Rotary Encoder
 add-on sends its own. Otherwise it is that of the last pressed button in field
-order whose code is above 0xE7, and none when that code is not a media key.
+order with a code above 0xE7, and none when that code is not a media key.
 
 **Page 12 - Lights**, one record per light. A light is one entry of the board's
 LED layout, a run of LEDs with a kind and a grid position. A button or turbo
@@ -1093,8 +1095,8 @@ light's identity is its record ordinal, which is also its `STAGE` address.
 The page is complete whenever the lighting interface exists. A board with no
 LED output has no lights (Summary `+26..27` is 0). LEDs at or past the
 addressable LED limit (Summary `+2..3`) are never written and not counted in
-the extent, so a host must clip a light's LEDs to the limit. An address whose
-lights all lie at or past it is skipped (Staging).
+the extent, so a host must clip a light's LEDs to the limit. An address with
+all its lights at or past it is skipped (Staging).
 
 | Bit | Group | Bytes |
 |---|---|---|
@@ -1114,7 +1116,7 @@ All groups make a 16-byte record, three per reply. Positions alone (bit 4) give
 | First LED | First LED index on the chain. It is not a key, since two lights can start at the same index |
 | LED count | LEDs in this light |
 | Kind | See Actions and kinds |
-| Flags | Bit 0 duplicated: the owner pin is a control whose action another control also has; rest zero |
+| Flags | Bit 0 duplicated: the owner pin is a control with an action another control also has; rest zero |
 | Owner pin | The page 10 key of the input a button or turbo light is tied to, a GPIO pin or a Hall-effect trigger; 0xFF none |
 | Owner action | The owner's action as page 10 gives it, verbatim: from the active profile for a GPIO pin, from its add-on for a Hall-effect trigger; 0x8000 none |
 | Owner instance, instances | The owning control's instance and instances (Controls group 1); 0 when there is no owner pin or it is not a control |
@@ -1232,8 +1234,8 @@ turbo pin. `STAGE` by kind 2 reaches every turbo light, whatever its pin.
 | 0 LED run | First LED index, 16-bit | `count` consecutive LEDs |
 | 1 light run | First light ordinal, 16-bit | `count` consecutive lights |
 | 4 light | Light ordinal, 16-bit | That light |
-| 5 pin | Page 10 key of a GPIO pin or a Hall-effect trigger, 8-bit | Every light whose Lights record carries that owner pin |
-| 6 action | Action, signed 16-bit | Every light whose Lights record carries that owner action |
+| 5 pin | Page 10 key of a GPIO pin or a Hall-effect trigger, 8-bit | Every light with that owner pin in its Lights record |
+| 6 action | Action, signed 16-bit | Every light with that owner action in its Lights record |
 | 7 kind | Kind, 8-bit | Every light of that kind |
 
 A light's pixel goes to every LED of the light. Entries apply in order, so
