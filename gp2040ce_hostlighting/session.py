@@ -33,7 +33,7 @@ from gp2040ce_hostlighting.protocol import (BRIGHTNESS_SAVED, CMD_CLAIM, CMD_CLE
                                             HostLightingIncompatibleError, HostLightingRejectedError,
                                             HostLightingTimeoutError, HostLightingUnansweredError, find_board,
                                             latest_state, require_capabilities)
-from gp2040ce_hostlighting.records import Controller, Hello, Requirements, Settings, StateRecord
+from gp2040ce_hostlighting.records import Hello, Holder, Requirements, Settings, StateRecord
 
 __all__ = ['Session', 'SessionUpdate', 'REFRESH_RETRY_SECONDS', 'STATE_POLL_SECONDS', 'UNANSWERED_LIMIT']
 
@@ -79,7 +79,7 @@ class SessionUpdate:
     """What poll() found.
 
     `claim` is what changed in the claim. `board_state` is the latest page 1 record, and `changed` names its
-    fields (State, Controller and Settings fields by name) that differ from the record the last update carried,
+    fields (State, Holder and Settings fields by name) that differ from the record the last update carried,
     every field read for the first. `pages_read` names the
     configuration pages read again, page 8 among them when the Summary changed. `restage` is true when the host
     has to stage the whole frame again, after the claim was taken again or taken after waiting, the Controls or Lights
@@ -98,7 +98,7 @@ def _changed_fields(before: Optional[StateRecord], after: Optional[StateRecord])
     names: set[str] = set()
     if after is None:
         return frozenset()
-    for group in ('state', 'controller', 'settings'):
+    for group in ('state', 'holder', 'settings'):
         new = getattr(after, group) if after.has(group) else None
         old = getattr(before, group) if before is not None and before.has(group) else None
         if new is None:
@@ -254,8 +254,8 @@ class Session:
             # a change before the subscription raises no event, so page 1 is read once after it
             self._start_step(self._read_state)
             if self.claim is not None and self.claim.state not in (ClaimState.HELD, ClaimState.WAITING):
-                raise HostLightingClaimedError(self.claim.holder or Controller(holder_token=0, application_name='',
-                                                                               exclusive=False, claim_generation=0))
+                raise HostLightingClaimedError(self.claim.holder or Holder(holder_token=0, application_name='',
+                                                                           exclusive=False, claim_generation=0))
             self._guarded(functools.partial(self._configure_unclaimed, fresh=True))
             started = True
         finally:
@@ -422,10 +422,10 @@ class Session:
         except HostLightingTimeoutError:
             if (last is not None and not _defaults(settings)
                     and (self._applied is None or self._replaced
-                         or self._applied_generation != last.controller.claim_generation)):
+                         or self._applied_generation != last.holder.claim_generation)):
                 # as if CONFIGURE was sent under the generation last seen and then replaced, so nothing goes over
                 # page 1 before a change of holder. Its own settings still shown stay its own, for close()
-                generation = last.controller.claim_generation
+                generation = last.holder.claim_generation
                 self._applied, self._applied_generation, self._replaced = _applied_by_board(settings), generation, True
             raise
         self._guarded(functools.partial(self._configure_unclaimed, True, True))
@@ -499,14 +499,14 @@ class Session:
             elif self.hello is not None:
                 self._read_state()
                 state = self.board_state
-                if state is not None and not state.controller.holder_token:
+                if state is not None and not state.holder.holder_token:
                     settings, self.settings = self.settings, Settings()
                     try:
                         self._configure_unclaimed(fresh=True)
                     finally:
                         self.settings = settings        # kept for a later start()
                     latest = self.board_state           # the read after CONFIGURE may show a holder since
-                    if self._drove and not (latest is not None and latest.controller.holder_token):
+                    if self._drove and not (latest is not None and latest.holder.holder_token):
                         self.device.release()
                         self.device.set_brightness(BRIGHTNESS_SAVED)
         except HostLightingError as error:
@@ -528,7 +528,7 @@ class Session:
             if claim.state is ClaimState.HELD and self.device.generation != claim.generation:
                 self._pending = _later(self._pending, self._counted(lambda: self._after_claim(claim.renew())))
             return claim.state is ClaimState.HELD
-        return self.board_state is None or not self.board_state.controller.holder_token
+        return self.board_state is None or not self.board_state.holder.holder_token
 
     def _take_pending(self) -> ClaimChange:
         """Return what show() found, once."""
@@ -647,7 +647,7 @@ class Session:
             return False
         if self.claim is not None:
             return self.claim.state is ClaimState.HELD
-        return self.name is None and not state.controller.holder_token
+        return self.name is None and not state.holder.holder_token
 
     def _refresh_pages(self) -> tuple[frozenset[int], frozenset[int], ClaimChange]:
         """Read the configuration pages again after a change of the state token.
@@ -694,25 +694,25 @@ class Session:
             return _UNCHANGED
         if fresh:
             self._note_page_1(state)
-        if state.controller.holder_token:
+        if state.holder.holder_token:
             return _UNCHANGED
         if not fresh:
             # its values under another generation: a page 1 read tells whether another host sent them
             shown_again = (self._applied is not None and state.settings == self._applied
-                           and state.controller.claim_generation != self._applied_generation)
+                           and state.holder.claim_generation != self._applied_generation)
             if shown_again or self._settings_due(state, changed):
                 self._read_state()
                 return self._configure_unclaimed(changed, fresh=True)
             return _UNCHANGED
         if self._settings_due(state, changed):
-            self._send_unclaimed(state.settings, state.controller.claim_generation)
+            self._send_unclaimed(state.settings, state.holder.claim_generation)
         return _UNCHANGED
 
     def _note_page_1(self, state: StateRecord) -> None:
         """For a host that does not claim, note what a page 1 read just now shows of its settings."""
         landed, self._landed_unseen = self._landed_unseen, None
-        generation = state.controller.claim_generation
-        if state.controller.holder_token:
+        generation = state.holder.claim_generation
+        if state.holder.holder_token:
             if self._applied is not None and generation != self._applied_generation:
                 # a change of holder put the defaults in place of its settings: sent again after the claim
                 self._applied_generation, self._replaced = generation, True
@@ -747,7 +747,7 @@ class Session:
 
     def _settings_due(self, state: StateRecord, changed: bool) -> bool:
         """Say whether a host that does not claim sends its settings over what page 1 shows."""
-        generation = state.controller.claim_generation
+        generation = state.holder.claim_generation
         if _defaults(self.settings):        # only in place of its own settings, still shown
             return (self._applied is not None and not self._replaced and state.settings == self._applied
                     and generation == self._applied_generation)
@@ -781,7 +781,7 @@ class Session:
             self._landed_unseen = self._applied
             return
         if after.has('settings') and after.settings == self._sent:
-            self._applied_generation = after.controller.claim_generation
+            self._applied_generation = after.holder.claim_generation
 
     def _started(self) -> None:
         """Refuse a call that needs start() first.
@@ -800,7 +800,7 @@ class Session:
         state = self.board_state
         if self._shown is None or self.clock() < self._keepalive_due:
             return
-        if state is not None and (state.controller.holder_token or (self._fresh and not state.state.takeover_live)):
+        if state is not None and (state.holder.holder_token or (self._fresh and not state.state.takeover_live)):
             return
         timeout = self.board_state.settings.keepalive_ms if self.board_state is not None else 2000
         self._keepalive_due = self.clock() + timeout / 3000

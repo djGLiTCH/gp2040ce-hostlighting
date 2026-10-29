@@ -108,7 +108,7 @@ def test_decode_state_all_groups():
         state=records.State(takeover_live=True, brightness_unsaved=True, animations_idle=False, input_mode=14,
                             profile=2, player=0, animation=None, brightness_step_shown=7, takeover_number=9,
                             saved_brightness_step=5, dpad_mode=2),
-        controller=hl.Controller(holder_token=0xA1, application_name='MESH', exclusive=True, claim_generation=3),
+        holder=hl.Holder(holder_token=0xA1, application_name='MESH', exclusive=True, claim_generation=3),
         settings=hl.Settings(takeover=hl.TAKEOVER_OVERLAY, keepalive_ms=300, brightness_applied=False))
     idle = hl.decode_records(page_reply(hl.PAGE_STATE, [state_record(animations_idle=1)]))[0].state
     assert idle.animations_idle and not idle.takeover_live and not idle.brightness_unsaved
@@ -293,11 +293,11 @@ def test_claim_refuses_a_token_it_cannot_send(hlp_fake_device, hlp_fake_board):
 
 def test_exclusive_claim_sends_the_flag_and_holder(hlp_fake_device, hlp_fake_board):
     """Test that an exclusive claim's holder sends FLAG_HOLDER and the generation, a shared one the generation."""
-    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True) == hl.Controller(
+    assert hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a', exclusive=True) == hl.Holder(
         holder_token=0xAAAA, application_name='app-a', exclusive=True, claim_generation=2)
     assert hlp_fake_board.sent(hl.CMD_CLAIM)[-1][24] == hl.CLAIM_EXCLUSIVE and hlp_fake_device.holding_exclusive
     assert hlp_fake_board.sent(hl.CMD_CLAIM)[-1][2] == 0 and hlp_fake_device.generation == 2
-    holder = hlp_fake_device.read_record(hl.PAGE_STATE).records[0].controller
+    holder = hlp_fake_device.read_record(hl.PAGE_STATE).records[0].holder
     assert holder.holder_token == 0xAAAA and holder.exclusive
     assert hlp_fake_board.sent(hl.CMD_GET_PAGE)[-1][2] == hl.FLAG_HOLDER | 2 << hl.FLAG_GENERATION_SHIFT
     assert not hlp_fake_device.claim(hl.CLAIM_TAKE, 0xAAAA, b'app-a').exclusive     # renewed shared
@@ -323,7 +323,7 @@ def test_a_refused_exclusive_claim_sends_no_holder_flag(hlp_fake_device, hlp_fak
 
 
 def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
-    """Test that a status 4 refusal carries the claim's holder and generation, as page 1's Controller group."""
+    """Test that a status 4 refusal carries the claim's holder and generation, as page 1's Holder group."""
     holder = struct.pack('<I', 0xB2) + b'MESH'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 3])
     answer = hlp_fake_board.answer
 
@@ -334,7 +334,7 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
     hlp_fake_board.answer = claimed
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
-    assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == hl.Controller(
+    assert rejected.value.status == hl.STATUS_CLAIMED and rejected.value.holder == hl.Holder(
         holder_token=0xB2, application_name='MESH', exclusive=True, claim_generation=3)
     assert str(rejected.value) == ("command 0x21 (RELEASE) rejected: CLAIMED by 'MESH' (claim 0x000000B2, "
                                    "generation 3)")
@@ -342,8 +342,8 @@ def test_a_claimed_refusal_names_the_holder(hlp_fake_device, hlp_fake_board):
     hlp_fake_device.generation = 3                        # sent under the generation that lapsed
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.request_ok(hl.CMD_RELEASE)
-    assert rejected.value.holder == hl.Controller(holder_token=0, application_name='', exclusive=False,
-                                                  claim_generation=4)
+    assert rejected.value.holder == hl.Holder(holder_token=0, application_name='', exclusive=False,
+                                              claim_generation=4)
     assert str(rejected.value) == 'command 0x21 (RELEASE) rejected: CLAIMED, the claim having ended under generation 4'
 
 
@@ -354,7 +354,7 @@ def test_rejected_builds_the_error_from_a_reply():
     assert (error.status, error.offset, error.holder) == (hl.STATUS_INVALID, 7, None)
     holder = struct.pack('<I', 0xB2) + b'MESH'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 3])
     claimed = bytes([hl.CMD_STAGE | hl.REPLY_FLAG, 1, hl.STATUS_CLAIMED]) + holder + bytes(39)
-    assert hl.HostLightingDevice.rejected(hl.CMD_STAGE, claimed).holder == hl.Controller(
+    assert hl.HostLightingDevice.rejected(hl.CMD_STAGE, claimed).holder == hl.Holder(
         holder_token=0xB2, application_name='MESH', exclusive=True, claim_generation=3)
 
 
@@ -768,7 +768,7 @@ def test_decode_state_changed_matches_page_1():
     """Test that a STATE_CHANGED event decodes as the page 1 record it carries."""
     changed = hl.decode_state_changed(state_event(0xCAFE, animation=0xFFFF, application_name=b'MESH', holder_token=7))
     assert changed.token == 0xCAFE and changed.record.state.animation is None
-    assert changed.record.controller.holder_token == 7 and changed.record.controller.application_name == 'MESH'
+    assert changed.record.holder.holder_token == 7 and changed.record.holder.application_name == 'MESH'
     with pytest.raises(hl.HostLightingError, match='event 1 is not STATE_CHANGED'):
         hl.decode_state_changed(other_event())
 
@@ -819,7 +819,7 @@ def test_a_claimed_page_read_names_the_holder(hlp_fake_device, hlp_fake_board):
     hlp_fake_device.generation = 4                        # a read under a generation no longer current
     with pytest.raises(hl.HostLightingRejectedError) as rejected:
         hlp_fake_device.get_page(hl.PAGE_STATE)
-    assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == hl.Controller(
+    assert rejected.value.command == hl.CMD_GET_PAGE and rejected.value.holder == hl.Holder(
         holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=5)
 
 
@@ -856,16 +856,16 @@ def test_a_short_reply_is_an_error_naming_what_was_short():
         hl.decode_hello(hello_reply()[:20])
     with pytest.raises(hl.HostLightingError, match='the GET_PAGE reply is 10 bytes'):
         hl.decode_page_header(bytes(10))
-    with pytest.raises(hl.HostLightingError, match='the Controller group is 4 bytes'):
-        hl.decode_controller(bytes(4))
+    with pytest.raises(hl.HostLightingError, match='the Holder group is 4 bytes'):
+        hl.decode_holder(bytes(4))
     with pytest.raises(hl.HostLightingError, match='the page 0 reply is 8 bytes'):
         hl.decode_identity(bytes(8))
 
 
 def test_the_claim_generation_is_its_bytes_low_three_bits():
-    """Test that the Controller group's generation ignores the byte's other bits, which newer firmware may use."""
+    """Test that the Holder group's generation ignores the byte's other bits, which newer firmware may use."""
     group = (0xA1).to_bytes(4, 'little') + b'Alpha'.ljust(16, b'\x00') + bytes([hl.CLAIM_EXCLUSIVE, 0xF3])
-    holder = hl.decode_controller(group)
+    holder = hl.decode_holder(group)
     assert (holder.holder_token, holder.exclusive, holder.claim_generation) == (0xA1, True, 3)
 
 

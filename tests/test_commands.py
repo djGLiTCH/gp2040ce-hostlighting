@@ -750,7 +750,7 @@ def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_
     assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12', '13'}
     assert data['pages']['12'][0]['leds'] == {'first_led': 0, 'led_count': 1}
     assert data['pages']['11'][0]['button'] == {'action': 1, 'code': hlp_fake_board.keyboard_codes[1][0]}
-    assert data['pages']['1'][0]['controller']['holder_token'] == 0 and data['pages']['0']['board_config']
+    assert data['pages']['1'][0]['holder']['holder_token'] == 0 and data['pages']['0']['board_config']
 
 
 def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fake_board, capsys):

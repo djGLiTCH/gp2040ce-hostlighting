@@ -400,7 +400,7 @@ def _print_state(device: HostLightingDevice, names: dict[str, dict[int, str]]) -
     """Read and print page 1, the board's state."""
     read = device.read_record(PAGE_STATE)
     record = read.records[0]
-    state, holder, settings = record.state, record.controller, record.settings
+    state, holder, settings = record.state, record.holder, record.settings
     animation = 'off' if state.animation is None else state.animation
     print(f"page 1 (state), token 0x{read.token:08X}: input mode {_named(state.input_mode, names, 'InputMode')}, "
           f"profile {state.profile}, player {state.player}, animation {animation}"
@@ -685,7 +685,7 @@ def _print_settings(device: HostLightingDevice, names: dict[str, dict[int, str]]
 
 def _state_fields(record: StateRecord, token: int) -> dict[str, Any]:
     """Page 1's fields for hlp-watch, group by group in order, then the state token."""
-    shown = {item.name: getattr(group, item.name) for group in (record.state, record.controller, record.settings)
+    shown = {item.name: getattr(group, item.name) for group in (record.state, record.holder, record.settings)
              for item in fields(group)}
     shown['token'] = token
     return shown

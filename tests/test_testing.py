@@ -182,13 +182,13 @@ def test_another_application_takes_over_and_lets_go():
     """Test take_over() and let_go(): the holder, the claim flags and the generation step."""
     for board in (FakeBoard(), ModelBoard()):
         device = fake_device(board)
-        generation = device.read_record(hl.PAGE_STATE).records[0].controller.claim_generation
+        generation = device.read_record(hl.PAGE_STATE).records[0].holder.claim_generation
         board.take_over(0xB2, b'MESH', exclusive=True)
-        holder = device.read_record(hl.PAGE_STATE).records[0].controller
+        holder = device.read_record(hl.PAGE_STATE).records[0].holder
         assert (holder.holder_token, holder.application_name, holder.exclusive) == (0xB2, 'MESH', True)
         assert holder.claim_generation == generation % hl.GENERATION_MAX + 1
         board.let_go()
-        assert device.read_record(hl.PAGE_STATE).records[0].controller.holder_token == 0
+        assert device.read_record(hl.PAGE_STATE).records[0].holder.holder_token == 0
 
 
 def test_idle_animations_show_on_page_1_and_raise_an_event():
@@ -374,8 +374,8 @@ def test_a_bus_reset_drops_the_replies_waiting_and_ends_a_claim():
     with pytest.raises(hl.HostLightingTimeoutError):
         device.wait_reply(hl.CMD_HELLO, sequence, 0.01)
     record = other.read_record(hl.PAGE_STATE).records[0]
-    assert record.controller.holder_token == 0 and record.settings == hl.Settings()
-    assert record.controller.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
+    assert record.holder.holder_token == 0 and record.settings == hl.Settings()
+    assert record.holder.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
     assert other.hello().events_enabled == {hl.EVENT_STATE_CHANGED}
 
 
@@ -396,11 +396,11 @@ def test_a_suspend_ends_the_takeover_and_unsaved_step_and_sends_nothing():
     assert device.take_events()
     record = device.read_record(hl.PAGE_STATE).records[0]
     assert not record.state.takeover_live and not record.state.brightness_unsaved and not board.staged
-    assert record.controller.holder_token == 0x51
+    assert record.holder.holder_token == 0x51
     board.suspend()
     board.sleep(2.5)
     board.resume()
-    assert other.read_record(hl.PAGE_STATE).records[0].controller.holder_token == 0
+    assert other.read_record(hl.PAGE_STATE).records[0].holder.holder_token == 0
 
 
 def test_deconfigure_ends_the_usb_session():
@@ -417,13 +417,13 @@ def test_deconfigure_ends_the_usb_session():
     board.deconfigure()
     assert board.queue == [] and not board.pending
     record = other.read_record(hl.PAGE_STATE).records[0]
-    assert record.controller.holder_token == 0 and record.settings == hl.Settings()
+    assert record.holder.holder_token == 0 and record.settings == hl.Settings()
     assert not record.state.takeover_live and not board.staged
-    assert record.controller.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
+    assert record.holder.claim_generation == claimed.claim_generation % hl.GENERATION_MAX + 1
     assert not other.hello().events_enabled and device.take_events() == []
     board.deconfigure()
-    generation = other.read_record(hl.PAGE_STATE).records[0].controller.claim_generation
-    assert generation == record.controller.claim_generation
+    generation = other.read_record(hl.PAGE_STATE).records[0].holder.claim_generation
+    assert generation == record.holder.claim_generation
     board.suspend()
     board.deconfigure()
     assert not board.suspended and other.hello().board_id
@@ -462,7 +462,7 @@ def test_unplug_and_replug(board_type):
     again = fake_device(board)
     assert again.handle is board and not again.hello().events_enabled
     read = again.read_record(hl.PAGE_STATE)
-    assert read.records[0].controller.holder_token == 0 and read.token == token
+    assert read.records[0].holder.holder_token == 0 and read.token == token
     assert again.read_record(hl.PAGE_SUMMARY).records[0].changes.counters == (0,) * 8
 
 
@@ -523,7 +523,7 @@ def test_a_model_board_serves_a_second_handle_while_the_first_is_idle():
     second.subscribe([hl.EVENT_STATE_CHANGED])
     second.take_events()
     board.take_over()
-    assert [hl.decode_state_changed(event).record.controller.holder_token for event in second.take_events()] == [0xB2]
+    assert [hl.decode_state_changed(event).record.holder.holder_token for event in second.take_events()] == [0xB2]
     assert len(first.take_events()) == 1
 
 

@@ -68,7 +68,7 @@ def test_start_runs_the_host_flow_and_close_gives_up(board):
             hl.CMD_CLAIM, hl.CMD_CONFIGURE, hl.CMD_SUBSCRIBE, hl.CMD_GET_PAGE]
         assert board.holder_token == session.claim.token and board.keepalive_ms == 900
         assert session.board_id == testing.BOARD_ID.hex().upper() and len(session.cache.lights) == 2
-        assert session.board_state.controller.holder_token == session.claim.token
+        assert session.board_state.holder.holder_token == session.claim.token
         assert session.claim.state is ClaimState.HELD
     assert board.holder_token == 0 and board.requests[-1][3] == hl.CLAIM_GIVE_UP
 
@@ -197,7 +197,7 @@ def test_a_refused_frame_goes_to_the_claim(board, monkeypatch):
     session = session_on(board).start()
     monkeypatch.setattr(session.device, 'take_events', lambda: [])     # the change not yet seen
     board.take_over()
-    holder = hl.Controller(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
+    holder = hl.Holder(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
     assert session.show(frame_of(0)) == FrameResult(acknowledged=False, resent=False, refused=holder)
     assert session.claim.state is ClaimState.WAITING
     assert session.poll().claim.kind is ClaimChangeKind.LOST
@@ -357,7 +357,7 @@ def test_a_refresh_that_fails_is_tried_again(board, monkeypatch):
     board.reconfigure(lights=[light_record(0, pin=2, action=9, duplicated=1, instance=1, instances=2, x=1, y=0),
                               board.lights[1]])
     refresh = session.cache.refresh
-    holder = hl.Controller(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
+    holder = hl.Holder(holder_token=0xB2, application_name='Other', exclusive=False, claim_generation=3)
     failures = [hl.HostLightingTimeoutError('late'), hl.HostLightingError('kept changing'),
                 hl.HostLightingRejectedError(hl.CMD_GET_PAGE, hl.STATUS_CLAIMED, 0, holder)]
 
@@ -869,7 +869,7 @@ def test_a_take_over_before_the_start_configure_is_waited_for(board, monkeypatch
     session = session_on(board, None, settings=Settings(takeover=hl.TAKEOVER_OVERLAY)).start()
     assert done and board.holder_token == 0xB2 and board.overlay == 0
     session.poll()
-    assert session.board_state.controller.holder_token == 0xB2
+    assert session.board_state.holder.holder_token == 0xB2
 
 
 def test_close_sends_no_release_once_another_application_holds_the_claim(board, monkeypatch):
@@ -970,7 +970,7 @@ def test_a_host_that_does_not_claim_reads_page_1_even_with_events(board):
     board.take_over()
     board.sleep(1.1)
     session.poll()
-    assert session.board_state.controller.holder_token == 0xB2 and session.show(frame_of(0)) is None
+    assert session.board_state.holder.holder_token == 0xB2 and session.show(frame_of(0)) is None
 
 
 def test_a_reconnect_with_a_failed_start_puts_back_the_settings_it_sent(board, monkeypatch):

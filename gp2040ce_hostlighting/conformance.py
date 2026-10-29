@@ -36,9 +36,9 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             CMD_GET_PAGE, CMD_HELLO, CMD_REBOOT, CMD_RELEASE, CMD_SET_ANIMATION,
                                             CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE,
                                             CMD_SET_KEYBOARD_MAPPING, CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE,
-                                            CMD_UNSTAGE, COMMAND_RANGES, CONTROLLER_SIZE, EVENT_STATE_CHANGED,
-                                            FLAG_COMMIT_AFTER, FLAG_GENERATION, FLAG_GENERATION_SHIFT, FLAG_HOLDER,
-                                            FLAG_KEEPALIVE, FLAG_NO_REPLY, GENERATION_MAX, HEADER_RECORDS, KEY_EXPANDER,
+                                            CMD_UNSTAGE, COMMAND_RANGES, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER,
+                                            FLAG_GENERATION, FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE,
+                                            FLAG_NO_REPLY, GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, KEY_EXPANDER,
                                             KEY_TRIGGER, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS, NAMES_GPIO_ACTION,
                                             NAMES_LIGHT_TYPE, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS,
                                             PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
@@ -48,10 +48,10 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
                                             SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY, HostLightingClaimedError,
                                             HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
-                                            HostLightingIncompatibleError, HostLightingRejectedError, decode_controller,
+                                            HostLightingIncompatibleError, HostLightingRejectedError, decode_holder,
                                             decode_key, decode_page_header, decode_records, decode_state_changed,
                                             is_event, key_name, stage_capacity)
-from gp2040ce_hostlighting.records import (ControlInstances, Controller, ControlLights, ControlRecord, Hello,
+from gp2040ce_hostlighting.records import (ControlInstances, ControlLights, ControlRecord, Hello, Holder,
                                            InputModeRecord, Instances, KeyboardMappingRecord, LightRecord, Position,
                                            Settings, StateRecord, Summary)
 
@@ -262,9 +262,9 @@ def _next(generation: int) -> int:
     return generation % GENERATION_MAX + 1
 
 
-def _refused(reply: bytes) -> Optional[Controller]:
+def _refused(reply: bytes) -> Optional[Holder]:
     """Return the holder a status 4 reply shows, or None for any other reply."""
-    return decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])) if reply[2] == STATUS_CLAIMED else None
+    return decode_holder(bytes(reply[3:3 + HOLDER_SIZE])) if reply[2] == STATUS_CLAIMED else None
 
 
 def _unlisted(listed: frozenset[int], ranges: tuple[tuple[int, int], ...]) -> list[int]:
@@ -585,7 +585,7 @@ def _record_bytes(device: HostLightingDevice, page: int, mask: int, offset: int)
 
 
 # each flags byte the specification gives with its other bits zero: (what, page, mask, offset, defined bits)
-_FLAGS = (('Controller claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
+_FLAGS = (('Holder claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
           ('page 2 flags', PAGE_INPUT_MODES, 0b01, 1, 0b11),
           ('page 9 flags', PAGE_PROFILES, 0b1, 1, 0b1),
           ('page 10 flags', PAGE_CONTROLS, 0b0001, 3, 0b11),
@@ -662,7 +662,7 @@ def _check_takeover(device: HostLightingDevice, checks: _Checker, tables: _Table
         _renew(claim)
     time.sleep(_KEEPALIVE_MS / 3000)
     state = _state(device)
-    yield checks.check(not state.state.takeover_live and state.controller.holder_token == claim.token,
+    yield checks.check(not state.state.takeover_live and state.holder.holder_token == claim.token,
                        "the holder's CLAIM alone does not keep it: it expires, the claim stays")
     _renew(claim)
     number = state.state.takeover_number
@@ -700,7 +700,7 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     _renew(claim)
     generation = device.generation
     renamed = _claim(device, CLAIM_TAKE, ours, b'hlp-renamed')
-    named = _state(device).controller.application_name
+    named = _state(device).holder.application_name
     yield checks.check(_holder(renamed) == (ours, 'hlp-renamed') and named == 'hlp-renamed',
                        'a renewal keeps the claim and records the new name')
     yield checks.check(1 <= generation <= GENERATION_MAX and renamed[29] == generation,
@@ -726,26 +726,26 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     device.request_ok(CMD_COMMIT)
     device.request_ok(CMD_RELEASE)
     state = _state(device)
-    yield checks.check(not state.state.takeover_live and state.controller.holder_token == ours,
+    yield checks.check(not state.state.takeover_live and state.holder.holder_token == ours,
                        'RELEASE ends the takeover, not the claim')
     device.request_ok(CMD_COMMIT)
     took = _claim(device, CLAIM_TAKE_OVER, other, b'other')
     _act_as(device, took, other)
     state = _state(device)
     yield checks.check(_holder(took)[0] == other and not state.state.takeover_live, 'take over ends the takeover')
-    yield checks.check(took[29] == _next(generation) and state.controller.claim_generation == took[29],
+    yield checks.check(took[29] == _next(generation) and state.holder.claim_generation == took[29],
                        'a change of holder steps the claim generation', f"{took[29]} after {generation}")
     yield checks.check(state.settings == Settings(), 'and puts the CONFIGURE settings back to their defaults',
                        f"{state.settings}")
     # the previous holder has not seen the change, so its requests still carry its generation
-    holder = Controller(holder_token=other, application_name='other', exclusive=False, claim_generation=took[29])
+    holder = Holder(holder_token=other, application_name='other', exclusive=False, claim_generation=took[29])
     previous = generation << FLAG_GENERATION_SHIFT
     stage = bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes(3)
     wrong = [f"0x{command:02X}: status {reply[2]}" for command, payload in (
         (CMD_STAGE, stage), (CMD_COMMIT, b''), (CMD_HELLO, b''), (CMD_CONFIGURE, struct.pack('<BHB', 1, 0, 0)),
         (CMD_GET_PAGE, struct.pack('<BHIH', PAGE_STATE, 0, 0, 0)), (CMD_SUBSCRIBE, bytes(2)))
         for reply in [device.request(command, payload, previous)]
-        if _refused(reply) != holder or any(reply[3 + CONTROLLER_SIZE:])]
+        if _refused(reply) != holder or any(reply[3 + HOLDER_SIZE:])]
     yield checks.check(not wrong, "a request under the previous holder's generation is refused, reads included: status "
                        '4 with the holder now, the rest zero', ', '.join(wrong))
     device.send(CMD_COMMIT, flags=previous | FLAG_NO_REPLY)
@@ -758,15 +758,15 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
     _events(device, 0.05)
     time.sleep(_KEEPALIVE_MS * 1.5 / 1000)
     state = _state(device)
-    yield checks.check(state.controller.holder_token == 0, 'the lease lapses after the timeout')
-    yield checks.check(state.controller.claim_generation == _next(took[29]) and state.settings.keepalive_ms == 2000,
+    yield checks.check(state.holder.holder_token == 0, 'the lease lapses after the timeout')
+    yield checks.check(state.holder.claim_generation == _next(took[29]) and state.settings.keepalive_ms == 2000,
                        'a lapse is a change of holder too: the generation steps, the settings return',
-                       f"generation {state.controller.claim_generation}, keepalive {state.settings.keepalive_ms} ms")
-    yield checks.check(any(event.controller.holder_token == 0 for event in _events(device, 0.05)),
+                       f"generation {state.holder.claim_generation}, keepalive {state.settings.keepalive_ms} ms")
+    yield checks.check(any(event.holder.holder_token == 0 for event in _events(device, 0.05)),
                        'STATE_CHANGED on the lapse')
     lapsed = _refused(device.request(CMD_COMMIT))    # still under the lapsed claim's generation
     yield checks.check(lapsed is not None and lapsed.holder_token == 0 and
-                       lapsed.claim_generation == state.controller.claim_generation,
+                       lapsed.claim_generation == state.holder.claim_generation,
                        'with no claim held an outdated generation is refused too: status 4, holder 0', f"{lapsed}")
     taken = _claim(device, CLAIM_TAKE, ours, name.encode())
     _act_as(device, taken, ours)
@@ -785,7 +785,7 @@ def _check_claim(device: HostLightingDevice, checks: _Checker, claim: LightsClai
                        'generation, is refused and shows its own token and the new generation', f"{retaken}")
     _act_as(device, _claim(device, CLAIM_GIVE_UP, ours), ours)
     # the first claim and the give up are changes of holder too. Eight of them pass 7
-    steps, defaults = [_state(device).controller.claim_generation], []
+    steps, defaults = [_state(device).holder.claim_generation], []
     for _ in range(4):
         for action in (CLAIM_TAKE, CLAIM_GIVE_UP):
             _configure(device, 1, 777, 0)
@@ -820,9 +820,9 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tabl
     claim.exclusive = True
     _renew(claim)
     state = _state(device)
-    yield checks.check(state.controller.exclusive and state.controller.holder_token == claim.token,
+    yield checks.check(state.holder.exclusive and state.holder.holder_token == claim.token,
                        'page 1 shows the exclusive claim')
-    yield checks.check(any(event.controller.exclusive for event in _events(device, 0.05)),
+    yield checks.check(any(event.holder.exclusive for event in _events(device, 0.05)),
                        "STATE_CHANGED when the holder's renewal changes the claim flags")
     generation = device.generation
     holder = struct.pack('<I', claim.token) + claim.name.encode()[:16].ljust(16, b'\x00') + bytes([CLAIM_EXCLUSIVE,
@@ -841,7 +841,7 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tabl
     wrong = []
     for command, payload in changes:
         reply = _as_other(device, command, payload)
-        if reply[2] != STATUS_CLAIMED or bytes(reply[3:3 + CONTROLLER_SIZE]) != holder:
+        if reply[2] != STATUS_CLAIMED or bytes(reply[3:3 + HOLDER_SIZE]) != holder:
             wrong.append(f"0x{command:02X}: status {reply[2]}")
     yield checks.check(not wrong, 'without HOLDER, changes are refused before their arguments are checked: '
                        'status 4 with the holder', ', '.join(wrong))
@@ -880,7 +880,7 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tabl
     take_over = bytes([CLAIM_TAKE_OVER]) + struct.pack('<I', other) + b'other'.ljust(16, b'\x00')
     took = _as_other(device, CMD_CLAIM, take_over, FLAG_COMMIT_AFTER)
     state = _state(device)
-    yield checks.check(took[2] == STATUS_OK and _holder(took)[0] == other and not state.controller.exclusive,
+    yield checks.check(took[2] == STATUS_OK and _holder(took)[0] == other and not state.holder.exclusive,
                        "a take over records the taker's claim flags")
     yield checks.check(state.state.takeover_live, 'without HOLDER, a take over has its COMMIT_AFTER act for the taker')
     _act_as(device, took, other)

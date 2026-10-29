@@ -122,8 +122,8 @@ them. Windows queues each input report for every open handle (measured on
 Windows 11), and Linux's hidraw driver does so by design. `hlp-conformance`
 checks it on the system it runs on.
 
-Applications coordinate through `CLAIM`, which records the controlling
-application's token and name on page 1. An exclusive claim also has the board
+Applications coordinate through `CLAIM`, which records the holder's token
+and name on page 1. An exclusive claim also has the board
 refuse changes from applications that do not claim. The board cannot verify who
 sends a request, so claims are cooperative between the applications that claim.
 
@@ -259,7 +259,7 @@ Pages and `SET_KEYBOARD_MAPPING`), `4` claimed (see `CLAIM`).
 - A status 2 reply carries at `[3]` the offset of the invalid request byte, the
   lowest when several are invalid.
 - A status 4 reply carries at `[3..24]` the holder, laid out as page 1's
-  Controller group.
+  Holder group.
 
 ### Field widths
 
@@ -267,7 +267,7 @@ Each quantity has one width wherever it appears:
 
 | Width | Quantities |
 |---|---|
-| 3-bit | Claim generation (request flags bits 4-6; the low bits of its Controller byte) |
+| 3-bit | Claim generation (request flags bits 4-6; the low bits of its Holder byte) |
 | 4-bit | Addressing mode, pixel format (`[3]` of `STAGE`, `UNSTAGE` and `FILL`) |
 | 8-bit | Pin, key, kind, grid coordinate, enumerated value, string byte; sequence, takeover number, versions, page, profile, brightness, animation speed, player, palette slot, button layout, keyboard code, change counter, reply queue limit; counts, offsets and strides within one report |
 | 16-bit | LED index and count, light ordinal and count, animation ordinal, record index and count, control instance and instances, grid size, render rate, time in ms |
@@ -465,7 +465,7 @@ to 16 bytes, NUL-padded. A token of 0 or an unknown action is an invalid
 argument.
 
 The reply echoes the action and token sent. It then shows the holder now,
-laid out as page 1's Controller group. A holder token of 0 means unclaimed.
+laid out as page 1's Holder group. A holder token of 0 means unclaimed.
 A host must take as its own only a reply that echoes what it sent, and must
 compare the holder's token with its own. An invalid-argument reply has no
 echo.
@@ -776,7 +776,7 @@ ID is in the `HELLO` reply.
 | Bit | Group | Bytes |
 |---|---|---|
 | 0 | State | 10 |
-| 1 | Controller | 22 |
+| 1 | Holder | 22 |
 | 2 | Settings | 4 |
 
 State:
@@ -808,7 +808,7 @@ The player number is the one the input mode's driver records.
 | SInput | The player byte the host sent |
 | Generic HID, Keyboard | Always 0. The driver records none |
 
-Controller, the application holding `CLAIM`:
+Holder, the application holding `CLAIM`:
 
 | Off | Field |
 |---|---|
@@ -1350,7 +1350,7 @@ Polling page 1 remains supported.
 | Light | Page 12 ordinal | `STAGE` light and light run, page 10 first light ordinal | - |
 | LED | Chain index | Page 12 first LED and count, page 8 extent, `STAGE` LED run | A light covers its first LED and the `count - 1` after it |
 | Animation | Page 13 ordinal | `SET_ANIMATION`, `SET_ANIMATION_SPEED`, page 1 animation index | - |
-| Controlling application | Host token | `CLAIM`, page 1 Controller | - |
+| Holder | Host token | `CLAIM`, page 1 Holder | - |
 
 An action and a kind are attributes and not keys. Page 11 carries each action
 at most once, so a page 10 action finds its keyboard code there, if it has one.

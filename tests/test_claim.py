@@ -16,7 +16,7 @@ import pytest
 from gp2040ce_hostlighting import claim as claim_module
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting.claim import ClaimChange, ClaimChangeKind, ClaimState, LightsClaim
-from gp2040ce_hostlighting.records import Controller, Settings
+from gp2040ce_hostlighting.records import Holder, Settings
 from gp2040ce_hostlighting.testing import fake_device, other_event, page_reply, state_event, state_record
 
 TOKEN = 0x51
@@ -50,9 +50,9 @@ def claims(board) -> list:
     return [(request[3], request[2] & 0x0F, request[24]) for request in board.sent(hl.CMD_CLAIM)]
 
 
-def holder(token, generation, name='', exclusive=False) -> Controller:
+def holder(token, generation, name='', exclusive=False) -> Holder:
     """Build the holder a reply shows."""
-    return Controller(holder_token=token, application_name=name, exclusive=exclusive, claim_generation=generation)
+    return Holder(holder_token=token, application_name=name, exclusive=exclusive, claim_generation=generation)
 
 
 def test_take_claims_then_sends_the_settings(hlp_fake_device, hlp_fake_board, clock):
@@ -212,7 +212,7 @@ def test_observe_takes_the_claim_when_the_board_is_unclaimed(hlp_fake_device, hl
 
 
 def test_observe_passes_over_what_shows_no_holder(hlp_fake_device, hlp_fake_board, clock):
-    """Test that a cut-short event, a page 1 record without the Controller group and other events change nothing."""
+    """Test that a cut-short event, a page 1 record without the Holder group and other events change nothing."""
     claim = lights_claim(hlp_fake_device, clock).take()
     cut_short = bytearray(state_event(holder_token=0xB2))
     cut_short[9] = 1                                        # a stride narrower than the groups

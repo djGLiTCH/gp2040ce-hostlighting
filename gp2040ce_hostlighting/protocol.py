@@ -55,8 +55,8 @@ from dataclasses import fields
 from typing import Any, Callable, Final, Iterable, Literal, Optional, Protocol, Sequence, overload
 
 from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, ControlInstances,
-                                           Controller, ControlLights, ControlRecord, Effects, EnumValue, GridCell,
-                                           Hello, Identity, InputModeFlags, InputModeRecord, Instances, KeyboardButton,
+                                           ControlLights, ControlRecord, Effects, EnumValue, GridCell, Hello, Holder,
+                                           Identity, InputModeFlags, InputModeRecord, Instances, KeyboardButton,
                                            KeyboardMappingRecord, LedRange, LightKind, LightRecord, NameRecord, Owner,
                                            PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
                                            Requirements, Settings, Speeds, StageOutcome, State, StateChanged,
@@ -89,11 +89,11 @@ __all__ = [
     'encode_address', 'stage_entry_payloads', 'stage_run_payloads', 'unstage_entry_payloads', 'unstage_run_payloads',
     'subtractive_white',
     # the claim, CONFIGURE and the board features
-    'CLAIM_TAKE', 'CLAIM_TAKE_OVER', 'CLAIM_GIVE_UP', 'CLAIM_NAME_SIZE', 'CLAIM_EXCLUSIVE', 'CONTROLLER_SIZE',
+    'CLAIM_TAKE', 'CLAIM_TAKE_OVER', 'CLAIM_GIVE_UP', 'CLAIM_NAME_SIZE', 'CLAIM_EXCLUSIVE', 'HOLDER_SIZE',
     'TAKEOVER_WHOLE_FRAME', 'TAKEOVER_OVERLAY', 'KIND_BUTTON', 'KIND_CASE', 'KIND_TURBO', 'KIND_PLAYERS',
     'MAGIC_INPUT_MODE', 'MAGIC_REBOOT', 'REBOOT_GAMEPAD', 'REBOOT_WEBCONFIG', 'REBOOT_BOOTSEL',
     # decoders
-    'decode_hello', 'decode_page_header', 'decode_controller', 'decode_records', 'decode_state_changed',
+    'decode_hello', 'decode_page_header', 'decode_holder', 'decode_records', 'decode_state_changed',
     'decode_identity', 'decode_key', 'key_name', 'latest_state',
     # errors
     'HostLightingError', 'HostLightingRejectedError', 'HostLightingTimeoutError', 'HostLightingStaleTokenError',
@@ -104,7 +104,7 @@ __all__ = [
     'HidHandle', 'HostLightingDevice', 'EVENTS_KEPT', 'find_devices', 'find_other_majors', 'open_device', 'find_board',
     'list_boards', 'missing_capabilities', 'require_capabilities',
     # the records, from gp2040ce_hostlighting.records
-    'BoardListing', 'Controller', 'Hello', 'Identity', 'PageHeader', 'PageRead', 'Requirements', 'Settings',
+    'BoardListing', 'Hello', 'Holder', 'Identity', 'PageHeader', 'PageRead', 'Requirements', 'Settings',
     'StageOutcome', 'StateChanged',
 ]
 
@@ -264,7 +264,7 @@ CLAIM_GIVE_UP = 2
 CLAIM_NAME_SIZE = 16
 # an exclusive claim refuses other applications' changes: requests without FLAG_HOLDER and the current generation
 CLAIM_EXCLUSIVE = 0x01
-CONTROLLER_SIZE = 22            # page 1's Controller group, which the CLAIM and status 4 replies carry
+HOLDER_SIZE = 22                # page 1's Holder group, which the CLAIM and status 4 replies carry
 
 # CONFIGURE
 TAKEOVER_WHOLE_FRAME = 0
@@ -597,8 +597,8 @@ def _state(data: bytes) -> State:
                  takeover_number=data[7], saved_brightness_step=data[8], dpad_mode=data[9])
 
 
-def decode_controller(data: bytes) -> Controller:
-    """Decode page 1's Controller group, which the CLAIM reply ([8..29]) and a status 4 reply ([3..24]) carry too.
+def decode_holder(data: bytes) -> Holder:
+    """Decode page 1's Holder group, which the CLAIM reply ([8..29]) and a status 4 reply ([3..24]) carry too.
 
     The claim generation is the low three bits of its byte, as the specification's field widths give it.
 
@@ -606,10 +606,10 @@ def decode_controller(data: bytes) -> Controller:
     :return: the claim's holder
     :raises HostLightingError: if the group is too short
     """
-    _require_length(data, CONTROLLER_SIZE, 'the Controller group')
-    return Controller(holder_token=_u32(data, 0), application_name=_string(data[4:20]),
-                      exclusive=bool(data[20] & CLAIM_EXCLUSIVE),
-                      claim_generation=data[21] & (FLAG_GENERATION >> FLAG_GENERATION_SHIFT))
+    _require_length(data, HOLDER_SIZE, 'the Holder group')
+    return Holder(holder_token=_u32(data, 0), application_name=_string(data[4:20]),
+                  exclusive=bool(data[20] & CLAIM_EXCLUSIVE),
+                  claim_generation=data[21] & (FLAG_GENERATION >> FLAG_GENERATION_SHIFT))
 
 
 def _settings(data: bytes) -> Settings:
@@ -728,7 +728,7 @@ def _speeds(data: bytes) -> Speeds:
 
 # each table page's record type, and the attribute and decoder of each field group in mask bit order
 _PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], ...]]] = {
-    PAGE_STATE: (StateRecord, (('state', _state), ('controller', decode_controller), ('settings', _settings))),
+    PAGE_STATE: (StateRecord, (('state', _state), ('holder', decode_holder), ('settings', _settings))),
     PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name))),
     PAGE_NAMES: (NameRecord, (('entry', _enum_value), ('name', _enum_name))),
     PAGE_SUMMARY: (SummaryRecord, (('summary', _summary), ('changes', _changes))),
@@ -863,10 +863,10 @@ class HostLightingError(RuntimeError):
 class HostLightingRejectedError(HostLightingError):
     """The board answered a command with a status other than 0."""
 
-    def __init__(self, command: int, status: int, offset: int, holder: Optional[Controller] = None):
+    def __init__(self, command: int, status: int, offset: int, holder: Optional[Holder] = None):
         """Record the rejected command, its status, and the byte at fault or the claim's holder.
 
-        :param holder: for CLAIMED, the holder as decode_controller gives it, with holder_token 0 when unclaimed
+        :param holder: for CLAIMED, the holder as decode_holder gives it, with holder_token 0 when unclaimed
         """
         self.command = command
         self.status = status
@@ -967,7 +967,7 @@ class HostLightingClaimedError(HostLightingError):
     LightsClaim.take() raises it, and so do the conformance checks and measurements once the claim is lost.
     """
 
-    def __init__(self, holder: Controller):
+    def __init__(self, holder: Holder):
         """Record the holder, as the board showed it."""
         self.holder = holder
         super().__init__(f"'{holder.application_name}' holds the lights (claim 0x{holder.holder_token:08X}, "
@@ -1178,10 +1178,10 @@ class HostLightingDevice:
         """Say whether a report with this request's numbers is this application's reply."""
         if accept is not None and not accept(report):
             return False
-        if report[2] != STATUS_CLAIMED or len(report) < 3 + CONTROLLER_SIZE or self._every_refusal:
+        if report[2] != STATUS_CLAIMED or len(report) < 3 + HOLDER_SIZE or self._every_refusal:
             return True
         # status 4 is this request's only when the holder shown would refuse it, as the firmware decides
-        holder = decode_controller(bytes(report[3:3 + CONTROLLER_SIZE]))
+        holder = decode_holder(bytes(report[3:3 + HOLDER_SIZE]))
         flags = self._awaited.get((command, sequence), 0)
         sent_generation = (flags & FLAG_GENERATION) >> FLAG_GENERATION_SHIFT
         if command == CMD_CLAIM:
@@ -1197,8 +1197,8 @@ class HostLightingDevice:
     def _answered(self, report: bytes, command: int, sequence: int) -> bytes:
         """Take a reply as this request's, acting on the holder a status 4 reply shows."""
         self._awaited.pop((command, sequence), None)
-        if report[2] == STATUS_CLAIMED and len(report) >= 3 + CONTROLLER_SIZE:
-            holder = decode_controller(bytes(report[3:3 + CONTROLLER_SIZE]))
+        if report[2] == STATUS_CLAIMED and len(report) >= 3 + HOLDER_SIZE:
+            holder = decode_holder(bytes(report[3:3 + HOLDER_SIZE]))
             if holder.held_by(self.claim_token):
                 self.generation, self.holding_exclusive = holder.claim_generation, holder.exclusive
             else:
@@ -1291,7 +1291,7 @@ class HostLightingDevice:
         """
         if reply[2] != STATUS_CLAIMED:
             return HostLightingRejectedError(command, reply[2], reply[3] if len(reply) > 3 else 0)
-        return HostLightingRejectedError(command, reply[2], 0, decode_controller(bytes(reply[3:3 + CONTROLLER_SIZE])))
+        return HostLightingRejectedError(command, reply[2], 0, decode_holder(bytes(reply[3:3 + HOLDER_SIZE])))
 
     def keepalive(self) -> None:
         """Send HELLO with KEEPALIVE and NO_REPLY: the keepalive of a host that does not claim."""
@@ -1507,7 +1507,7 @@ class HostLightingDevice:
         return Identity(**strings)
 
     def claim(self, action: int, token: int, name: bytes = b'', flags: int = 0,
-              exclusive: bool = False) -> Controller:
+              exclusive: bool = False) -> Holder:
         """Claim the board, take it over or give it up.
 
         The reply echoes the action and token, which tells it apart from another application's CLAIM reply.
@@ -1525,7 +1525,7 @@ class HostLightingDevice:
         :param exclusive: claim exclusively: until the claim ends, the board refuses other applications'
             requests without FLAG_HOLDER and the generation but CLAIM, and HELLO, GET_PAGE and SUBSCRIBE
             without COMMIT_AFTER or KEEPALIVE
-        :return: the holder now, as decode_controller gives it, with holder_token 0 when unclaimed
+        :return: the holder now, as decode_holder gives it, with holder_token 0 when unclaimed
         :raises ValueError: for a name over 16 bytes, an action over 255 or a token outside 1 to 0xFFFFFFFF
         """
         _check_claim_name(name)
@@ -1540,7 +1540,7 @@ class HostLightingDevice:
             return reply[2] != STATUS_OK or reply[3:8] == payload[:5]
 
         reply = self.request_ok(CMD_CLAIM, payload, flags, accept=echoes)
-        holder = decode_controller(bytes(reply[8:8 + CONTROLLER_SIZE]))
+        holder = decode_holder(bytes(reply[8:8 + HOLDER_SIZE]))
         held = holder.held_by(token)
         self.generation = holder.claim_generation if held else 0
         self.holding_exclusive = held and exclusive

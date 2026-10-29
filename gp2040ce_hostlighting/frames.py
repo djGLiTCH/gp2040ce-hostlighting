@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
 from gp2040ce_hostlighting.protocol import (ADDRESS_SIZES, ADDRESSING_LED_RUN, CMD_CLEAR, CMD_STAGE, FLAG_COMMIT_AFTER,
-                                            FLAG_NO_REPLY, PIXEL_RGB, PIXEL_RGBW, PIXEL_SIZES, STATUS_OK, Controller,
+                                            FLAG_NO_REPLY, PIXEL_RGB, PIXEL_RGBW, PIXEL_SIZES, STATUS_OK, Holder,
                                             HostLightingDevice, HostLightingTimeoutError, _check_colour, _check_run,
                                             encode_address, stage_entry_payloads, stage_run_payloads)
 
@@ -39,7 +39,7 @@ class FrameResult:
 
     acknowledged: bool
     resent: bool
-    refused: Optional[Controller] = None
+    refused: Optional[Holder] = None
 
     def __bool__(self) -> bool:
         """Say whether the frame was acknowledged."""

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
 __all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
-           'ControlRecord', 'Controller', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Identity', 'InputModeFlags',
+           'ControlRecord', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Holder', 'Identity', 'InputModeFlags',
            'InputModeRecord', 'Instances', 'KeyboardButton', 'KeyboardMappingRecord', 'LedRange', 'LightKind',
            'LightRecord', 'NameRecord', 'Owner', 'PageHeader', 'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
@@ -176,8 +176,8 @@ class State:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class Controller:
-    """Page 1's Controller group, which the CLAIM reply and a status 4 reply carry too: the claim's holder."""
+class Holder:
+    """Page 1's Holder group, which the CLAIM reply and a status 4 reply carry too: the claim's holder."""
 
     holder_token: int                       # 0 while unclaimed, as the specification gives it
     application_name: str
@@ -202,16 +202,16 @@ class StateRecord(_Record):
     """A page 1 record."""
 
     PAGE = 1
-    GROUPS = ('state', 'controller', 'settings')
-    __slots__ = ('_state', '_controller', '_settings')
+    GROUPS = ('state', 'holder', 'settings')
+    __slots__ = ('_state', '_holder', '_settings')
     state = _Group[State]()
-    controller = _Group[Controller]()
+    holder = _Group[Holder]()
     settings = _Group[Settings]()
 
-    def __init__(self, *, ordinal: int, state: Optional[State] = None, controller: Optional[Controller] = None,
+    def __init__(self, *, ordinal: int, state: Optional[State] = None, holder: Optional[Holder] = None,
                  settings: Optional[Settings] = None) -> None:
         """Hold the groups a read returned, None for the others."""
-        super().__init__(ordinal, {'state': state, 'controller': controller, 'settings': settings})
+        super().__init__(ordinal, {'state': state, 'holder': holder, 'settings': settings})
 
 
 # page 2, Input modes

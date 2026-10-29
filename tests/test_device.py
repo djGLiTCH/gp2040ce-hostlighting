@@ -134,11 +134,11 @@ def test_keepalive_and_the_device_in_a_with_block(hlp_fake_board):
 def _claimed(board, holder_token, generation, exclusive=0):
     """Have the board refuse COMMIT with status 4, showing this holder."""
     answer = board.answer
-    controller = struct.pack('<I', holder_token) + b'X'.ljust(16, b'\x00') + bytes([exclusive, generation])
+    holder = struct.pack('<I', holder_token) + b'X'.ljust(16, b'\x00') + bytes([exclusive, generation])
 
     def claimed(command, sequence, request):
         if command == hl.CMD_COMMIT:
-            return bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + controller + bytes(39)
+            return bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)
         return answer(command, sequence, request)
     board.answer = claimed
 
@@ -170,15 +170,15 @@ def test_another_applications_refusal_with_its_own_token_is_passed_over(hlp_fake
     """Test the table's fourth row: a status 4 with its own token and generation answers another application."""
     hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'app')
     generation = hlp_fake_device.generation
-    controller = struct.pack('<I', 0x51) + b'app'.ljust(16, b'\x00') + bytes([0, generation])
+    holder = struct.pack('<I', 0x51) + b'app'.ljust(16, b'\x00') + bytes([0, generation])
     sequence = hlp_fake_device.sequence + 1
     hlp_fake_board.before[hl.CMD_HELLO] = [
-        bytes([hl.CMD_HELLO | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + controller + bytes(39)]
+        bytes([hl.CMD_HELLO | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + holder + bytes(39)]
     assert hlp_fake_device.hello().board_id                  # the real reply, after the other one
     assert hlp_fake_device.generation == generation
     # the same reply read early, while waiting for another request's, is passed over too
     first = hlp_fake_device.send(hl.CMD_HELLO)
-    hlp_fake_board.outbox.insert(0, bytes([hl.CMD_HELLO | hl.REPLY_FLAG, first, hl.STATUS_CLAIMED]) + controller
+    hlp_fake_board.outbox.insert(0, bytes([hl.CMD_HELLO | hl.REPLY_FLAG, first, hl.STATUS_CLAIMED]) + holder
                                  + bytes(39))
     hlp_fake_device.claim(hl.CLAIM_TAKE, 0x51, b'app')
     assert hlp_fake_device.wait_reply(hl.CMD_HELLO, first)[2] == hl.STATUS_OK

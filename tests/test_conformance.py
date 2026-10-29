@@ -327,7 +327,7 @@ def test_conformance_reports_page_flags_and_ranges(hlp_run_on_model_board, hlp_m
     assert 'FAIL  page 9 flags: defined bits alone' in out and 'FAIL  page 1 profile listed on page 9' in out
     assert 'FAIL  page 13 speeds within the Summary speed steps' in out
     assert 'PASS  page 10 flags: defined bits alone' in out
-    assert 'PASS  Controller claim flags: defined bits alone' in out
+    assert 'PASS  Holder claim flags: defined bits alone' in out
 
 
 def test_conformance_reports_flags_the_specification_does_not_define(hlp_run_on_model_board, hlp_model_board,
@@ -756,7 +756,7 @@ def test_conformance_catches_a_first_claim_that_keeps_the_settings(hlp_run_on_mo
 def test_round_trips_count_only_the_answered(hlp_model_board):
     """Test that a HELLO refused, as after a change of holder, is not timed, and a lost board still raises."""
     class Device:
-        replies = [None, hl.HostLightingRejectedError(hl.CMD_HELLO, hl.STATUS_CLAIMED, 0, hl.Controller(
+        replies = [None, hl.HostLightingRejectedError(hl.CMD_HELLO, hl.STATUS_CLAIMED, 0, hl.Holder(
             holder_token=0xB2, application_name='MESH', exclusive=False, claim_generation=3)), None]
 
         def request_ok(self, command):

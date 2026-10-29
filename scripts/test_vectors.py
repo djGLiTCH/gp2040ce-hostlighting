@@ -33,9 +33,9 @@ VECTORS = os.path.join(ROOT, 'tests', 'vectors', 'vectors.json')
 A, B = 0x48A1A1A1, 0x48B2B2B2
 NAME_A, NAME_B = b'vec-a', b'vec-b'
 RECORDS = 12                    # a page reply's, and an event's, first record
-# page 1's groups: State, then Controller (its holder token and name, flags at +20, generation at +21), then
+# page 1's groups: State, then Holder (its holder token and name, flags at +20, generation at +21), then
 # Settings
-STATE_SIZE, CONTROLLER_SIZE, SETTINGS_SIZE = hl.PAGE_GROUPS[hl.PAGE_STATE]
+STATE_SIZE, HOLDER_SIZE, SETTINGS_SIZE = hl.PAGE_GROUPS[hl.PAGE_STATE]
 HOLDER = RECORDS + STATE_SIZE
 SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 13 (tests/vectors/README.md)
 BOARD_IDLE_TIMEOUT = 'idle_timeout'          # board_before: the animations' idle timeout fires
@@ -473,7 +473,7 @@ def _holder(r: bytes, at: int, gen0: int) -> tuple[Any, ...]:
 
 def _state(r: bytes, gen0: int, number0: int, idle: bool) -> tuple[Any, ...]:
     """Give page 1's record, in a reply or an event: its flags, takeover number, holder and settings."""
-    settings = HOLDER + CONTROLLER_SIZE
+    settings = HOLDER + HOLDER_SIZE
     flags = r[RECORDS] & (hl.STATE_LIVE | hl.STATE_UNSAVED | (hl.STATE_IDLE if idle else 0))
     return ((flags, (r[RECORDS + 7] - number0) % 256) + _holder(r, HOLDER, gen0) +
             (r[settings:settings + SETTINGS_SIZE].hex(),))

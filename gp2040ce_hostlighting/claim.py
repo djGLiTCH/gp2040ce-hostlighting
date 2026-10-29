@@ -28,7 +28,7 @@ from gp2040ce_hostlighting.protocol import (CLAIM_GIVE_UP, CLAIM_TAKE, CLAIM_TAK
                                             FLAG_KEEPALIVE, STATUS_CLAIMED, HostLightingClaimedError,
                                             HostLightingDevice, HostLightingError, HostLightingRejectedError,
                                             HostLightingTimeoutError, _check_claim_name, decode_state_changed, is_event)
-from gp2040ce_hostlighting.records import Controller, Settings, StateChanged, StateRecord
+from gp2040ce_hostlighting.records import Holder, Settings, StateChanged, StateRecord
 
 __all__ = ['ClaimChange', 'ClaimChangeKind', 'ClaimState', 'LightsClaim']
 
@@ -62,7 +62,7 @@ class ClaimChange:
     """
 
     kind: ClaimChangeKind
-    holder: Optional[Controller] = None
+    holder: Optional[Holder] = None
     restage: bool = False
 
 
@@ -111,7 +111,7 @@ class LightsClaim:
         self.exclusive = False          # each renewal claims exclusively when set
         self.wait_when_taken_over = wait_when_taken_over  # a claim taken over after it was held is waited for
         self.state = ClaimState.ENDED
-        self.holder: Optional[Controller] = None       # the holder the board last showed
+        self.holder: Optional[Holder] = None           # the holder the board last showed
         self.applied: Optional[Settings] = None        # the settings the board last applied for this claim
         self._generation = 0            # the claim generation this application last held the claim under
         self._configured = False        # the settings were applied since the claim was last taken
@@ -256,9 +256,9 @@ class LightsClaim:
         if self.state not in (ClaimState.HELD, ClaimState.WAITING):
             return self._result(_UNCHANGED)
         changed, unclaimed = False, False
-        for controller in _controllers(events):
-            changed = changed or not controller.held_by(self.token) or controller.claim_generation != self._generation
-            unclaimed = not controller.holder_token
+        for holder in _holders(events):
+            changed = changed or not holder.held_by(self.token) or holder.claim_generation != self._generation
+            unclaimed = not holder.holder_token
         if self.state is ClaimState.HELD and changed:
             return self._result(self._renew(reconfigure=True))
         if self.state is ClaimState.WAITING and unclaimed:
@@ -385,7 +385,7 @@ class LightsClaim:
             return self._refusal(error.holder)
         return None
 
-    def _refusal(self, holder: Controller) -> ClaimChange:
+    def _refusal(self, holder: Holder) -> ClaimChange:
         """Apply the holder a status 4 refusal showed while the claim was held, as the specification's table says."""
         if holder.held_by(self.token) and holder.claim_generation == self._generation:
             return ClaimChange(kind=ClaimChangeKind.UNCHANGED, holder=holder)
@@ -417,7 +417,7 @@ class LightsClaim:
         self._unsure = False
         return self._shown(holder, reconfigure)
 
-    def _shown(self, holder: Controller, reconfigure: bool = False) -> ClaimChange:
+    def _shown(self, holder: Holder, reconfigure: bool = False) -> ClaimChange:
         """Apply the holder the board showed, sending the settings when the claim was taken again."""
         self.holder = holder
         if holder.held_by(self.token):
@@ -448,19 +448,19 @@ class LightsClaim:
         return pending if pending is not None and change.kind is ClaimChangeKind.UNCHANGED else change
 
 
-def _controllers(events: Iterable[Union[bytes, StateChanged, StateRecord]]) -> Iterator[Controller]:
+def _holders(events: Iterable[Union[bytes, StateChanged, StateRecord]]) -> Iterator[Holder]:
     """Pick the holder out of each STATE_CHANGED event, decoded or not, or page 1 record, oldest first."""
     for item in events:
         if isinstance(item, StateChanged):
             item = item.record
         if isinstance(item, StateRecord):
-            if item.has('controller'):
-                yield item.controller
+            if item.has('holder'):
+                yield item.holder
         elif (isinstance(item, (bytes, bytearray)) and is_event(item) and len(item) > 1
               and item[1] == EVENT_STATE_CHANGED):
             try:
                 record = decode_state_changed(item).record
             except HostLightingError:
                 continue        # cut short
-            if record.has('controller'):
-                yield record.controller
+            if record.has('holder'):
+                yield record.holder

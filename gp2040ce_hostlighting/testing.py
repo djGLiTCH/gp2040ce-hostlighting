@@ -59,7 +59,7 @@ def state_record(takeover_live: int = 0, input_mode: int = 0, profile: int = 1, 
                  animations_idle: int = 0, dpad_mode: int = 0) -> list[bytes]:
     """One page 1 record as its three groups, with the saved step the step shown unless given.
 
-    Each keyword is the field of the same name in records.State, Controller or Settings.
+    Each keyword is the field of the same name in records.State, Holder or Settings.
     """
     saved = brightness_step_shown if saved_brightness_step is None else saved_brightness_step
     flags = takeover_live | brightness_unsaved << 1 | animations_idle << 2
@@ -356,7 +356,7 @@ class FakeBoard:
         """Build a reply with a status reject named: status 2 names [3], status 4 shows the holder."""
         detail = b''
         if status == hl.STATUS_CLAIMED:
-            detail = self._controller()
+            detail = self._holder()
         elif status == hl.STATUS_INVALID:
             detail = bytes([3])
         return (bytes([command | hl.REPLY_FLAG, sequence, status]) + detail).ljust(hl.REPORT_SIZE, b'\x00')
@@ -472,10 +472,10 @@ class FakeBoard:
         elif action == hl.CLAIM_TAKE_OVER or self.holder_token in (0, token):
             self.holder_token, self.holder_name = token, request[8:24]
             self.holder_flags = request[24] & hl.CLAIM_EXCLUSIVE
-        return (ok + request[3:8] + self._controller()).ljust(hl.REPORT_SIZE, b'\x00')
+        return (ok + request[3:8] + self._holder()).ljust(hl.REPORT_SIZE, b'\x00')
 
-    def _controller(self) -> bytes:
-        """Page 1's Controller group: the holder's token, name and claim flags, and the claim generation."""
+    def _holder(self) -> bytes:
+        """Page 1's Holder group: the holder's token, name and claim flags, and the claim generation."""
         return struct.pack('<I', self.holder_token) + self.holder_name + bytes([self.holder_flags, self.generation])
 
     def _feature(self, ok: bytes, command: int, request: bytes) -> bytes:
@@ -672,7 +672,7 @@ class FakeBoard:
     def _page(self, sequence: int, request: bytes) -> bytes:
         """Answer GET_PAGE: a page the board lists, then the expected-token check, as the firmware orders them."""
         page, start, token, mask = struct.unpack_from('<BHIH', request, 3)
-        state = [self.state[0], self._controller()] + self.state[2:]
+        state = [self.state[0], self._holder()] + self.state[2:]
         tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_NAMES: self.name_records(),
                   hl.PAGE_SUMMARY: [self.summary],
                   hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls,
@@ -1057,8 +1057,8 @@ class ModelBoard(FakeBoard):
         return command not in reads or bool(flags & (hl.FLAG_COMMIT_AFTER | hl.FLAG_KEEPALIVE))
 
     def _claimed(self, command: int, sequence: int) -> bytes:
-        """Build a status 4 reply: the holder at [3..24], as page 1's Controller group."""
-        return (bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + self._controller()).ljust(
+        """Build a status 4 reply: the holder at [3..24], as page 1's Holder group."""
+        return (bytes([command | hl.REPLY_FLAG, sequence, hl.STATUS_CLAIMED]) + self._holder()).ljust(
             hl.REPORT_SIZE, b'\x00')
 
     def _flags_act(self, command: int, request: bytes, guarded: bool) -> bool:
@@ -1089,7 +1089,7 @@ class ModelBoard(FakeBoard):
         elif action == hl.CLAIM_TAKE_OVER or self.holder_token in (0, token):
             self._set_holder(token, request[8:24], request[24] & hl.CLAIM_EXCLUSIVE)
             self.leased = self.now
-        return (ok + request[3:8] + self._controller()).ljust(hl.REPORT_SIZE, b'\x00')
+        return (ok + request[3:8] + self._holder()).ljust(hl.REPORT_SIZE, b'\x00')
 
     def take_over(self, token: int = 0xB2, name: bytes = b'Other', exclusive: bool = False) -> None:
         """Have another application take the claim over, which also renews its lease."""
@@ -1320,7 +1320,7 @@ class ModelBoard(FakeBoard):
     def _refresh(self) -> None:
         state = bytearray(self.state[0])
         state[0], state[7] = int(self.live) | state[0] & (hl.STATE_UNSAVED | hl.STATE_IDLE), self.number
-        self.state = [bytes(state), self._controller(),
+        self.state = [bytes(state), self._holder(),
                       struct.pack('<BHB', self.overlay, self.keepalive_ms, self.brightness)]
         # the token follows what the configuration pages report, the change counters apart. A page that
         # changed since it was last hashed steps its counter, each page 8 to 15 in its own slot
