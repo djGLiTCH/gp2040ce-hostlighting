@@ -1311,7 +1311,7 @@
    "model_only": false,
    "events_compared": false,
    "idle_compared": false,
-   "setup": null,
+   "setup": "keyboard_mapping_changes",
    "generation_at_start": 1,
    "takeover_number_at_start": 3,
    "steps": [
@@ -1388,12 +1388,84 @@
    ]
   },
   {
+   "name": "keyboard_mapping_not_allowed",
+   "situation": "No keyboard mapping changes allowed: HELLO without 0x34, page 11 read, 0x34 status 1, claimed or not.",
+   "model_only": false,
+   "events_compared": false,
+   "idle_compared": false,
+   "setup": "no_keyboard_mapping_changes",
+   "generation_at_start": 1,
+   "takeover_number_at_start": 3,
+   "steps": [
+    {
+     "label": "HELLO: commands without 0x34",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "01020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "8102004750484c0200433030343237362e107f3e000f0003000f0000000000000003000f3f0000f3000700010000000000000000000000000000000000000000"
+     ]
+    },
+    {
+     "label": "page 11 from record 0: sixteen records",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "0203000b000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "8203000b000020001003010001005202005103005004004f0500e106001d0700e00800e20900060a002c0b00190c001b0d00220e001e11002e12002d7c00e405"
+     ]
+    },
+    {
+     "label": "SET_KEYBOARD_MAPPING of record 0 to its code shown: status 1",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "34040001000001520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "b4040100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+     ]
+    },
+    {
+     "label": "A claims exclusively",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "03050000a1a1a1487665632d61000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "83050000a1a1a148a1a1a1487665632d610000000000000000000000010200000000000000000000000000000000000000000000000000000000000000000000"
+     ]
+    },
+    {
+     "label": "SET_KEYBOARD_MAPPING without HOLDER: status 1, not 4",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "34060001000001520000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "b4060100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+     ]
+    },
+    {
+     "label": "A gives up",
+     "wait_before": 0.0,
+     "board_before": null,
+     "request": "03072802a1a1a1480000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+     "read": true,
+     "reports": [
+      "83070002a1a1a1480000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000000000"
+     ]
+    }
+   ]
+  },
+  {
    "name": "keyboard_code_change",
    "situation": "Model only. The code shown writes nothing. A new code changes page 11, its counter and the token.",
    "model_only": true,
    "events_compared": true,
    "idle_compared": false,
-   "setup": null,
+   "setup": "keyboard_mapping_changes",
    "generation_at_start": 1,
    "takeover_number_at_start": 3,
    "steps": [

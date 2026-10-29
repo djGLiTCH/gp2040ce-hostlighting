@@ -1753,7 +1753,9 @@ class HostLightingDevice:
         The board writes its settings flash at once, a whole mapping in one write, and answers nothing for about
         200 ms meanwhile. Codes equal to the current ones write nothing. The board answers STALE while a profile
         switch is pending or when the profile is not the active one, and writes nothing. The request is sent
-        again after a short wait, so it applies once a pending switch to that profile does.
+        again after a short wait, so it applies once a pending switch to that profile does. A board lists the
+        command in HELLO only while its settings allow hosts to change the keyboard mapping, and otherwise refuses
+        it as unsupported.
 
         :param profile: the profile expected to be active, as page 1 shows it
         :param first: the page 11 ordinal of the first code

@@ -11,8 +11,9 @@
 The checks cover the HELLO capabilities, framing, every page and field mask,
 the pages' cross-references, takeover and keepalive timing, the claim lease
 and generation, shared and exclusive claims, unsaved brightness, staging,
-events, board-feature and keyboard mapping argument checks, delivery of
-replies to a second handle, then round trip and throughput. run_checks()
+events, board-feature and keyboard mapping argument checks (the latter when
+the board lists SET_KEYBOARD_MAPPING), delivery of replies to a second
+handle, then round trip and throughput. run_checks()
 yields each result as it is made, and Checks collects them. The checks run
 under a LightsClaim the caller holds, renewed without KEEPALIVE so that the
 takeover checks time the takeover alone. The measurements maintain the claim
@@ -68,7 +69,9 @@ _REQUEST_FLAGS = ({flag.bit_length() - 1 for flag in (FLAG_COMMIT_AFTER, FLAG_NO
                   | {bit for bit in range(8) if FLAG_GENERATION >> bit & 1})
 _COMMANDS = {CMD_HELLO, CMD_GET_PAGE, CMD_CLAIM, CMD_CONFIGURE, CMD_SUBSCRIBE, CMD_STAGE, CMD_UNSTAGE, CMD_FILL,
              CMD_CLEAR, CMD_COMMIT, CMD_RELEASE, CMD_SET_PROFILE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
-             CMD_SET_BRIGHTNESS, CMD_SET_KEYBOARD_MAPPING, CMD_SET_INPUT_MODE, CMD_REBOOT}
+             CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_REBOOT}
+# listed only while the board's settings allow it. Its checks run when it is listed
+_OPTIONAL_COMMANDS = {CMD_SET_KEYBOARD_MAPPING}
 _PAGES = {PAGE_IDENTITY} | set(PAGE_GROUPS)
 _ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRESSING_PIN, ADDRESSING_ACTION,
                ADDRESSING_KIND}
@@ -276,6 +279,14 @@ def _unlisted(listed: frozenset[int], ranges: tuple[tuple[int, int], ...]) -> li
     return sorted(picks)
 
 
+def _lists_keyboard_mapping(hello: Hello) -> bool:
+    """Whether the board lists SET_KEYBOARD_MAPPING.
+
+    Unlisted, it is the lowest free board-feature command, which the framing check sends and expects status 1 for.
+    """
+    return CMD_SET_KEYBOARD_MAPPING in hello.commands
+
+
 def _answered(device: HostLightingDevice, command: int, sequence: int, timeout: float = 1.0) -> bool:
     try:
         device.wait_reply(command, sequence, timeout)
@@ -303,8 +314,12 @@ def _check_hello(device: HostLightingDevice, checks: _Checker) -> Generator[Chec
                               ('pixel_formats', 'pixel formats', _PIXEL_FORMATS), ('events', 'events', _EVENTS)):
         listed = getattr(hello, key)
         yield checks.check(listed >= wanted, f"{name} bitmap lists all of 2.0's", f"missing {sorted(wanted - listed)}")
-        if listed - wanted:
-            yield checks.note(f"{name} beyond 2.0: {sorted(listed - wanted)}")
+        beyond = listed - wanted - (_OPTIONAL_COMMANDS if key == 'commands' else set())
+        if beyond:
+            yield checks.note(f"{name} beyond 2.0: {sorted(beyond)}")
+    if not _lists_keyboard_mapping(hello):
+        yield checks.note(f"command 0x{CMD_SET_KEYBOARD_MAPPING:02X} (SET_KEYBOARD_MAPPING) not listed: the board's "
+                          "settings do not allow keyboard mapping changes, so its checks are skipped")
     yield checks.check(hello.reply_queue_limit >= 1, 'reply queue limit stated')
     return hello
 
@@ -831,13 +846,17 @@ def _check_exclusive(device: HostLightingDevice, checks: _Checker, tables: _Tabl
     number = _state(device).state.takeover_number
     # harmless were they executed: the current settings, an empty run, the saved step, a profile, keyboard codes and
     # a REBOOT target that do not exist
+    keyboard = (CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
+                                                      len(tables[PAGE_KEYBOARD_MAPPING]), 0))
     changes = [(CMD_CONFIGURE, struct.pack('<BHB', 0, _KEEPALIVE_MS, 1)),
                (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', 0, 1) + bytes(3)), (CMD_CLEAR, b''),
                (CMD_COMMIT, b''), (CMD_RELEASE, b''), (CMD_SET_BRIGHTNESS, bytes([BRIGHTNESS_SAVED])),
-               (CMD_SET_PROFILE, bytes([tables['summary'].profiles + 1])),
-               (CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
-                                                      len(tables[PAGE_KEYBOARD_MAPPING]), 0)),
-               (CMD_REBOOT, bytes([0xFF]) + MAGIC_REBOOT)]
+               (CMD_SET_PROFILE, bytes([tables['summary'].profiles + 1])), (CMD_REBOOT, bytes([0xFF]) + MAGIC_REBOOT)]
+    if _lists_keyboard_mapping(tables['hello']):
+        changes.append(keyboard)
+    else:
+        yield checks.check(_as_other(device, *keyboard)[2] == STATUS_UNSUPPORTED,
+                           'SET_KEYBOARD_MAPPING unlisted: status 1 without HOLDER too')
     wrong = []
     for command, payload in changes:
         reply = _as_other(device, command, payload)
@@ -1114,7 +1133,8 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Table
         # with no animations the index is refused first
         yield checks.check(_status(reply) == ((STATUS_INVALID, 5) if summary.animations else rejected),
                            'SET_ANIMATION_SPEED out of range: status 2')
-    yield from _check_keyboard_arguments(device, checks, tables, claim)
+    if _lists_keyboard_mapping(tables['hello']):
+        yield from _check_keyboard_arguments(device, checks, tables, claim)
     reply = device.request(CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
     yield checks.check(_status(reply) == rejected, 'SET_INPUT_MODE config mode: status 2 at [3]')
     # the current mode, since were the guard broken, the board would save and reboot into the mode it is in
@@ -1176,10 +1196,10 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: _
               (CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
               # the current mode, since were the guard broken, the board would reboot into the mode it is in
               (CMD_SET_INPUT_MODE, bytes([mode]) + MAGIC_INPUT_MODE[:1] + b'XX' + MAGIC_INPUT_MODE[3:], 5),
-              (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3),                           # target and magic
-              # first record and count, under the active profile
-              (CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
-                                                     len(tables[PAGE_KEYBOARD_MAPPING]), 0), 4)]
+              (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3)]                           # target and magic
+    if _lists_keyboard_mapping(tables['hello']):       # first record and count, under the active profile
+        probes.append((CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', tables['state'].state.profile,
+                                                             len(tables[PAGE_KEYBOARD_MAPPING]), 0), 4))
     if summary.animation_speed_steps < 254:     # 0xFF means unchanged
         speeds = bytes([summary.animation_speed_steps + 1] * 3)
         probes.append((CMD_SET_ANIMATION_SPEED, struct.pack('<H', summary.animations) + speeds, 3))
@@ -1199,7 +1219,8 @@ def _check_settings(device: HostLightingDevice, checks: _Checker, tables: _Table
                     claim: LightsClaim) -> Iterator[CheckResult]:
     checks.section('Settings (writes the settings flash)')
     summary, state, animations = tables['summary'], tables['state'], tables[PAGE_ANIMATIONS]
-    yield from _check_keyboard_code(device, checks, tables[PAGE_KEYBOARD_MAPPING])
+    if _lists_keyboard_mapping(tables['hello']):
+        yield from _check_keyboard_code(device, checks, tables[PAGE_KEYBOARD_MAPPING])
     if not summary.brightness_steps:
         yield checks.note('no LED output, so no brightness, animation or speed to change')
         return
@@ -1373,8 +1394,8 @@ def run_checks(device: HostLightingDevice, claim: LightsClaim, settings: bool = 
 
     :param device: the opened device
     :param claim: a LightsClaim on the device that holds the claim
-    :param settings: also change and restore a keyboard code, brightness, animation and speeds, which writes the
-        settings flash
+    :param settings: also change and restore a keyboard code (when the board lists SET_KEYBOARD_MAPPING),
+        brightness, animation and speeds, which writes the settings flash
     :param quick: shorter timing runs
     :param open_second: opens a second handle on the board, for the delivery checks
     """

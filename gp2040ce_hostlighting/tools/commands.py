@@ -33,12 +33,12 @@ from gp2040ce_hostlighting.enums import read_enum_names
 from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CMD_HELLO, EVENT_STATE_CHANGED, KIND_BUTTON, KIND_CASE,
-                                            KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_NAMES,
-                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
-                                            REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
-                                            STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
+                                            BRIGHTNESS_SAVED, CMD_HELLO, CMD_SET_KEYBOARD_MAPPING, EVENT_STATE_CHANGED,
+                                            KIND_BUTTON, KIND_CASE, KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS,
+                                            PAGE_CONTROLS, PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING,
+                                            PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB,
+                                            PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG,
+                                            SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
                                             HostLightingClaimedError, HostLightingDevice, HostLightingError,
                                             HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
@@ -556,7 +556,8 @@ def settings() -> None:
     parser.add_argument('--keyboard-code', type=_keyboard_code, action='append', metavar='ORDINAL=CODE',
                         help=f"set the code the Keyboard input mode sends for page {PAGE_KEYBOARD_MAPPING}'s record "
                              "ORDINAL, in the active profile, or in --profile's when given. Repeat it for more. "
-                             "Consecutive ordinals go in one request, written once")
+                             "Consecutive ordinals go in one request, written once. The board's settings must "
+                             "allow hosts to change the keyboard mapping")
     parser.add_argument('--names', action='store_true',
                         help="name actions and light kinds from the board's page 3 when -P names none "
                              "(148 more requests)")
@@ -567,7 +568,7 @@ def settings() -> None:
     try:
         names = enum_names(device if args.names else None)
         if args.keyboard_code:
-            _check_keyboard_ordinals(device, args.keyboard_code)
+            _check_keyboard_changes(device, args.keyboard_code)
         if args.unsaved:
             _hold_unsaved_brightness(device, args.brightness, args.seconds, args.force, args.exclusive)
         if args.profile is not None:
@@ -613,8 +614,15 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
         claim.keep(seconds, lambda: device.set_brightness(step))
 
 
-def _check_keyboard_ordinals(device: HostLightingDevice, changes: list[tuple[int, int]]) -> None:
-    """Refuse an ordinal past page 11's records, before hlp-settings changes anything."""
+def _check_keyboard_changes(device: HostLightingDevice, changes: list[tuple[int, int]]) -> None:
+    """Refuse --keyboard-code before hlp-settings changes anything.
+
+    A board that does not list SET_KEYBOARD_MAPPING, as its settings do not allow the change, or an ordinal past
+    page 11's records, is refused.
+    """
+    if CMD_SET_KEYBOARD_MAPPING not in device.hello().commands:
+        raise SystemExit("error: --keyboard-code: the board's settings do not allow hosts to change the keyboard "
+                         "mapping (Host Lighting, in its web configurator)")
     total = len(device.read_table(PAGE_KEYBOARD_MAPPING).records)
     for ordinal, _ in changes:
         if ordinal >= total:
@@ -674,13 +682,16 @@ def _print_settings(device: HostLightingDevice, names: dict[str, dict[int, str]]
               f"speeds {speeds.idle}/{speeds.pressed}/{speeds.case}")
     print(f"brightness step {state.brightness_step_shown} of 0-{summary.brightness_steps} "
           f"(maximum {summary.brightness_maximum}){', unsaved' if state.brightness_unsaved else ''}")
-    if PAGE_KEYBOARD_MAPPING in device.hello().pages:
+    hello = device.hello()
+    if PAGE_KEYBOARD_MAPPING in hello.pages:
         print(f"D-pad mode {_named(state.dpad_mode, names, 'DpadMode')} (Up to Right on a GPIO pin or Hall-effect "
               "trigger send their codes only in the digital D-pad mode)")
         print(f"keyboard codes, the active profile's (page {PAGE_KEYBOARD_MAPPING} ordinal, its button's action, "
               "code):")
         for record in device.read_table(PAGE_KEYBOARD_MAPPING).records:
             print(f"  {_keyboard_line(record.ordinal, record.button.action, record.button.code, names)}")
+        if CMD_SET_KEYBOARD_MAPPING not in hello.commands:
+            print("  read-only, as the board's settings do not allow hosts to change them")
 
 
 def _state_fields(record: StateRecord, token: int) -> dict[str, Any]:

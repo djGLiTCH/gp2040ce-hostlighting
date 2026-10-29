@@ -11,6 +11,8 @@ import importlib.util
 import json
 import os
 
+import pytest
+
 from gp2040ce_hostlighting import protocol as hl
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,8 +54,10 @@ def test_the_vectors_file_alone_replays_on_the_model():
     with open(os.path.join(ROOT, 'tests', 'vectors', 'vectors.json'), encoding='utf-8') as f:
         vectors = json.load(f)['vectors']
     for vector in vectors:
-        assert vector['setup'] in (None, 'second_animation'), vector['name']
-        model = script.Model(animations=2 if vector['setup'] == 'second_animation' else 1)
+        assert vector['setup'] in (None, 'second_animation', 'keyboard_mapping_changes',
+                                   'no_keyboard_mapping_changes'), vector['name']
+        model = script.Model(animations=2 if vector['setup'] == 'second_animation' else 1,
+                             keyboard_changes=vector['setup'] != 'no_keyboard_mapping_changes')
         model.recording = False
         model.page1()
         for step in vector['steps']:
@@ -98,3 +102,47 @@ def test_a_scenario_that_raises_fails_and_the_board_is_reset(capsys):
     out = capsys.readouterr().out
     assert 'hello: same' in out and 'claim_echo: FAIL' in out and 'ended by TimeoutError: no reply' in out
     assert model.board.holder_token == 0
+
+
+def test_a_replay_runs_the_keyboard_vectors_its_board_lists(capsys):
+    """Test that each board replays every vector but the keyboard one for the other settings, and matches."""
+    script = load_script()
+    vectors = script.generate()['vectors']
+    scenarios = {script.name_of(scenario): scenario for scenario in script.SCENARIOS}
+    for changes, run, skipped in ((True, 'keyboard_mapping', 'keyboard_mapping_not_allowed'),
+                                  (False, 'keyboard_mapping_not_allowed', 'keyboard_mapping')):
+        assert script.replay_on(script.Model(keyboard_changes=changes), vectors, scenarios) == 0
+        out = capsys.readouterr().out
+        assert f"{run}: same" in out and 'hello: same' in out and 'exclusive_claim: same' in out
+        listed = 'lists' if changes else 'does not list'
+        assert f"{skipped}: skipped, the board {listed} SET_KEYBOARD_MAPPING" in out
+        assert 'RESULT: PASS' in out
+
+
+def test_a_replay_on_a_board_that_does_not_answer_hello_stops_with_an_error(capsys):
+    """Test that a replay that gets no HELLO reply says so and runs no vector."""
+    script = load_script()
+    model = script.Model()
+    model.board.drop.add(hl.CMD_HELLO)
+    with pytest.raises(SystemExit, match='the board did not answer HELLO, so no vector was run'):
+        script.replay_on(model, script.generate()['vectors'], {})
+    assert capsys.readouterr().out == ''
+
+
+def test_hellos_keyboard_bit_is_compared_only_in_the_keyboard_vectors():
+    """Test that a HELLO without SET_KEYBOARD_MAPPING differs only where a vector's setup names the settings."""
+    script = load_script()
+    vectors = {vector['name']: vector for vector in script.generate()['vectors']}
+    for name, caught in (('keyboard_mapping_not_allowed', True), ('hello', False), ('exclusive_claim', False)):
+        vector = vectors[name]
+        start = vector['generation_at_start'], vector['takeover_number_at_start']
+        flipped = []
+        for step in vector['steps']:
+            reports = []
+            for report in step['reports']:
+                data = bytearray.fromhex(report)
+                if data[0] == hl.CMD_HELLO | hl.REPLY_FLAG:
+                    data[script.KEYBOARD_BYTE] ^= script.KEYBOARD_BIT
+                reports.append(data.hex())
+            flipped.append(dict(step, reports=reports))
+        assert bool(script.compare(vector, flipped, *start)) is caught, name

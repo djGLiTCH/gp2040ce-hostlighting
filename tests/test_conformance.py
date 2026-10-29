@@ -886,6 +886,44 @@ def test_conformance_fails_a_keyboard_mapping_that_checks_nothing(hlp_run_on_mod
     assert 'PASS  SET_KEYBOARD_MAPPING of the codes shown: OK, and the token and counters unchanged' in out
 
 
+def test_conformance_passes_a_board_without_keyboard_mapping_changes(hlp_run_on_model_board, hlp_model_board,
+                                                                     capsys):
+    """Test a board with settings that do not allow keyboard mapping changes: its checks skipped, 0x34 status 1."""
+    hlp_model_board.commands.discard(hl.CMD_SET_KEYBOARD_MAPPING)
+    hlp_run_on_model_board(conformance.conformance, '--quick', '--settings')
+    out = capsys.readouterr().out
+    assert "        command 0x34 (SET_KEYBOARD_MAPPING) not listed: the board's settings do not allow keyboard " \
+           "mapping changes, so its checks are skipped" in out
+    assert 'commands beyond 2.0' not in out
+    assert 'PASS  unlisted command 0x34: status 1' in out
+    assert 'PASS  SET_KEYBOARD_MAPPING unlisted: status 1 without HOLDER too' in out
+    assert 'FAIL' not in out and 'RESULT: ALL PASS (191 passed, 0 failed)' in out
+    # the framing check's request and the exclusive claim's, and no other
+    assert len(hlp_model_board.sent(hl.CMD_SET_KEYBOARD_MAPPING)) == 2
+
+
+def test_conformance_fails_an_unlisted_keyboard_mapping_refused_as_claimed(hlp_run_on_model_board, hlp_model_board,
+                                                                           capsys):
+    """Test a board without 0x34 that runs the exclusive claim's refusal before it finds the command unlisted."""
+    hlp_model_board.commands.discard(hl.CMD_SET_KEYBOARD_MAPPING)
+    refused = hlp_model_board._refused
+    hlp_model_board._refused = lambda command, flags: command == hl.CMD_SET_KEYBOARD_MAPPING or refused(command, flags)
+    with pytest.raises(SystemExit):
+        hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'FAIL  SET_KEYBOARD_MAPPING unlisted: status 1 without HOLDER too' in out
+    assert 'PASS  unlisted command 0x34: status 1' in out
+    assert 'RESULT: FAIL (182 passed, 1 failed)' in out
+
+
+def test_conformance_checks_keyboard_mapping_changes_a_board_lists(hlp_run_on_model_board, capsys):
+    """Test that a board listing SET_KEYBOARD_MAPPING has it checked, not noted as beyond 2.0 or skipped."""
+    hlp_run_on_model_board(conformance.conformance, '--quick')
+    out = capsys.readouterr().out
+    assert 'commands beyond 2.0' not in out and '(SET_KEYBOARD_MAPPING) not listed' not in out
+    assert 'PASS  SET_KEYBOARD_MAPPING count 0: status 2 at [6]' in out
+
+
 def test_conformance_fails_a_board_that_ignores_the_profile(hlp_run_on_model_board, hlp_model_board, capsys):
     """Test a board with range checks that are right, which writes the active profile whatever [3] names."""
     checked = hlp_model_board._set_keyboard_mapping

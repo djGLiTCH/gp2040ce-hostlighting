@@ -9,8 +9,8 @@
 """Generate the HLP test vectors from the library's ModelBoard, or replay them on a board.
 
 Each scenario starts from an unclaimed board with the CONFIGURE defaults and sends exact requests. On the model every
-request is recorded, then every report the board sent after it, replies and events, as hex. On a board the same
-scenarios run, and each report is compared with the model's by what the board's own state cannot change
+request is recorded, then every report the board sent after it, replies and events, as hex. On a board the
+scenarios it can show run, and each report is compared with the model's by what the board's own state cannot change
 (tests/vectors/README.md).
 
   python scripts/test_vectors.py               write tests/vectors/vectors.json from the model
@@ -38,6 +38,12 @@ RECORDS = 12                    # a page reply's, and an event's, first record
 STATE_SIZE, HOLDER_SIZE, SETTINGS_SIZE = hl.PAGE_GROUPS[hl.PAGE_STATE]
 HOLDER = RECORDS + STATE_SIZE
 SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 13 (tests/vectors/README.md)
+# setup: the board's settings allow keyboard mapping changes, so HELLO lists SET_KEYBOARD_MAPPING, or they do not
+SETUP_KEYBOARD_CHANGES = 'keyboard_mapping_changes'
+SETUP_NO_KEYBOARD_CHANGES = 'no_keyboard_mapping_changes'
+KEYBOARD_SETUPS = (SETUP_KEYBOARD_CHANGES, SETUP_NO_KEYBOARD_CHANGES)
+# HELLO's byte and bit for SET_KEYBOARD_MAPPING in the commands bitmap, compared only under KEYBOARD_SETUPS
+KEYBOARD_BYTE, KEYBOARD_BIT = 19 + hl.CMD_SET_KEYBOARD_MAPPING // 8, 1 << hl.CMD_SET_KEYBOARD_MAPPING % 8
 BOARD_IDLE_TIMEOUT = 'idle_timeout'          # board_before: the animations' idle timeout fires
 FILL_RED = bytes([hl.PIXEL_RGB << 4]) + bytes([8, 0, 0])
 
@@ -112,10 +118,12 @@ class Driver:
 class Model(Driver):
     """The library's ModelBoard, read without waiting."""
 
-    def __init__(self, animations: int = 1) -> None:
-        """Make a model board, with a second animation when asked."""
+    def __init__(self, animations: int = 1, keyboard_changes: bool = True) -> None:
+        """Make a model board, with a second animation and without SET_KEYBOARD_MAPPING when asked."""
         super().__init__()
         self.board = ModelBoard()
+        if not keyboard_changes:
+            self.board.commands.discard(hl.CMD_SET_KEYBOARD_MAPPING)
         if animations == 2:
             self.board.animations.append([list(group) for group in self.board.animations[0]][0:1] +
                                          self.board.animations[0][1:])
@@ -406,6 +414,18 @@ def keyboard_mapping(d: Driver) -> None:
           hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 0, 0, 1) + bytes([first[RECORDS + 2]]))
 
 
+def keyboard_mapping_not_allowed(d: Driver) -> None:
+    """No keyboard mapping changes allowed: HELLO without 0x34, page 11 read, 0x34 status 1, claimed or not."""
+    d.req('HELLO: commands without 0x34', hl.CMD_HELLO)
+    first = d.req('page 11 from record 0: sixteen records', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
+    # record 0's code as the board shows it, so even a board that ran it would write nothing new
+    request = struct.pack('<BHB', 1, 0, 1) + bytes([first[RECORDS + 2]])
+    d.req('SET_KEYBOARD_MAPPING of record 0 to its code shown: status 1', hl.CMD_SET_KEYBOARD_MAPPING, request)
+    r = claim(d, 'A claims exclusively', hl.CLAIM_TAKE, A, NAME_A, cflags=hl.CLAIM_EXCLUSIVE)
+    d.req('SET_KEYBOARD_MAPPING without HOLDER: status 1, not 4', hl.CMD_SET_KEYBOARD_MAPPING, request)
+    claim(d, 'A gives up', hl.CLAIM_GIVE_UP, A, b'', as_holder(gen_of(r), exclusive=True))
+
+
 def keyboard_code_change(d: Driver) -> None:
     """Model only. The code shown writes nothing. A new code changes page 11, its counter and the token."""
     d.req('SUBSCRIBE to STATE_CHANGED', hl.CMD_SUBSCRIBE, struct.pack('<H', 1 << hl.EVENT_STATE_CHANGED))
@@ -433,12 +453,13 @@ SCENARIOS: list[Callable[[Driver], None]] = [
     hello, claim_echo, other_token_under_shared_claim, change_of_holder_resets, exclusive_claim, keepalive_by_holder,
     other_claims_flags, other_claims_flags_exclusive, lost_claim_reply, takeover_between_claim_and_configure,
     lapse_taken_again_by_a_renewal, led_limit, stale_token, state_changed, idle_and_set_animation, keyboard_mapping,
-    keyboard_code_change, full_reply_queue]
+    keyboard_mapping_not_allowed, keyboard_code_change, full_reply_queue]
 NAMES = {other_claims_flags: 'other_claims_flags_shared'}
 MODEL_ONLY = {idle_and_set_animation, keyboard_code_change, full_reply_queue}
 EVENTS_COMPARED = {state_changed, keyboard_code_change}
 IDLE_COMPARED = {idle_and_set_animation}
-SETUP = {idle_and_set_animation: SETUP_SECOND_ANIMATION}
+SETUP = {idle_and_set_animation: SETUP_SECOND_ANIMATION, keyboard_mapping: SETUP_KEYBOARD_CHANGES,
+         keyboard_mapping_not_allowed: SETUP_NO_KEYBOARD_CHANGES, keyboard_code_change: SETUP_KEYBOARD_CHANGES}
 
 
 def name_of(scenario: Callable[[Driver], None]) -> str:
@@ -452,7 +473,8 @@ def generate() -> dict[str, Any]:
     """Run every scenario on a fresh model board and return the vectors document."""
     vectors = []
     for scenario in SCENARIOS:
-        d = Model(animations=2 if scenario is idle_and_set_animation else 1)
+        d = Model(animations=2 if scenario is idle_and_set_animation else 1,
+                  keyboard_changes=SETUP.get(scenario) != SETUP_NO_KEYBOARD_CHANGES)
         gen0, number0 = start_of(d)
         scenario(d)
         vectors.append({'name': name_of(scenario), 'situation': (scenario.__doc__ or '').strip(),
@@ -479,9 +501,15 @@ def _state(r: bytes, gen0: int, number0: int, idle: bool) -> tuple[Any, ...]:
             (r[settings:settings + SETTINGS_SIZE].hex(),))
 
 
-def view(report: str, gen0: int, number0: int, idle: bool = False) -> tuple[Any, ...]:
-    """Give what a board's own state cannot change in a report, with page 1's idle flag when asked."""
-    r = bytes.fromhex(report)
+def view(report: str, gen0: int, number0: int, idle: bool = False, keyboard: bool = False) -> tuple[Any, ...]:
+    """Give what a board's own state cannot change in a report.
+
+    Page 1's idle flag, and HELLO's SET_KEYBOARD_MAPPING bit, which follows the board's settings, are in it only
+    when asked.
+    """
+    r = bytearray.fromhex(report)
+    if r[0] == hl.CMD_HELLO | hl.REPLY_FLAG and not keyboard:
+        r[KEYBOARD_BYTE] &= ~KEYBOARD_BIT & 0xFF
     command, status = r[0] & 0x7F, r[2]
     if r[0] == hl.EVENT_MARKER:
         return ('event', r[1]) + _state(r, gen0, number0, idle)
@@ -523,13 +551,13 @@ def reset(d: Driver) -> None:
 
 def compare(vector: dict[str, Any], steps: list[dict[str, Any]], gen0: int, number0: int) -> list[str]:
     """List how a board's steps differ from the vector's, empty when they do not."""
-    idle = vector['idle_compared']
+    idle, keyboard = vector['idle_compared'], vector['setup'] in KEYBOARD_SETUPS
 
     def replies(reports: list[str], g: int, n: int) -> list[tuple[Any, ...]]:
-        return [view(r, g, n, idle) for r in reports if bytes.fromhex(r)[0] != hl.EVENT_MARKER]
+        return [view(r, g, n, idle, keyboard) for r in reports if bytes.fromhex(r)[0] != hl.EVENT_MARKER]
 
     def events(all_steps: list[dict[str, Any]], g: int, n: int) -> list[tuple[Any, ...]]:
-        return [view(r, g, n, idle) for step in all_steps for r in step['reports']
+        return [view(r, g, n, idle, keyboard) for step in all_steps for r in step['reports']
                 if bytes.fromhex(r)[0] == hl.EVENT_MARKER]
 
     g0, n0 = vector['generation_at_start'], vector['takeover_number_at_start']
@@ -558,11 +586,25 @@ def run_vector(board: Driver, vector: dict[str, Any], scenario: Callable[[Driver
 
 
 def replay_on(board: Driver, vectors: list[dict[str, Any]], scenarios: dict[str, Callable[[Driver], None]]) -> int:
-    """Run each vector a board can show, print the comparison, and return how many differ."""
+    """Run each vector a board can show, print the comparison, and return how many differ.
+
+    A vector for settings that allow keyboard mapping changes runs only on a board that lists SET_KEYBOARD_MAPPING,
+    and one for settings that do not only on a board that does not.
+    """
     failed = 0
+    board.recording = False
+    hello = board.req('HELLO', hl.CMD_HELLO)
+    board.recording = True
+    if len(hello) <= KEYBOARD_BYTE or hello[2] != hl.STATUS_OK:
+        raise SystemExit('error: the board did not answer HELLO, so no vector was run')
+    listed = bool(hello[KEYBOARD_BYTE] & KEYBOARD_BIT)
     for vector in vectors:
         if vector['model_only']:
             print(f"{vector['name']}: model only")
+            continue
+        if vector['setup'] in KEYBOARD_SETUPS and listed != (vector['setup'] == SETUP_KEYBOARD_CHANGES):
+            print(f"{vector['name']}: skipped, the board {'lists' if listed else 'does not list'} "
+                  "SET_KEYBOARD_MAPPING")
             continue
         bad = run_vector(board, vector, scenarios[vector['name']])
         failed += bool(bad)

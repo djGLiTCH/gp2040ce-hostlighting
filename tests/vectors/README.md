@@ -13,8 +13,8 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 Exact request and reply reports for HELLO, the claim and its refusals,
 `KEEPALIVE`, lost replies, staging at the LED limit, a stale state token,
 `STATE_CHANGED`, the idle flag, the keyboard mapping and
-`SET_KEYBOARD_MAPPING`, and the reply queue, for hosts that test against their
-own board model.
+`SET_KEYBOARD_MAPPING` with keyboard mapping changes allowed or not, and the
+reply queue, for hosts that test against their own board model.
 `vectors.json` is generated from the library's `ModelBoard` by
 `scripts/test_vectors.py`. A test keeps the two in step.
 
@@ -30,7 +30,7 @@ own board model.
 | `vectors[].model_only` | True where a board cannot be made to show it on demand |
 | `vectors[].events_compared` | True where a replay compares the events, not only the replies |
 | `vectors[].idle_compared` | True where a replay compares page 1's idle flag (State `+0` bit 2) |
-| `vectors[].setup` | What the board needs beyond the defaults, as a code below, or null |
+| `vectors[].setup` | What the board needs, as a code below, or null |
 | `vectors[].generation_at_start`, `takeover_number_at_start` | Page 1's claim generation and takeover number before the first step |
 | `vectors[].steps[]` | One request each, below |
 | `steps[].label` | What the step shows |
@@ -45,7 +45,13 @@ The codes are fixed; a replay acts on them.
 | Code | In | Means |
 |---|---|---|
 | `second_animation` | `setup` | The board has a second animation (page 13), so `SET_ANIMATION` can change it |
+| `keyboard_mapping_changes` | `setup` | The board's settings allow hosts to change the keyboard mapping, so `HELLO` lists `SET_KEYBOARD_MAPPING` |
+| `no_keyboard_mapping_changes` | `setup` | The board's settings do not allow it, their default, so `HELLO` does not list `SET_KEYBOARD_MAPPING` |
 | `idle_timeout` | `board_before` | The animations' idle timeout fires, turning them off and setting page 1's idle flag |
+
+A replay runs a vector with `keyboard_mapping_changes` only on a board that
+lists `SET_KEYBOARD_MAPPING` in `HELLO`, and one with
+`no_keyboard_mapping_changes` only on a board that does not.
 
 Reports are hex without the report ID `0x00` that Windows adds. Each scenario
 starts with the board unclaimed, no frame shown and the `CONFIGURE` defaults,
@@ -69,11 +75,16 @@ scenario's start, or not at all:
 - the state token in a request: `stale_token`'s `GET_PAGE` requests carry the
   model's token and a token other than it, so a replay sends its board's
   token, read from page 1 `[60..63]`, and a token other than that
-- the code in `keyboard_mapping`'s profile 0 step: a replay sends its board's
-  page 11 record 0 code, read in the scenario's first step, so the step writes
-  nothing new even on a board that does not check the profile
+- the code in `keyboard_mapping`'s profile 0 step and in both of
+  `keyboard_mapping_not_allowed`'s `SET_KEYBOARD_MAPPING` steps: a replay
+  sends its board's page 11 record 0 code, read in the scenario's page 11
+  step, so the steps write nothing new even on a board that does not check
+  the profile, or that runs the command
 - the idle flag (page 1 State `+0` bit 2): the board's own idle timeout can
   set it at any time, so it is compared only where `idle_compared` is true
+- `HELLO`'s command bit 0x34 (`SET_KEYBOARD_MAPPING`, `[25]` bit 4): it
+  follows the board's settings, so it is compared only in the vectors with
+  `keyboard_mapping_changes` or `no_keyboard_mapping_changes`
 - events: when one arrives between replies depends on timing
 
 A replay compares each reply's command and status, a status 2 offset, the
@@ -103,6 +114,7 @@ page 1 is compared.
 | `state_changed` | After `SUBSCRIBE`, a claim and its give up each raise one `STATE_CHANGED`, laid out as page 1 |
 | `idle_and_set_animation` | Model only. The idle flag and its events; `SET_ANIMATION` with the animation shown, another (shown at once, awake at the next render tick), and off |
 | `keyboard_mapping` | Page 11 in two reads. `SET_KEYBOARD_MAPPING` from past the last record is refused at [4], of no records or of records past the last at [6], and with the profile, first record and count wrong at [4], the range checked first. For profile 0, never active, it is refused with status 3 |
+| `keyboard_mapping_not_allowed` | Settings that do not allow keyboard mapping changes. `HELLO` without `SET_KEYBOARD_MAPPING`, and page 11 read. `SET_KEYBOARD_MAPPING` is status 1, and still status 1, not 4, without `HOLDER` under an exclusive claim |
 | `keyboard_code_change` | Model only. `SET_KEYBOARD_MAPPING` of the code shown changes nothing. A new code steps page 11's counter and the token, with one `STATE_CHANGED`, and the old code again puts the token back |
 | `full_reply_queue` | Model only. 16 `HELLO` requests are sent and their replies left unread; the 17th, which needs a reply, is discarded |
 

@@ -149,7 +149,8 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
     return header + area[:hl.RECORD_AREA].ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
 
 
-# what this firmware's HELLO lists, the fakes' defaults
+# what this firmware's HELLO lists with keyboard mapping changes allowed, the fakes' defaults. A fake without
+# CMD_SET_KEYBOARD_MAPPING in its commands answers as the firmware does by default
 HELLO_REQUEST_FLAGS = frozenset(range(7))
 HELLO_COMMANDS = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x30, 0x31, 0x32,
                             0x33, 0x34, 0x70, 0x71))

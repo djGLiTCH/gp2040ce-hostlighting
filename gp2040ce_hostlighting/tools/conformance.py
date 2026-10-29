@@ -48,8 +48,8 @@ def conformance() -> None:
                            "throughput. It holds the claim while it runs, so run it with no other lighting "
                            "application.")
     parser.add_argument('--settings', action='store_true',
-                        help="also change and restore a keyboard code, brightness, animation and speeds (writes the "
-                             "settings flash)")
+                        help="also change and restore a keyboard code (when the board's settings allow it), "
+                             "brightness, animation and speeds (writes the settings flash)")
     parser.add_argument('--quick', action='store_true', help="shorter timing runs")
     parser.add_argument('--json', action='store_true',
                         help="print the results as JSON when the run ends, the usual lines going to stderr")

@@ -408,6 +408,21 @@ def test_settings_shows_and_sets_keyboard_codes(hlp_run_on_fake_board, hlp_fake_
     assert 'keyboard codes' not in capsys.readouterr().out
 
 
+def test_settings_refuses_keyboard_codes_a_board_does_not_allow(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test a board without SET_KEYBOARD_MAPPING: the codes shown read-only, and --keyboard-code refused unsent."""
+    hlp_run_on_fake_board(tools.settings)
+    assert 'read-only' not in capsys.readouterr().out
+    hlp_fake_board.commands.discard(hl.CMD_SET_KEYBOARD_MAPPING)
+    hlp_run_on_fake_board(tools.settings)
+    out = capsys.readouterr().out
+    assert "keyboard codes, the active profile's" in out
+    assert out.endswith("  read-only, as the board's settings do not allow hosts to change them\n")
+    with pytest.raises(SystemExit, match=r"error: --keyboard-code: the board's settings do not allow hosts to change "
+                                         r"the keyboard mapping \(Host Lighting, in its web configurator\)"):
+        hlp_run_on_fake_board(tools.settings, '--brightness', '2', '--keyboard-code', '4=1')
+    assert not hlp_fake_board.sent(hl.CMD_SET_KEYBOARD_MAPPING) and not hlp_fake_board.sent(hl.CMD_SET_BRIGHTNESS)
+
+
 def test_settings_argument_checks(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test that hlp-settings range-checks its values and pairs --speed with a speed."""
     for arguments, message in ((('--brightness', '255'), 'outside 0-254'), (('--animation', '-1'), 'outside 0-65535'),
