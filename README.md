@@ -42,6 +42,10 @@ development packages hidapi's README lists.
 From a clone, `pip install -e .[dev]` installs the commands and the development
 tools.
 
+The hlp app needs no Python: each release on the repository's Releases page
+carries it for Windows (x64), macOS (x64 and ARM64) and Linux (x64 and
+ARM64), built by the Release workflow (`.github/workflows/`).
+
 ## The hlp app
 
 The hlp app is `hlp` built as a single executable that needs no Python
@@ -103,6 +107,7 @@ Each folder's README says what the folder is for and what each file in it does.
 | [`tests/vectors/`](tests/vectors/) | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
 | [`scripts/`](scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
 | [`packaging/`](packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
+| [`.github/workflows/`](.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release |
 | `LICENSES/` | The licence text, `GPL-3.0-or-later.txt`, where REUSE keeps it |
 
 At the root, `LICENSE` is the licence text, `pyproject.toml` describes the

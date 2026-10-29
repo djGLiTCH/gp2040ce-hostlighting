@@ -1,0 +1,145 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: release.yml
+# Folder: .github/workflows
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# Build the hlp app for Windows (x64), macOS (x64 and ARM64) and Linux (x64 and ARM64), and the wheel and sdist.
+# A v* tag also makes a draft GitHub release with them, a pre-release for an rc, for the owner to write up and
+# publish. Run by hand, it builds and keeps the files as the run's artifacts.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    name: hlp app (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: windows-x64, os: windows-2025}
+          - {name: macos-arm64, os: macos-15}
+          - {name: macos-x64, os: macos-15-intel}
+          - {name: linux-x64, os: ubuntu-22.04}
+          - {name: linux-arm64, os: ubuntu-22.04-arm}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0          # the tags, for the version setuptools-scm gives
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.14.8'   # the version third-party.toml has Doc/license.rst's SHA-256 for
+      - name: Prepare Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libudev-dev libusb-1.0-0-dev    # hidapi builds against these
+      - name: Build on Windows
+        if: runner.os == 'Windows'
+        run: |
+          python -m venv build\app-venv
+          powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1
+      - name: Build on macOS or Linux
+        if: runner.os != 'Windows'
+        run: sh scripts/build-app.sh python
+      - name: Check the app
+        shell: bash
+        run: |
+          app=dist/hlp; [ -f dist/hlp.exe ] && app=dist/hlp.exe
+          "$app" --version
+          "$app" --help > /dev/null
+          "$app" ping --help > /dev/null
+          "$app" --licences > licences.txt
+          grep -q 'Third-party notices for hlp' licences.txt
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            "$app" --version | grep -q "^gp2040ce-hostlighting ${GITHUB_REF_NAME#v} " \
+              || { echo "the app's version is not the tag's" >&2; exit 1; }
+          fi
+      - name: Fetch the source of the bundled libraries with a GPL-family licence
+        if: runner.os == 'Linux'
+        run: |
+          # deb-src entries from the runner's own deb lines, so the source comes from the mirror the libraries did;
+          # fetch-sources.sh takes a version the mirror no longer carries from Launchpad
+          grep -h '^deb ' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null \
+            | sed 's/^deb /deb-src /' | sudo tee /etc/apt/sources.list.d/hlp-sources.list
+          sudo apt-get update -qq
+          sh scripts/fetch-sources.sh "hlp-${{ matrix.name }}-sources"
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out "stage/hlp-${{ matrix.name }}"
+          cp LICENSE dist/THIRD-PARTY-NOTICES.txt "stage/hlp-${{ matrix.name }}/"
+          case "${{ matrix.name }}" in
+          windows-*)
+            cp dist/hlp.exe "out/hlp-${{ matrix.name }}.exe"
+            cp dist/THIRD-PARTY-NOTICES.txt "out/THIRD-PARTY-NOTICES-${{ matrix.name }}.txt" ;;
+          macos-*)
+            cp -R dist/hlp.app "stage/hlp-${{ matrix.name }}/"
+            # the terminal's hlp is a link to the copy in hlp.app, so the zip holds the app once
+            ln -s hlp.app/Contents/MacOS/hlp "stage/hlp-${{ matrix.name }}/hlp"
+            ditto -c -k --keepParent "stage/hlp-${{ matrix.name }}" "out/hlp-${{ matrix.name }}.zip" ;;
+          linux-*)
+            cp dist/hlp dist/hlp.desktop dist/hlp.png "stage/hlp-${{ matrix.name }}/"
+            tar -czf "out/hlp-${{ matrix.name }}.tar.gz" -C stage "hlp-${{ matrix.name }}"
+            cp "dist/hlp-${{ matrix.name }}-sources.tar.gz" out/ ;;
+          esac
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: hlp-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  dist:
+    name: wheel and sdist
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.14'
+      - run: |
+          python -m pip install --disable-pip-version-check build==1.6.1
+          python -m build
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: draft release
+    if: github.ref_type == 'tag'
+    needs: [app, dist]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Make the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd assets && sha256sum * > SHA256SUMS.txt && cd ..
+          prerelease=; case "$GITHUB_REF_NAME" in *rc*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft $prerelease \
+            --title "gp2040ce-hostlighting $GITHUB_REF_NAME" \
+            --notes "Draft made by the Release workflow. The release notes are written before it is published." \
+            assets/*
