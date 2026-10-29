@@ -10,8 +10,8 @@
 
 hlp-ping, hlp-caps, hlp-settings, hlp-watch, hlp-fill, hlp-set-light, hlp-stream, hlp-show, hlp-buttons,
 hlp-input-mode and hlp-reboot. Given GP2040-CE's .proto files (`-P`), they print enum names beside the values. The
-commands that drive the LEDs hold a LightsClaim and print its INFO lines as part of their output.
-tools.conformance shares hlp_command, device_parser, add_claim_arguments and ranged.
+commands that drive the LEDs take a LightsClaim with take_claim, which says so, and print its INFO lines as part of
+their output. tools.conformance shares hlp_command, device_parser, add_claim_arguments, ranged and take_claim.
 """
 import argparse
 import colorsys
@@ -152,7 +152,10 @@ def hlp_command(function: Callable[[], None]) -> Callable[[], None]:
     """Report a command's HID and protocol errors as a one-line exit, and Ctrl-C as exit 130, not a traceback."""
     @functools.wraps(function)
     def run() -> None:
-        """Run the command."""
+        """Run the command, its output line-buffered so that a pipe gets each line as it is printed."""
+        reconfigure = getattr(sys.stdout, 'reconfigure', None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True)
         try:
             function()
         except KeyboardInterrupt:
@@ -187,6 +190,17 @@ def add_claim_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--exclusive', action='store_true',
                         help="claim the lights exclusively, so that until the claim is given up the board refuses "
                              "changes from applications that do not hold the claim (default: a shared claim)")
+
+
+def take_claim(device: HostLightingDevice, name: str, exclusive: bool, force: bool,
+               settings: Settings = Settings()) -> LightsClaim:
+    """Take the lights for a command and print that it did; the claim's INFO lines say what changes after.
+
+    :raises HostLightingClaimedError: when another application holds the lights and force is not given
+    """
+    claim = LightsClaim(device, name, settings, wait_when_taken_over=False).take(exclusive, force)
+    print(f"claim taken{' (exclusive)' if exclusive else ''}")
+    return claim
 
 
 def ranged(low: int, high: int) -> Callable[[str], int]:
@@ -563,7 +577,7 @@ def _hold_unsaved_brightness(device: HostLightingDevice, step: int, seconds: flo
     Each renewal carries KEEPALIVE, which keeps the unsaved step. Were the command to stop without giving up,
     the step would end at the keepalive timeout. A claim taken again after a lapse shows the step again.
     """
-    with LightsClaim(device, 'hlp-settings', wait_when_taken_over=False).take(exclusive, force) as claim:
+    with take_claim(device, 'hlp-settings', exclusive, force) as claim:
         _apply(f"--brightness {step}", lambda: device.set_brightness(step))
         print(f"brightness step {step} shown, unsaved, for {seconds} s")
         claim.keep(seconds, lambda: device.set_brightness(step))
@@ -715,7 +729,7 @@ def fill() -> None:
             device.stage_entries(ADDRESSING_KIND, [(kind, colour) for kind in kinds[args.scope]], pixel_format,
                                  commit=True)
     try:
-        with LightsClaim(device, 'hlp-fill', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+        with take_claim(device, 'hlp-fill', args.exclusive, args.force) as claim:
             stage()
             print(f"filling {args.scope} with #{args.colour.upper()} for {args.seconds} s")
             claim.keep(args.seconds, stage)
@@ -753,7 +767,7 @@ def set_light() -> None:
     pixel_format = PIXEL_RGBW if any(len(colour) == 4 for _, colour in entries) else PIXEL_RGB
     device = open_device(args.board_id)
     try:
-        with LightsClaim(device, 'hlp-set-light', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+        with take_claim(device, 'hlp-set-light', args.exclusive, args.force) as claim:
             outcomes = device.stage_entries(addressing, entries, pixel_format, commit=True)
             applied = sum(outcome.applied for outcome in outcomes)
             skipped = sum(outcome.skipped for outcome in outcomes)
@@ -789,7 +803,7 @@ def stream() -> None:
         if args.leds and args.leds > summary.led_limit:
             parser.error(f"--leds is at most the board's addressable LED limit, {summary.led_limit}")
         leds = args.leds or summary.led_extent or 1
-        with LightsClaim(device, 'hlp-stream', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+        with take_claim(device, 'hlp-stream', args.exclusive, args.force) as claim:
             _stream(claim, leds, args.seconds, args.timeout_test)
     finally:
         device.close()
@@ -815,12 +829,13 @@ def _play(claim: LightsClaim, seconds: float, frame_at: Callable[[int], Frame], 
     Each frame goes as the specification has a streaming host send it. A frame unacknowledged after its resend is
     not shown, and the board is lost only when a HELLO then goes unanswered too.
 
-    :param what: names the frames in the closing line, such as "rainbow"
-    :param extent: what each frame covers, in the closing line, such as "46 LEDs"
+    :param what: names the frames in the opening and closing lines, such as "rainbow"
+    :param extent: what each frame covers, in the opening and closing lines, such as "46 LEDs"
     :return: False when another application took the lights over
     :raises HostLightingUnansweredError: when the board answers neither a frame nor the HELLO after it
     """
     frames = max(1, int(seconds * 60))
+    print(f"{what}: {frames} frames at 60 fps ({extent})")
     start = time.monotonic()
     acknowledged = 0
     failure = ''
@@ -913,7 +928,7 @@ def show() -> None:
     try:
         lights = device.read_table(PAGE_LIGHTS).records if PAGE_LIGHTS in device.hello().pages else ()
         leds = 0 if lights else device.read_record(PAGE_SUMMARY).records[0].summary.led_extent or 1
-        with LightsClaim(device, 'hlp-show', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+        with take_claim(device, 'hlp-show', args.exclusive, args.force) as claim:
             if lights:
                 _play(claim, args.seconds, functools.partial(_show_frame, lights), "show", f"{len(lights)} lights")
             else:
@@ -988,7 +1003,7 @@ def buttons() -> None:
         controls = device.read_table(PAGE_CONTROLS).records
         lights = device.read_table(PAGE_LIGHTS).records
         overlay = overlay_buttons(controls, enum_names(device if args.names else None))
-        with LightsClaim(device, 'hlp-buttons', wait_when_taken_over=False).take(args.exclusive, args.force) as claim:
+        with take_claim(device, 'hlp-buttons', args.exclusive, args.force) as claim:
             _buttons(claim, controls, lights, args.seconds, overlay)
     finally:
         device.close()

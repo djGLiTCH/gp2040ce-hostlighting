@@ -414,9 +414,9 @@ software. They speak Host Lighting Protocol 2.0. `hlp` runs each one as a
 subcommand: `hlp ping` runs `hlp-ping`, and `hlp --help` lists them. With no
 arguments at a console, as when opened from a file manager, `hlp` offers a menu:
 it picks the board, then takes a command by number, by name or as a whole
-command line and runs it on that board, until `q`. A command that needs
-arguments shows its usage and an example first, and the menu asks before
-`input-mode` and `reboot`, which restart the board.
+command line and runs it on that board, printing the command line first, until
+`q`. A command that needs arguments shows its usage and an example first, and
+the menu asks before `input-mode` and `reboot`, which restart the board.
 
 * They require the `hidapi` package and a board with the add-on enabled
   (Configuration -> Add-Ons Configuration -> Host Lighting in the web
@@ -538,6 +538,9 @@ they do.
   lights are handed back, the board then refuses changes from applications that
   do not hold the claim. An `hlp-settings` run alongside is refused with
   `CLAIMED`, naming the holder. Reads, `CLAIM` and `SUBSCRIBE` still work.
+* They print `claim taken`, or `claim taken (exclusive)`, once they hold the
+  claim, and a line as each timed step starts, such as
+  `show: 900 frames at 60 fps (46 lights)`.
 
 Sample usage:
 
@@ -591,6 +594,7 @@ keyboard codes, the active profile's (page 11 ordinal, its button's action, code
 ...
 
 % hlp-settings --brightness 2 --unsaved --exclusive
+claim taken (exclusive)
 brightness step 2 shown, unsaved, for 5.0 s
 claim given up, on-board animations restored
 ...
@@ -615,17 +619,24 @@ Takeover and keepalive:
 RESULT: ALL PASS (200 passed, 0 failed)
 
 % hlp-bench
-round trip: median 2.00 ms, p95 2.06 ms (300 of 300 answered)
+claim taken
+round trip: 300 HELLO requests
+round trip: median 2.00 ms, p95 2.02 ms (300 of 300 answered)
+60 fps: 300 frames (46 LEDs, 3 reports per frame)
 60 fps: 300 of 300 frames acknowledged (46 LEDs, 3 reports per frame)
+unthrottled, every report answered: frames back to back for 3.0 s
 unthrottled, every report answered: 166 frames/s
+unthrottled, pipelined: frames back to back for 3.0 s
 unthrottled, pipelined: 249 frames/s
 claim given up, on-board animations restored
 
 % hlp-fill --scope case 0000FF
+claim taken
 filling case with #0000FF for 3.0 s
 claim given up, on-board animations restored
 
 % hlp-set-light --by action 1:FFFFFF00 17:00000080 99:FF0000
+claim taken
 2 applied, 1 skipped, holding for 3.0 s
 skipped addresses (no light, or none below the LED limit): [99]
 claim given up, on-board animations restored

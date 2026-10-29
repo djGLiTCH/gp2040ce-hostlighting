@@ -7,8 +7,10 @@
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
 """Test the hlp-* commands."""
+import io
 import json
 import struct
+import sys
 
 import pytest
 
@@ -762,3 +764,22 @@ def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fa
     assert 'page 3 (names): not read (--names reads it)' in capsys.readouterr().out
     hlp_run_on_fake_board(tools.caps, '--json', '--names')
     assert json.loads(capsys.readouterr().out)['pages']['3']['GpioAction']['1'] == 'BUTTON_PRESS_UP'
+
+
+def test_streaming_commands_say_when_each_step_starts(hlp_run_on_model_board, hlp_model_board, capsys):
+    """Test that hlp-show and hlp-stream print the claim taken and the frames to come before streaming them."""
+    hlp_run_on_model_board(tools.show, '--seconds', '0.25', '--exclusive')
+    assert capsys.readouterr().out.startswith('claim taken (exclusive)\nshow: 15 frames at 60 fps (2 lights)\n'
+                                              'show: 15 of 15 frames acknowledged (2 lights)\n')
+    hlp_run_on_model_board(tools.stream, '--seconds', '0.25')
+    out = capsys.readouterr().out
+    assert out.startswith('claim taken\nfilled red\n')
+    assert 'filled blue\nrainbow: 15 frames at 60 fps (4 LEDs)\nrainbow: 15 of 15 frames acknowledged' in out
+
+
+def test_a_command_prints_each_line_as_it_comes(monkeypatch):
+    """Test that a command's output is line-buffered, so that a pipe gets each line as it is printed."""
+    out = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+    monkeypatch.setattr(sys, 'stdout', out)
+    tools.hlp_command(lambda: None)()
+    assert out.line_buffering

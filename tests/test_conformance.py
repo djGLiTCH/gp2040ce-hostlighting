@@ -565,6 +565,9 @@ def test_bench_prints_the_figures(hlp_run_on_model_board, hlp_model_board, capsy
     """Test hlp-bench: round trip, paced and unthrottled frame rates under a renewed claim, then the give up."""
     hlp_run_on_model_board(conformance.bench, '--quick')
     out = capsys.readouterr().out
+    assert out.startswith('claim taken\nround trip: 100 HELLO requests\nround trip: median ')
+    assert '60 fps: 60 frames (4 LEDs, 1 reports per frame)\n60 fps: 60 of 60 frames acknowledged' in out
+    assert 'unthrottled, pipelined: frames back to back for 1.0 s\nunthrottled, pipelined: ' in out
     assert 'round trip: median 1.00 ms, p95 1.00 ms (100 of 100 answered)' in out
     assert '60 fps: 60 of 60 frames acknowledged (4 LEDs, 1 reports per frame)' in out
     assert 'unthrottled, every report answered: ' in out and 'unthrottled, pipelined: ' in out

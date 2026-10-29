@@ -26,7 +26,7 @@ from gp2040ce_hostlighting.conformance import (CheckResult, Checks, _reports, me
                                                measure_unthrottled_frames, run_checks)
 from gp2040ce_hostlighting.protocol import PAGE_SUMMARY, HostLightingClaimedError, HostLightingDevice, open_device
 from gp2040ce_hostlighting.records import Settings, jsonable
-from gp2040ce_hostlighting.tools.commands import add_claim_arguments, device_parser, hlp_command, ranged
+from gp2040ce_hostlighting.tools.commands import add_claim_arguments, device_parser, hlp_command, ranged, take_claim
 
 
 def _line(result: CheckResult) -> str:
@@ -62,8 +62,7 @@ def conformance() -> None:
     with contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext():
         try:
             board_id = device.hello().board_id
-            claim = LightsClaim(device, 'hlp-conformance', wait_when_taken_over=False)
-            with claim.take(args.exclusive, args.force):
+            with take_claim(device, 'hlp-conformance', args.exclusive, args.force) as claim:
                 for result in run_checks(device, claim, args.settings, args.quick,
                                          lambda: open_device(args.board_id)):
                     if result.section != section:
@@ -87,16 +86,19 @@ def conformance() -> None:
 def _bench(device: HostLightingDevice, claim: LightsClaim, leds: int, quick: bool) -> None:
     """Run hlp-bench's measurements, maintaining the claim between them."""
     count = 100 if quick else 300
+    print(f"round trip: {count} HELLO requests")
     trips = sorted(measure_round_trips(device, count, claim))
     claim.maintain()
     if trips:
         print(f"round trip: median {statistics.median(trips):.2f} ms, p95 {trips[int(len(trips) * 0.95) - 1]:.2f} ms "
               f"({len(trips)} of {count} answered)")
     frames = 60 if quick else 300
+    print(f"60 fps: {frames} frames ({leds} LEDs, {_reports(leds)} reports per frame)")
     acknowledged = measure_paced_frames(device, claim, leds, frames)
     print(f"60 fps: {acknowledged} of {frames} frames acknowledged ({leds} LEDs, {_reports(leds)} reports per frame)")
     seconds = 1.0 if quick else 3.0
     for pipelined, name in ((False, 'every report answered'), (True, 'pipelined')):
+        print(f"unthrottled, {name}: frames back to back for {seconds} s")
         rate = measure_unthrottled_frames(device, claim, leds, seconds, pipelined)
         print(f"unthrottled, {name}: {rate:.0f} frames/s")
 
@@ -117,8 +119,7 @@ def bench() -> None:
         if args.leds and args.leds > summary.led_limit:
             parser.error(f"--leds is at most the board's addressable LED limit, {summary.led_limit}")
         leds = args.leds or summary.led_extent or 1
-        claim = LightsClaim(device, 'hlp-bench', Settings(brightness_applied=False), wait_when_taken_over=False)
-        with claim.take(args.exclusive, args.force):
+        with take_claim(device, 'hlp-bench', args.exclusive, args.force, Settings(brightness_applied=False)) as claim:
             try:
                 _bench(device, claim, leds, args.quick)
             except HostLightingClaimedError:

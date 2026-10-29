@@ -138,6 +138,7 @@ def test_hlp_menu_picks_the_board_and_runs_commands(hlp_run_on_fake_board, capsy
     out = capsys.readouterr().out
     assert out.startswith(f'hlp, gp2040ce-hostlighting {commands.version()}\nCopyright (C) 2026 Jacob Simpson')
     assert out.splitlines()[2] == 'https://github.com/djGLiTCH/gp2040ce-hostlighting'
+    assert 'running hlp ping --board-id 433030343237362E\n' in out and 'running hlp ping --board-id 4330\n' in out
     assert '  1  Fake board  v0.7.12  433030343237362E\nUsing board 1, the only one found.' in out
     listed = f"{_number('ping'):>3}  ping"
     assert f'{listed}  ' in out and 'Check a board' in out and 'board: Fake board (433030343237362E)' in out

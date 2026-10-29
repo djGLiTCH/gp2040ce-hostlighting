@@ -260,6 +260,7 @@ def _run_on_board(name: str, arguments: list[str], board: Optional[BoardListing]
             return
     if board and '--board-id' not in arguments:
         arguments = ['--board-id', board.board_id, *arguments]
+    print(f"running {shlex.join(['hlp', name, *arguments])}")
     _run(name, arguments)
 
 
