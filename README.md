@@ -122,6 +122,15 @@ shell scripts' line endings LF, `.gitignore` leaves build output out of git, and
 `docs/host-lighting.md` is the Host Lighting Protocol 2.0 specification, the
 document the Host Lighting add-on adds to GP2040-CE as `docs/host-lighting.md`.
 
+## Firmware
+
+A board needs GP2040-CE with the Host Lighting add-on, which
+[OpenStickCommunity/GP2040-CE#1691](https://github.com/OpenStickCommunity/GP2040-CE/pull/1691)
+proposes; its review can be followed there. Until it merges, test builds for
+every board are pre-releases on
+[djGLiTCH/GP2040-CE](https://github.com/djGLiTCH/GP2040-CE/releases), and each
+library release names the firmware it supports.
+
 ## Host implementations
 
 Examples of hosts that speak the protocol:
@@ -129,10 +138,11 @@ Examples of hosts that speak the protocol:
 * [hlp-spice2x](https://github.com/djGLiTCH/hlp-spice2x) shows the cabinet
   lighting of games running under spice2x on a GP2040-CE controller's buttons.
   It is built on this library.
-* MESH (Modern Emulator State Hub) is a cross-platform desktop app that drives
-  controller lighting from emulator game state. It implements the protocol
-  itself, with this library as the reference for host behaviour, and replays
-  `tests/vectors/` against its own board model.
+* [MESH](https://github.com/djGLiTCH/MESH) (Modern Emulator State Hub, not
+  public yet) is a cross-platform desktop app that drives controller lighting
+  from emulator game state. It implements the protocol itself, with this library
+  as the reference for host behaviour, and replays `tests/vectors/` against its
+  own board model.
 
 ## The library
 
