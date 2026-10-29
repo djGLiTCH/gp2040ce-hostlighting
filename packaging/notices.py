@@ -2,7 +2,7 @@
 # Filename: notices.py
 # Folder: packaging
 # https://github.com/djGLiTCH/gp2040ce-hostlighting
-# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 

@@ -3,7 +3,7 @@ gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
 Filename: README.md
 Folder: (repository root)
 https://github.com/djGLiTCH/gp2040ce-hostlighting
-SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 SPDX-License-Identifier: GPL-3.0-or-later
 See LICENSES/GPL-3.0-or-later.txt at the repository root.
 -->
@@ -20,7 +20,7 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 </p>
 
 <p align="center">
-  <a href="LICENSES/GPL-3.0-or-later.txt"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue" alt="Python 3.14 or later"></a>
   <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-TBC-lightgrey" alt="GP2040-CE version: to be confirmed"></a>
 </p>
@@ -631,6 +631,6 @@ two to action 17 (L3). `hlp-set-light --by action 1` lights both, and
 
 ## Licence
 
-GPL-3.0-or-later, © 2026 Jacob Simpson. Each file carries its SPDX header,
-and `REUSE.toml` covers the files that cannot. The licence text is in
-`LICENSES/`.
+GPL-3.0-or-later, (C) 2026 Jacob Simpson. Each file carries its SPDX header,
+and `REUSE.toml` covers the files that cannot. The licence text is the FSF's,
+in `LICENSE` and, where REUSE keeps it, `LICENSES/GPL-3.0-or-later.txt`.

@@ -2,7 +2,7 @@
 # Filename: test_claim.py
 # Folder: tests
 # https://github.com/djGLiTCH/gp2040ce-hostlighting
-# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
@@ -72,7 +72,7 @@ def test_take_makes_a_random_token_and_checks_its_arguments(hlp_fake_device):
     """Test the random non-zero token, and the refusal of a long name or a token out of range."""
     assert 0 < LightsClaim(hlp_fake_device, 'app').token <= 0xFFFFFFFF
     with pytest.raises(ValueError, match='18 bytes'):
-        LightsClaim(hlp_fake_device, 'café-' + 'x' * 12)        # 17 characters, 18 bytes
+        LightsClaim(hlp_fake_device, 'caf\u00e9-' + 'x' * 12)        # 17 characters, 18 bytes
     for token in (0, 1 << 32):
         with pytest.raises(ValueError, match='1 to 0xFFFFFFFF'):
             LightsClaim(hlp_fake_device, 'app', token=token)

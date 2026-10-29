@@ -2,7 +2,7 @@
 # Filename: test_hlp.py
 # Folder: tests
 # https://github.com/djGLiTCH/gp2040ce-hostlighting
-# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
@@ -136,7 +136,7 @@ def test_hlp_menu_picks_the_board_and_runs_commands(hlp_run_on_fake_board, capsy
     monkeypatch.setattr(sys, 'stdin', _typed(_number('ping'), 'hlp-ping --board-id 4330', 'q'))
     hlp_run_on_fake_board(hlp.main)
     out = capsys.readouterr().out
-    assert out.startswith(f'hlp, gp2040ce-hostlighting {commands.version()}\nCopyright 2026 Jacob Simpson')
+    assert out.startswith(f'hlp, gp2040ce-hostlighting {commands.version()}\nCopyright (C) 2026 Jacob Simpson')
     assert out.splitlines()[2] == 'https://github.com/djGLiTCH/gp2040ce-hostlighting'
     assert '  1  Fake board  v0.7.12  433030343237362E\nUsing board 1, the only one found.' in out
     listed = f"{_number('ping'):>3}  ping"

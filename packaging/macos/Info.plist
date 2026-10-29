@@ -4,7 +4,7 @@ gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
 Filename: Info.plist
 Folder: packaging/macos
 https://github.com/djGLiTCH/gp2040ce-hostlighting
-SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 SPDX-License-Identifier: GPL-3.0-or-later
 See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
@@ -35,6 +35,6 @@ place of @RELEASE@.
     <key>CFBundleVersion</key>
     <string>@RELEASE@</string>
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026 Jacob Simpson (DJ GLiTCH). GPL-3.0-or-later.</string>
+    <string>Copyright (C) 2026 Jacob Simpson (DJ GLiTCH), GPL-3.0-or-later</string>
 </dict>
 </plist>

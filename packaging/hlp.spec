@@ -2,7 +2,7 @@
 # Filename: hlp.spec
 # Folder: packaging
 # https://github.com/djGLiTCH/gp2040ce-hostlighting
-# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
@@ -58,7 +58,7 @@ if sys.platform == 'win32':
     numbers = (Version(VERSION).release + (0, 0, 0, 0))[:4]
     strings = {'CompanyName': 'Jacob Simpson (DJ GLiTCH)', 'FileDescription': 'GP2040-CE Host Lighting tools',
                'FileVersion': VERSION, 'InternalName': 'hlp',
-               'LegalCopyright': '© 2026 Jacob Simpson (DJ GLiTCH). GPL-3.0-or-later.',
+               'LegalCopyright': 'Copyright (C) 2026 Jacob Simpson (DJ GLiTCH), GPL-3.0-or-later',
                'OriginalFilename': 'hlp.exe', 'ProductName': 'gp2040ce-hostlighting', 'ProductVersion': VERSION}
     version_resource = VSVersionInfo(
         ffi=FixedFileInfo(filevers=numbers, prodvers=numbers),

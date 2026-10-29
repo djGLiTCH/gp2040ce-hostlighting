@@ -2,7 +2,7 @@
 # Filename: commands.py
 # Folder: gp2040ce_hostlighting/tools
 # https://github.com/djGLiTCH/gp2040ce-hostlighting
-# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
@@ -56,7 +56,7 @@ def version() -> str:
         return 'unknown'
 
 
-COPYRIGHT = "Copyright 2026 Jacob Simpson (DJ GLiTCH), GPL-3.0-or-later"
+COPYRIGHT = "Copyright (C) 2026 Jacob Simpson (DJ GLiTCH), GPL-3.0-or-later"
 VERSION_TEXT = f"gp2040ce-hostlighting {version()} (Python {sys.version}). {COPYRIGHT}."
 
 # The options every hlp-* command takes. CommandParser fills common_options when a command line is parsed, so
