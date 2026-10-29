@@ -26,8 +26,8 @@ def load_script():
 
 
 def test_the_vectors_file_is_the_models():
-    """Test that test-vectors/vectors.json is the document the generator gives now."""
-    with open(os.path.join(ROOT, 'test-vectors', 'vectors.json'), encoding='utf-8') as f:
+    """Test that tests/vectors/vectors.json is the document the generator gives now."""
+    with open(os.path.join(ROOT, 'tests', 'vectors', 'vectors.json'), encoding='utf-8') as f:
         assert json.load(f) == load_script().generate()
 
 
@@ -49,7 +49,7 @@ def test_the_comparison_finds_a_changed_reply_and_a_missing_event():
 def test_the_vectors_file_alone_replays_on_the_model():
     """Test that vectors.json alone is enough: its setup, waits, board actions and reads give its reports."""
     script = load_script()
-    with open(os.path.join(ROOT, 'test-vectors', 'vectors.json'), encoding='utf-8') as f:
+    with open(os.path.join(ROOT, 'tests', 'vectors', 'vectors.json'), encoding='utf-8') as f:
         vectors = json.load(f)['vectors']
     for vector in vectors:
         assert vector['setup'] in (None, 'second_animation'), vector['name']

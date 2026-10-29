@@ -92,24 +92,24 @@ sed "s|^Exec=hlp$|Exec=$HOME/.local/bin/hlp|" dist/hlp.desktop > ~/.local/share/
 
 ## Layout
 
-| Path | Holds |
+Each folder's README says what the folder is for and what each file in it does.
+
+| Folder | Holds |
 |---|---|
-| `gp2040ce_hostlighting/protocol.py` | The protocol: constants, framing, decoders, errors, the device, discovery and capability checks |
-| `gp2040ce_hostlighting/records.py` | The records and field groups every decoder returns |
-| `gp2040ce_hostlighting/claim.py` | `LightsClaim`, which takes, renews, follows and gives up the claim |
-| `gp2040ce_hostlighting/frames.py` | `Frame` and `publish_frame()`, a streaming host's frames |
-| `gp2040ce_hostlighting/cache.py` | `ConfigurationCache`, the configuration pages read again when they change |
-| `gp2040ce_hostlighting/session.py` | `Session`, the specification's whole host flow |
-| `gp2040ce_hostlighting/runner.py` | `SessionRunner` and `AsyncSession`, a session on a thread of its own, and `BoardWatcher` and `SessionGroup`, every board on the bus |
-| `gp2040ce_hostlighting/layout.py` | `lights_by_cell()` and `Canvas`, the LED layout grid |
-| `gp2040ce_hostlighting/enums.py` | GP2040-CE's enum names, read from its `.proto` files |
-| `gp2040ce_hostlighting/conformance.py` | The conformance checks and the round trip and frame-rate measurements |
-| `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
-| `gp2040ce_hostlighting/tools/` | The commands: `commands.py`, `conformance.py` for `hlp-conformance` and `hlp-bench`, and `hlp.py` for `hlp` |
-| `docs/host-lighting.md` | The Host Lighting specification |
-| `test-vectors/` | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
-| `scripts/test_vectors.py` | Writes the test vectors, or replays them on a board |
-| `tests/` | The tests |
+| [`gp2040ce_hostlighting/`](gp2040ce_hostlighting/) | The library: the protocol, the claim, frames, the session and the test boards |
+| [`gp2040ce_hostlighting/tools/`](gp2040ce_hostlighting/tools/) | The `hlp` command and the `hlp-*` commands |
+| [`docs/`](docs/) | The Host Lighting specification |
+| [`tests/`](tests/) | The tests, run with pytest |
+| [`tests/vectors/`](tests/vectors/) | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
+| [`scripts/`](scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
+| [`packaging/`](packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
+| `LICENSES/` | The licence text, `GPL-3.0-or-later.txt`, where REUSE keeps it |
+
+At the root, `LICENSE` is the licence text, `pyproject.toml` describes the
+package, its commands and the settings of its checks, `REUSE.toml` gives the
+licence of the files that cannot carry a header, `.gitattributes` keeps the
+shell scripts' line endings LF, `.gitignore` leaves build output out of git, and
+`.git_archival.txt` gives setuptools-scm the version in a GitHub source archive.
 
 ## Specification
 
@@ -126,7 +126,7 @@ Examples of hosts that speak the protocol:
 * MESH (Modern Emulator State Hub) is a cross-platform desktop app that drives
   controller lighting from emulator game state. It implements the protocol
   itself, with this library as the reference for host behaviour, and replays
-  `test-vectors/` against its own board model.
+  `tests/vectors/` against its own board model.
 
 ## The library
 
@@ -387,7 +387,7 @@ mid-test. Each of `hooks` is called with the board and the request before every
 request. Setting `summary` to `None` derives the Summary from the pages.
 
 A host that keeps a board model of its own can test it against
-`test-vectors/vectors.json`: exact requests, and every report `ModelBoard`
+`tests/vectors/vectors.json`: exact requests, and every report `ModelBoard`
 sent after each. Its README gives the format, the codes a replay acts on and
 the bytes a board's own state changes. `scripts/test_vectors.py --board ID`
 replays them on a board.

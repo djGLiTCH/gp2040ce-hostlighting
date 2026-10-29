@@ -1,7 +1,7 @@
 <!--
 gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
 Filename: README.md
-Folder: test-vectors
+Folder: tests/vectors
 https://github.com/djGLiTCH/gp2040ce-hostlighting
 SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
 SPDX-License-Identifier: GPL-3.0-or-later

@@ -13,6 +13,6 @@ SPDX-PackageDownloadLocation = "https://github.com/djGLiTCH/gp2040ce-hostlightin
 
 [[annotations]]
 path = [".git_archival.txt", "docs/*.md", "gp2040ce_hostlighting/py.typed", "packaging/icons/hlp.*",
-        "test-vectors/vectors.json"]
+        "tests/vectors/vectors.json"]
 SPDX-FileCopyrightText = "(C) 2026 Jacob Simpson (DJ GLiTCH)"
 SPDX-License-Identifier = "GPL-3.0-or-later"

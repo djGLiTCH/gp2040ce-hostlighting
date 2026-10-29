@@ -11,9 +11,9 @@
 Each scenario starts from an unclaimed board with the CONFIGURE defaults and sends exact requests. On the model every
 request is recorded, then every report the board sent after it, replies and events, as hex. On a board the same
 scenarios run, and each report is compared with the model's by what the board's own state cannot change
-(test-vectors/README.md).
+(tests/vectors/README.md).
 
-  python scripts/test_vectors.py               write test-vectors/vectors.json from the model
+  python scripts/test_vectors.py               write tests/vectors/vectors.json from the model
   python scripts/test_vectors.py --board ID    replay the vectors on the board with this ID and print the comparison
 """
 import json
@@ -29,7 +29,7 @@ if ROOT not in sys.path:
 from gp2040ce_hostlighting import protocol as hl  # noqa: E402
 from gp2040ce_hostlighting.testing import ModelBoard, summary_record  # noqa: E402
 
-VECTORS = os.path.join(ROOT, 'test-vectors', 'vectors.json')
+VECTORS = os.path.join(ROOT, 'tests', 'vectors', 'vectors.json')
 A, B = 0x48A1A1A1, 0x48B2B2B2
 NAME_A, NAME_B = b'vec-a', b'vec-b'
 RECORDS = 12                    # a page reply's, and an event's, first record
@@ -37,7 +37,7 @@ RECORDS = 12                    # a page reply's, and an event's, first record
 # Settings
 STATE_SIZE, CONTROLLER_SIZE, SETTINGS_SIZE = hl.PAGE_GROUPS[hl.PAGE_STATE]
 HOLDER = RECORDS + STATE_SIZE
-SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 13 (test-vectors/README.md)
+SETUP_SECOND_ANIMATION = 'second_animation'  # setup: a second animation on page 13 (tests/vectors/README.md)
 BOARD_IDLE_TIMEOUT = 'idle_timeout'          # board_before: the animations' idle timeout fires
 FILL_RED = bytes([hl.PIXEL_RGB << 4]) + bytes([8, 0, 0])
 
