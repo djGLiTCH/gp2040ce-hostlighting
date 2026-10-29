@@ -294,36 +294,65 @@ def caps() -> None:
     parser.add_argument('--names', action='store_true',
                         help="name actions and light kinds from the board's page 3 when -P names none "
                              "(148 more requests)")
+    parser.add_argument('--page', type=_caps_page, action='append',
+                        help="print only this page, by name or number, repeated as needed: "
+                             + ', '.join(f"{name} ({number})" for name, number in CAPS_PAGES.items()))
     args = parser.parse_args()
+    chosen = list(dict.fromkeys(args.page or ()))
+    read_names = args.names or PAGE_NAMES in chosen
     device = open_device(args.board_id)
     try:
         hello = device.hello()
         if args.json:
-            print(json.dumps(_caps_json(device, hello, args.names), indent=1))
+            report = _caps_json(device, hello, read_names, chosen)
+            print(json.dumps({'pages': report['pages']} if chosen else report, indent=1))
             return
-        board_names = device.read_names() if args.names and PAGE_NAMES in hello.pages else {}
+        board_names = device.read_names() if read_names and PAGE_NAMES in hello.pages else {}
         names = enum_names() or board_names
-        _print_hello(hello)
-        pages: tuple[tuple[int, Callable[[], None]], ...] = (
-                 (PAGE_IDENTITY, lambda: _print_identity(device)),
-                 (PAGE_STATE, lambda: _print_state(device, names)),
-                 (PAGE_INPUT_MODES, lambda: _print_input_modes(device)),
-                 (PAGE_NAMES, lambda: _print_names(board_names, args.names)),
-                 (PAGE_SUMMARY, lambda: _print_summary(device, names)),
-                 (PAGE_PROFILES, lambda: _print_profiles(device)),
-                 (PAGE_CONTROLS, lambda: _print_controls(device, names)),
-                 (PAGE_KEYBOARD_MAPPING, lambda: _print_keyboard_mapping(device, names)),
-                 (PAGE_LIGHTS, lambda: _print_lights(device, names)),
-                 (PAGE_ANIMATIONS, lambda: _print_animations(device, names)))
-        for page, show in pages:
+        pages: dict[int, Callable[[], None]] = {
+            PAGE_IDENTITY: lambda: _print_identity(device),
+            PAGE_STATE: lambda: _print_state(device, names),
+            PAGE_INPUT_MODES: lambda: _print_input_modes(device),
+            PAGE_NAMES: lambda: _print_names(board_names, read_names),
+            PAGE_SUMMARY: lambda: _print_summary(device, names),
+            PAGE_PROFILES: lambda: _print_profiles(device),
+            PAGE_CONTROLS: lambda: _print_controls(device, names),
+            PAGE_KEYBOARD_MAPPING: lambda: _print_keyboard_mapping(device, names),
+            PAGE_LIGHTS: lambda: _print_lights(device, names),
+            PAGE_ANIMATIONS: lambda: _print_animations(device, names)}
+        if not chosen:
+            _print_hello(hello)
+        for page in chosen or pages:
             if page in hello.pages:
-                show()
+                pages[page]()
+            elif chosen:
+                print(f"page {page} ({_CAPS_PAGE_NAMES[page]}): not listed by the board")
     finally:
         device.close()
 
 
-def _caps_json(device: HostLightingDevice, hello: Hello, names: bool) -> dict[str, Any]:
-    """Read HELLO's pages the library decodes, as hlp-caps --json prints them, page 3 only with names."""
+# The pages hlp-caps --page takes, by name, in the order hlp-caps prints them
+CAPS_PAGES = {'identity': PAGE_IDENTITY, 'state': PAGE_STATE, 'input-modes': PAGE_INPUT_MODES, 'names': PAGE_NAMES,
+              'summary': PAGE_SUMMARY, 'profiles': PAGE_PROFILES, 'controls': PAGE_CONTROLS,
+              'keyboard': PAGE_KEYBOARD_MAPPING, 'lights': PAGE_LIGHTS, 'animations': PAGE_ANIMATIONS}
+_CAPS_PAGE_NAMES = {number: name for name, number in CAPS_PAGES.items()}
+
+
+def _caps_page(text: str) -> int:
+    """Parse a page for hlp-caps --page: its name, or its number in decimal."""
+    if text.lower() in CAPS_PAGES:
+        return CAPS_PAGES[text.lower()]
+    if text.isdigit() and int(text) in _CAPS_PAGE_NAMES:
+        return int(text)
+    raise argparse.ArgumentTypeError(f"no page {text}: one of "
+                                     + ', '.join(f"{name} ({number})" for name, number in CAPS_PAGES.items()))
+
+
+def _caps_json(device: HostLightingDevice, hello: Hello, names: bool, chosen: Sequence[int] = ()) -> dict[str, Any]:
+    """Read HELLO's pages the library decodes, as hlp-caps --json prints them, page 3 only with names.
+
+    :param chosen: the pages to read, all of them when empty
+    """
     readers: dict[int, Callable[[], Any]] = {
         PAGE_IDENTITY: device.read_identity,
         PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
@@ -333,7 +362,8 @@ def _caps_json(device: HostLightingDevice, hello: Hello, names: bool) -> dict[st
     if names:
         readers[PAGE_NAMES] = device.read_names
     return {'hello': jsonable(hello),
-            'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages) if page in readers}}
+            'pages': {str(page): jsonable(readers[page]()) for page in sorted(hello.pages)
+                      if page in readers and (not chosen or page in chosen)}}
 
 
 def _print_names(names: dict[str, dict[int, str]], read: bool) -> None:

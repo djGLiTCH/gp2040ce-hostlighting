@@ -783,3 +783,21 @@ def test_a_command_prints_each_line_as_it_comes(monkeypatch):
     monkeypatch.setattr(sys, 'stdout', out)
     tools.hlp_command(lambda: None)()
     assert out.line_buffering
+
+
+def test_caps_prints_the_pages_chosen(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test hlp-caps --page: the pages named or numbered, once each in that order, without HELLO; JSON with them."""
+    hlp_run_on_fake_board(tools.caps, '--page', 'keyboard', '--page', '10', '--page', 'Keyboard')
+    out = capsys.readouterr().out
+    assert out.startswith('page 11 (keyboard mapping): ') and '\npage 10 (controls): ' in out
+    assert out.count('page 11') == 1 and 'protocol 2.0' not in out and 'page 12' not in out
+    hlp_run_on_fake_board(tools.caps, '--page', 'names')
+    assert 'GpioAction' in capsys.readouterr().out             # asking for page 3 reads it
+    hlp_run_on_fake_board(tools.caps, '--page', 'lights', '--json')
+    assert json.loads(capsys.readouterr().out).keys() == {'pages'}
+    hlp_fake_board.pages.discard(hl.PAGE_LIGHTS)
+    hlp_run_on_fake_board(tools.caps, '--page', '12')
+    assert capsys.readouterr().out == 'page 12 (lights): not listed by the board\n'
+    with pytest.raises(SystemExit, match='^2$'):
+        hlp_run_on_fake_board(tools.caps, '--page', '5')
+    assert 'no page 5: one of identity (0), state (1)' in capsys.readouterr().err

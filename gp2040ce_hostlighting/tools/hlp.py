@@ -54,7 +54,7 @@ EXAMPLES = {
 
 # What the menu shows under the command list, as typed at its prompt
 MENU_EXAMPLES = (str(list(COMMANDS).index('ping') + 1), 'ping', 'show --seconds 30', 'fill FF0000',
-                 'set-light --by action 1:FFFFFF')
+                 'set-light --by action 1:FFFFFF', 'caps --page keyboard')
 
 # The commands that restart the board, which the menu asks to confirm
 RESTARTS = ('input-mode', 'reboot')
