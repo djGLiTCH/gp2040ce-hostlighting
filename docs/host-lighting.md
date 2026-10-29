@@ -53,9 +53,9 @@ interface next to the regular controller interface. Hosts exchange fixed
 
 Host software can read the codes the Keyboard input mode sends at any time. It
 can change them only while `Allow hosts to change the keyboard mapping`, in the
-web configurator's Host Lighting section, is on. The setting is off by default
-and covers every input profile. A change applies to the active profile's
-mapping alone. Board makers can ship it on by defining
+web configurator's Host Lighting section, is on. The setting is off by default.
+A change applies only to the input profile active when it is made, and the
+other profiles keep their codes. Board makers can ship it on by defining
 `HOST_LIGHTING_ALLOW_KEYBOARD_MAPPING_CHANGES 1` in a board config.
 
 ## Supported modes
