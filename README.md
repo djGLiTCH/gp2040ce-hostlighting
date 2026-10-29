@@ -28,7 +28,7 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 ## Installation
 
 ```
-pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc4
+pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc5
 ```
 
 The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
