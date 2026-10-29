@@ -53,8 +53,9 @@ interface next to the regular controller interface. Hosts exchange fixed
 
 Host software can read the codes the Keyboard input mode sends at any time. It
 can change them only while `Allow hosts to change the keyboard mapping`, in the
-web configurator's Host Lighting section, is on. The setting is off by default.
-Board makers can ship it on by defining
+web configurator's Host Lighting section, is on. The setting is off by default
+and covers every input profile. A change applies to the active profile's
+mapping alone. Board makers can ship it on by defining
 `HOST_LIGHTING_ALLOW_KEYBOARD_MAPPING_CHANGES 1` in a board config.
 
 ## Supported modes
@@ -649,7 +650,8 @@ active profile's mapping, the one the web configurator edits for that profile.
 records from record `[4..5]`, one code per byte from `[7]`. The codes apply at
 once and are saved. Any 8-bit code is accepted. A count of 0, or records past
 the page's total, is an invalid argument. One command can set the whole
-mapping, which writes the flash once.
+mapping, which writes the flash once. Other profiles' mappings are unchanged.
+A host sets another profile's codes by selecting it with `SET_PROFILE` first.
 
 The board implements `SET_KEYBOARD_MAPPING` only while the web configurator's
 `Allow hosts to change the keyboard mapping` setting is on (How it works).
