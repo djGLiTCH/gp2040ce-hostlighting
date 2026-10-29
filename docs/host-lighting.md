@@ -19,8 +19,8 @@ board's lights. The on-board animations return when the host stops.
   animations from its live configuration, user remaps included. Host software
   needs no per-board configuration and no update when a new board is released.
 - A host can also switch the input profile, animation, animation speed and
-  brightness as the board's hotkeys do, set the codes the Keyboard input mode
-  sends, and change the input mode.
+  brightness as the board's hotkeys do, and change the input mode. It can set
+  the codes the Keyboard input mode sends when the user allows it.
 
 Users need only this section, How it works and Supported modes. Host developers
 continue with Discovery and Typical host flow, and use the Protocol reference
@@ -50,6 +50,12 @@ interface next to the regular controller interface. Hosts exchange fixed
 - `HELLO` and the capability pages report the LED map, colour order, board
   identity and current state from the board's live configuration, user remaps
   included. A host can subscribe to be told when they change.
+
+Host software can read the codes the Keyboard input mode sends at any time. It
+can change them only while `Allow hosts to change the keyboard mapping`, in the
+web configurator's Host Lighting section, is on. The setting is off by default.
+Board makers can ship it on by defining
+`HOST_LIGHTING_ALLOW_KEYBOARD_MAPPING_CHANGES 1` in a board config.
 
 ## Supported modes
 
@@ -205,7 +211,7 @@ pages and their change counters, which start again at 0 with each boot.
 | Per-light effects with geometry | 8, 12 |
 | Hand single lights back to the animation | `UNSTAGE` in overlay takeover. No pages |
 | Configure host inputs from the board | 9, 10 |
-| Read or set the codes the Keyboard input mode sends | `SET_KEYBOARD_MAPPING`; 1, 10, 11 |
+| Read or set the codes the Keyboard input mode sends | `SET_KEYBOARD_MAPPING`, when `HELLO` lists it; 1, 10, 11 |
 | Switch the input profile | `SET_PROFILE`; 9 |
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
 | Set an animation's speeds | `SET_ANIMATION_SPEED`; 13 for the speeds, 8 for the step count |
@@ -446,8 +452,10 @@ The board ID is the board's 8-byte factory-unique ID. `[18..44]` are capability
 bitmaps. Bit n set means the board implements request flag n, command n, page
 n, addressing mode n, pixel format n or event n. Request flag bits 4-6 stand
 for the claim generation. `[45..46]` are the events this USB session is
-subscribed to. A host must check the capabilities it uses (Compatibility and
-versioning).
+subscribed to. The capability bitmaps are fixed for a boot. The commands bitmap
+also depends on the `Allow hosts to change the keyboard mapping` setting
+(`SET_KEYBOARD_MAPPING`), which only the web configurator changes. A host must
+check the capabilities it uses (Compatibility and versioning).
 
 `GET_PAGE` reads a page (Pages).
 
@@ -511,9 +519,9 @@ The holder of an exclusive claim must set `HOLDER` on every request.
 The `COMMIT_AFTER` and `KEEPALIVE` of a `CLAIM` act only when it leaves the
 sender holding the claim, under a shared claim as under an exclusive one.
 
-Under either rule an unknown command still returns status 1, and a refused
-request's arguments are not checked. The board's own hotkeys are not subject
-to a claim.
+Under either rule a command `HELLO` does not list still returns status 1, and a
+refused request's arguments are not checked. The board's own hotkeys are not
+subject to a claim.
 
 A status 4 reply shows the holder. A host must act on it as follows.
 
@@ -643,6 +651,11 @@ once and are saved. Any 8-bit code is accepted. A count of 0, or records past
 the page's total, is an invalid argument. One command can set the whole
 mapping, which writes the flash once.
 
+The board implements `SET_KEYBOARD_MAPPING` only while the web configurator's
+`Allow hosts to change the keyboard mapping` setting is on (How it works).
+While it is off, `HELLO` does not list 0x34 and the command returns status 1.
+Page 11 reports the codes either way.
+
 A valid command returns status 3 and changes nothing while a profile switch is
 pending (see `SET_PROFILE`) or when `[3]` is not the active profile. A status 3
 reply carries nothing more. The `STATE_CHANGED` event for a switch follows its
@@ -699,7 +712,7 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, the record counts of pages 9, 10, 12 and 13, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
 | 10 | Controls | Every control in the active profile, lit or not. A control is a GPIO pin or add-on input with an action. Each record gives which instance of its action it is, where it sits, and its lights | To configure host inputs, or to show where each control sits |
-| 11 | Keyboard mapping | The code the Keyboard input mode sends for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`) |
+| 11 | Keyboard mapping | The code the Keyboard input mode sends for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`, when `HELLO` lists it) |
 | 12 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
 | 13 | Animations | The on-board animations: enabled, idle, pressed and case effects, and their speeds | To show or pick the idle animation (`SET_ANIMATION`) or set its speeds (`SET_ANIMATION_SPEED`) |
 | 14-15 | - | Free for configuration pages | - |
@@ -1386,8 +1399,9 @@ The bitmaps in `HELLO` cover these ranges.
 
 ### Worked examples
 
-Captured from a Haute42 COSMOX (16 LEDs) in XInput mode. Bytes are in hex.
-Each report is 64 bytes, and every byte not shown is zero.
+Captured from a Haute42 COSMOX (16 LEDs) in XInput mode, with
+`Allow hosts to change the keyboard mapping` off. Bytes are in hex. Each
+report is 64 bytes, and every byte not shown is zero.
 
 `HELLO`:
 
@@ -1397,8 +1411,8 @@ Each report is 64 bytes, and every byte not shown is zero.
              xx xx xx xx xx xx xx xx  [9..16]  board ID
              10 7f                    [17..18] queue limit 16; flags 0-3 and
                                                the claim generation
-             3e 00 0f 00 03 00 1f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
-             00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x34, 0x70-0x71
+             3e 00 0f 00 03 00 0f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
+             00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x33, 0x70-0x71
              0f 3f 00 00              [35..38] pages 0-3 and 8-13
              f3 00 07 00 01 00        [39..44] addressing 0, 1 and 4-7; pixel
                                                formats 0-2; event 0
