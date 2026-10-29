@@ -6,4 +6,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
-"""The hlp-* commands, built on gp2040ce_hostlighting.protocol."""
+"""The hlp-* commands, built on gp2040ce_hostlighting.protocol, and hlp, which runs each as a subcommand."""

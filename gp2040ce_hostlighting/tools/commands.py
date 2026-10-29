@@ -56,11 +56,13 @@ def version() -> str:
         return 'unknown'
 
 
+COPYRIGHT = "Copyright 2026 Jacob Simpson (DJ GLiTCH), GPL-3.0-or-later"
+VERSION_TEXT = f"gp2040ce-hostlighting {version()} (Python {sys.version}). {COPYRIGHT}."
+
 # The options every hlp-* command takes. CommandParser fills common_options when a command line is parsed, so
 # importing the package changes nothing in the program that imports it.
 common_parser = argparse.ArgumentParser(add_help=False)
-common_parser.add_argument('-v', '--version', action='version',
-                           version=f"gp2040ce-hostlighting {version()} (Python {sys.version})",
+common_parser.add_argument('-v', '--version', action='version', version=VERSION_TEXT,
                            help="show version information and exit")
 common_parser.add_argument('-d', '--debug', action='store_true', help="enable debug logging")
 common_parser.add_argument('-P', '--proto-files-path', type=pathlib.Path, action='append',
@@ -91,7 +93,11 @@ class CommandParser(argparse.ArgumentParser):
 
         An argument that starts with a minus and a digit, such as the entry "-10:00FF00", is a value, as
         Python 3.14's argparse takes it. Earlier versions take it for an option.
+
+        The command is named from the last part of its path. pip's Windows launchers run it as a zip file, for
+        which argparse would put the Python executable's name first.
         """
+        kwargs.setdefault('prog', os.path.basename(sys.argv[0]))
         super().__init__(*args, **kwargs)
         self._negative_number_matcher = re.compile(r'-\.?\d')
 
@@ -99,17 +105,20 @@ class CommandParser(argparse.ArgumentParser):
                          namespace: Optional[argparse.Namespace] = None) -> tuple[argparse.Namespace, list[str]]:
         """Parse the command line, then set up logging and the .proto paths.
 
-        The log goes to stderr, at WARNING or with -d at DEBUG. The claim's INFO lines are printed instead.
+        The log goes to stderr, at WARNING or with -d at DEBUG. The claim's INFO lines are printed instead. Each
+        parse sets the level again, for the commands hlp's menu runs one after another.
         """
         parsed, unknown = super().parse_known_args(args, namespace)
         common_options.debug = parsed.debug
         common_options.proto_files_path = parsed.proto_files_path or []
         level = logging.DEBUG if parsed.debug else logging.WARNING
         if not logging.root.handlers:
-            logging.basicConfig(level=level, stream=sys.stderr,
-                                format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
-            logging.root.handlers[0].setLevel(level)
+            logging.basicConfig(stream=sys.stderr, format='%(asctime)s %(levelname)8s [%(name)s] %(message)s')
             logging.root.handlers[0].addFilter(_not_claim_line)
+        for handler in logging.root.handlers:
+            if _not_claim_line in handler.filters:     # the handler set up here
+                logging.root.setLevel(level)
+                handler.setLevel(level)
         claim_log = logging.getLogger('gp2040ce_hostlighting.claim')
         claim_log.setLevel(min(level, logging.INFO))
         if not any(isinstance(handler, _ClaimLines) for handler in claim_log.handlers):

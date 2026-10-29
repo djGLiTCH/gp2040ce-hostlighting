@@ -42,6 +42,7 @@ dev = ["bandit", "flake8", "flake8-blind-except", "flake8-builtins", "flake8-doc
        "pytest", "pytest-cov", "reuse[charset-normalizer]", "setuptools-scm"]
 
 [project.scripts]
+hlp = "gp2040ce_hostlighting.tools.hlp:main"
 hlp-bench = "gp2040ce_hostlighting.tools.conformance:bench"
 hlp-buttons = "gp2040ce_hostlighting.tools.commands:buttons"
 hlp-caps = "gp2040ce_hostlighting.tools.commands:caps"

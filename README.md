@@ -54,7 +54,7 @@ package, Python and hidapi.
 | `gp2040ce_hostlighting/enums.py` | GP2040-CE's enum names, read from its `.proto` files |
 | `gp2040ce_hostlighting/conformance.py` | The conformance checks and the round trip and frame-rate measurements |
 | `gp2040ce_hostlighting/testing.py` | Fake boards and report builders, to test host software without a board |
-| `gp2040ce_hostlighting/tools/` | The `hlp-*` commands: `commands.py`, and `conformance.py` for `hlp-conformance` and `hlp-bench` |
+| `gp2040ce_hostlighting/tools/` | The commands: `commands.py`, `conformance.py` for `hlp-conformance` and `hlp-bench`, and `hlp.py` for `hlp` |
 | `docs/host-lighting.md` | The Host Lighting specification |
 | `test-vectors/` | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
 | `scripts/test_vectors.py` | Writes the test vectors, or replays them on a board |
@@ -353,7 +353,13 @@ measurements `hlp-bench` prints.
 
 The `hlp-*` tools talk to a board running the GP2040-CE Host Lighting add-on,
 which exposes a vendor HID interface for driving the board's RGB LEDs from host
-software. They speak Host Lighting Protocol 2.0.
+software. They speak Host Lighting Protocol 2.0. `hlp` runs each one as a
+subcommand: `hlp ping` runs `hlp-ping`, and `hlp --help` lists them. With no
+arguments at a console, as when opened from a file manager, `hlp` offers a menu:
+it picks the board, then takes a command by number, by name or as a whole
+command line and runs it on that board, until `q`. A command that needs
+arguments shows its usage and an example first, and the menu asks before
+`input-mode` and `reboot`, which restart the board.
 
 * They require the `hidapi` package and a board with the add-on enabled
   (Configuration -> Add-Ons Configuration -> Host Lighting in the web
