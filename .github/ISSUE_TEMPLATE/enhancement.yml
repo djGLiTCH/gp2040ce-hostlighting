@@ -1,0 +1,43 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: enhancement.yml
+# Folder: .github/ISSUE_TEMPLATE
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+name: Enhancement request
+description: A change or addition to the library, the hlp app or commands, the conformance check or the Host Lighting firmware
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options:
+        - Library (Python API)
+        - hlp app or hlp-* commands
+        - Conformance check
+        - Host Lighting firmware (GP2040-CE with Host Lighting)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you cannot do now, or what is harder than it should be
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: The change
+      description: What you would like added or changed
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered or use now

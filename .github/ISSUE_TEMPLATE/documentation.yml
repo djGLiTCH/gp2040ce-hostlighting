@@ -1,0 +1,35 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: documentation.yml
+# Folder: .github/ISSUE_TEMPLATE
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+name: Documentation
+description: Something in the documentation is wrong, unclear or missing
+labels: [documentation]
+body:
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - The README
+        - A folder's README
+        - The Host Lighting specification (docs/host-lighting.md)
+        - A command's help (--help)
+        - Somewhere else
+    validations:
+      required: true
+  - type: input
+    id: section
+    attributes:
+      label: Section or link
+      placeholder: "README, The library: Testing a host"
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong, unclear or missing
+    validations:
+      required: true

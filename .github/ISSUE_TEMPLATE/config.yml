@@ -1,0 +1,14 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: config.yml
+# Folder: .github/ISSUE_TEMPLATE
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# The issue forms only, with GP2040-CE's own issues for problems outside Host Lighting
+blank_issues_enabled: false
+contact_links:
+  - name: GP2040-CE issues
+    url: https://github.com/OpenStickCommunity/GP2040-CE/issues
+    about: Problems with GP2040-CE outside Host Lighting

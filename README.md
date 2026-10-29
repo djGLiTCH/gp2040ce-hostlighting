@@ -108,6 +108,7 @@ Each folder's README says what the folder is for and what each file in it does.
 | [`scripts/`](scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
 | [`packaging/`](packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
 | [`.github/workflows/`](.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release |
+| `.github/ISSUE_TEMPLATE/` | The issue forms: bug report, enhancement request and documentation |
 | `LICENSES/` | The licence text, `GPL-3.0-or-later.txt`, where REUSE keeps it |
 
 At the root, `LICENSE` is the licence text, `pyproject.toml` describes the

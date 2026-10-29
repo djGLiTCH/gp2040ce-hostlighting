@@ -1,0 +1,76 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: bug-report.yml
+# Folder: .github/ISSUE_TEMPLATE
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+name: Bug report
+description: Something in the library, the hlp app or commands, the conformance check or the Host Lighting firmware does not work as documented
+labels: [bug]
+body:
+  - type: dropdown
+    id: part
+    attributes:
+      label: Part
+      options:
+        - Library (Python API)
+        - hlp app or hlp-* commands
+        - Conformance check
+        - Host Lighting firmware (GP2040-CE with Host Lighting)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. hlp fill FF0000
+        2.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hlp version
+      description: The output of hlp --version
+    validations:
+      required: true
+  - type: dropdown
+    id: installed
+    attributes:
+      label: Installed as
+      options:
+        - The hlp app from a release
+        - pip install from a tag
+        - A clone of this repository
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2, macOS 15.7, Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: board
+    attributes:
+      label: Board and firmware
+      description: The board, and the output of hlp caps, which names the firmware version
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The command's output with -d for the debug log, if it helps
+      render: text
