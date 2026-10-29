@@ -9,7 +9,7 @@ board's lights. The on-board animations return when the host stops.
 
 - The add-on is disabled by default. While it is disabled, every input mode
   presents byte-identical USB descriptors to stock firmware.
-- Generic HID, Keyboard, SInput and XInput modes carry it. Console modes never
+- XInput, Keyboard, Generic HID and SInput modes carry it. Console modes never
   do. In XInput mode a console sees a stock controller unless XInput Lighting
   is set to Always On.
 - The board's own animations return when the host releases control or
@@ -55,10 +55,10 @@ interface next to the regular controller interface. Hosts exchange fixed
 
 | Input mode | Lighting interface |
 |---|---|
-| Generic HID | Yes |
-| Keyboard | Yes |
-| SInput | Yes |
 | XInput | Yes, see below |
+| Keyboard | Yes |
+| Generic HID | Yes |
+| SInput | Yes |
 | PS3/PS4/PS5, Switch, Xbox, other console modes | Never |
 
 In XInput mode the `XInput Lighting` setting, in the web configurator's Host
@@ -805,8 +805,8 @@ The player number is the one the input mode's driver records.
 | Input mode | Player |
 |---|---|
 | XInput | 1-4, or 0 while the host's LED pattern names no player |
+| Keyboard, Generic HID | Always 0. The driver records none |
 | SInput | The player byte the host sent |
-| Generic HID, Keyboard | Always 0. The driver records none |
 
 Holder, the application holding `CLAIM`:
 
@@ -1582,8 +1582,8 @@ tables and the state token are built on the USB core, never on the render path.
 
 ### Protocol throughput
 
-Measured on the M Ultra and a 16-LED Haute42 COSMOX in Generic, Keyboard,
-SInput and XInput, streaming whole frames as `STAGE` LED runs with `NO_REPLY`
+Measured on the M Ultra and a 16-LED Haute42 COSMOX in XInput, Keyboard,
+Generic and SInput, streaming whole frames as `STAGE` LED runs with `NO_REPLY`
 and `COMMIT_AFTER` on the last report. With one frame in flight, the next frame
 is sent when the previous one is acknowledged.
 
