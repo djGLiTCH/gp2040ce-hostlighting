@@ -416,7 +416,9 @@ arguments at a console, as when opened from a file manager, `hlp` offers a menu:
 it picks the board, then takes a command by number, by name or as a whole
 command line and runs it on that board, printing the command line first, until
 `q`. A command that needs arguments shows its usage and an example first, and
-the menu asks before `input-mode` and `reboot`, which restart the board.
+the menu asks before `input-mode` and `reboot`, which restart the board. In the
+menu, `m` lists the commands again, `b` picks another board, `r` looks for
+boards again and `l` prints the licences.
 
 * They require the `hidapi` package and a board with the add-on enabled
   (Configuration -> Add-Ons Configuration -> Host Lighting in the web
@@ -427,6 +429,8 @@ the menu asks before `input-mode` and `reboot`, which restart the board.
   Given GP2040-CE's `.proto` files (`-P`), the tools also print their names.
 * `hlp --licences` (or `--licenses`), or `l` in the menu, prints the licence
   and the notices of the libraries the hlp app bundles.
+* `hlp --version` prints the library's and Python's versions and the
+  copyright.
 
 On Linux, the library uses hidapi's hidraw backend, which several applications
 can share. A board's hidraw node is open only to root until a udev rule grants
@@ -454,20 +458,27 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   configuration page's change counter.
   Controls are listed lit or not. Each light is listed with its LEDs, kind,
   owner and grid cell, and each animation with its speeds.
+  `--page NAME|NUMBER`, repeated as needed, prints only those pages: identity,
+  state, input-modes, names, summary, profiles, controls, keyboard, lights or
+  animations, or their numbers. `--names` reads page 3 for the enum names when
+  `-P` names none, and `--json` prints the same as JSON.
 * `hlp-fill` fills the LEDs with a colour
   (`--scope all|buttons|turbo|case|players`) as a quick visual test, then
-  restores the board's own animations.
+  restores the board's own animations. `--seconds` sets how long it holds
+  (default: 3).
 * `hlp-set-light` colours lights by their light ordinal, or with
   `--by pin|action|kind` by what they belong to, then restores the board's own
   animations. It names the addresses skipped, which have no light or none below
   the LED limit. An eight-digit colour (`RRGGBBWW`) sends RGBW pixels. A
-  negative address needs no `--` (`--by action -10:FF0000`).
+  negative address needs no `--` (`--by action -10:FF0000`). `--seconds` sets
+  how long the colours hold (default: 3).
 * `hlp-stream` streams whole frames as a worked example: red, green and blue
   fills, then a rainbow at 60 fps. Each frame is sent as LED runs with
   `NO_REPLY`, and with `COMMIT_AFTER` on the last report, which alone is
-  answered. `--leds` sets the frame size (default: the LED extent).
-  `--timeout-test` then goes silent and times how long the board keeps the
-  frame, which is the keepalive timeout.
+  answered. `--leds` sets the frame size (default: the LED extent), and
+  `--seconds` how long the rainbow runs (default: 5). `--timeout-test` then
+  goes silent and times how long the board keeps the frame, which is the
+  keepalive timeout.
 * `hlp-show` runs a light show at 60 fps as a visual test, from the lights on
   page 12: a rainbow chase across the buttons, left to right, a rainbow wave
   along the case lights, and the player and turbo lights pulsing cyan.
@@ -476,7 +487,8 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
 * `hlp-buttons` gives every lit control its own hue (staged by action), then
   every light its own hue (one light run), then the buttons the board lights
   among B1-B4, L1, R1, L2 and R2 white over the running animations (overlay
-  takeover).
+  takeover). `--seconds` sets how long each phase holds (default: 5), and
+  `--names` reads the buttons' actions from page 3 when `-P` names none.
 * `hlp-settings` shows the input profile, animation, animation speeds,
   brightness and the active profile's keyboard codes with the values each
   accepts, with the D-pad mode the codes of Up to Right depend on, and changes
@@ -490,13 +502,14 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   unsaved for `--seconds` (default 5) and writes nothing. The command holds the
   claim meanwhile, so `--force` and `--exclusive` apply. The board shows the
   saved step again when the command ends, Ctrl-C and a killed command included.
+  `--names` reads the enum names from page 3 when `-P` names none.
 * `hlp-watch` subscribes to the board's `STATE_CHANGED` event and prints what
   each one changes: input mode, profile, player, animation, the brightness step
   shown and the saved one, the D-pad mode, takeover, the application holding
   the claim, whether its claim is exclusive, the claim generation, the
   `CONFIGURE` settings and the state token. The subscription is shared. Every
   application with the interface open receives the event until the board's USB
-  session ends.
+  session ends. `--seconds` stops it after that long (default: until Ctrl-C).
 * `hlp-input-mode` sets the board's input mode and reboots into it. It accepts
   the modes the board lists. A mode without the lighting interface needs
   `--force`, because these tools cannot switch the board back from one.
@@ -516,9 +529,12 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uacc
   no other lighting application. `--settings` also changes and restores a
   keyboard code, brightness, animation and a speed, which writes the settings
   flash, and checks the change counters. `--quick` shortens the timing runs.
+  `--json` prints the results as JSON when the run ends, the other lines going
+  to stderr.
 * `hlp-bench` measures round trip (median and p95) and frame rates: whole
   frames paced at 60 fps, then back to back with every report answered and
   pipelined. `--leds` sets the frame size (default: the LED extent).
+  `--quick` takes fewer samples: 100 round trips, 60 frames and 1 s runs.
 
 The tools that drive the LEDs (`hlp-fill`, `hlp-set-light`, `hlp-stream`,
 `hlp-show`, `hlp-buttons`, `hlp-bench`, `hlp-conformance`) claim the board while
