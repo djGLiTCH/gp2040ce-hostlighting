@@ -7,4 +7,7 @@
 # See LICENSES/GPL-3.0-or-later.txt at the repository root.
 
 * text=auto
+*.sh text eol=lf
+packaging/macos/hlp-launcher text eol=lf
+packaging/linux/hlp.desktop text eol=lf
 .git_archival.txt export-subst

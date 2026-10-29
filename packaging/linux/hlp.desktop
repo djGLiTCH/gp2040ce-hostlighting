@@ -1,0 +1,18 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: hlp.desktop
+# Folder: packaging/linux
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# A desktop entry for the hlp app, which opens it in a terminal to show its menu, with hlp.png as the icon named
+# hlp. The README's install writes the full path of hlp in place of Exec=hlp.
+[Desktop Entry]
+Type=Application
+Name=hlp
+Comment=GP2040-CE Host Lighting tools
+Exec=hlp
+Icon=hlp
+Terminal=true
+Categories=Utility;

@@ -14,6 +14,7 @@ import logging
 import pathlib
 import sys
 import tomllib
+from importlib import metadata
 
 import pytest
 
@@ -72,7 +73,7 @@ def test_hlp_help_lists_each_command(monkeypatch, capsys):
     with pytest.raises(SystemExit, match='^0$'):
         hlp.main()
     out = capsys.readouterr().out
-    assert out.startswith('usage: hlp [-h] [-v] COMMAND [ARGUMENT ...]')
+    assert out.startswith('usage: hlp [-h] [-v] [--licences] COMMAND [ARGUMENT ...]')
     for name, function in hlp.COMMANDS.items():
         assert f'  {name} ' in out and function.__doc__.splitlines()[0] in out
 
@@ -230,6 +231,61 @@ def test_hlp_menu_cancels_and_carries_on(monkeypatch, capsys):
     assert 'hlp reboot not run' in captured.out and "no command '\u00b2'" in captured.out
     assert 'RuntimeError: boom' in captured.err and 'hlp caps failed' in captured.out
     assert seen == [['hlp fill', '--help'], ['hlp fill', '--help'], ['hlp caps', 'boom'], ['hlp caps']]
+
+
+def _bundle(path):
+    """Lay out an app bundle's licence and notices under path, and give their texts."""
+    (path / 'LICENSES').mkdir()
+    (path / 'LICENSES' / 'GPL-3.0-or-later.txt').write_text('GNU GENERAL PUBLIC LICENSE\n', encoding='utf-8')
+    (path / 'THIRD-PARTY-NOTICES.txt').write_text('Third-party notices for hlp\n', encoding='utf-8')
+
+
+def test_hlp_licences_in_the_app_and_from_pip(monkeypatch, capsys, tmp_path):
+    """Test hlp --licences from an app bundle, then --licenses from an install without the licence in its metadata."""
+    _bundle(tmp_path)
+    monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)
+    monkeypatch.setattr(sys, 'argv', ['hlp', '--licences'])
+    with pytest.raises(SystemExit, match='^0$'):
+        hlp.main()
+    out = capsys.readouterr().out
+    assert out.startswith(commands.COPYRIGHT + '\n\nThis program is free software') and 'WITHOUT ANY WARRANTY' in out
+    assert out.endswith('\n\nGNU GENERAL PUBLIC LICENSE\n\nThird-party notices for hlp\n')
+    monkeypatch.delattr(sys, '_MEIPASS')
+
+    def not_installed(name):
+        raise metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(hlp.metadata, 'distribution', not_installed)
+    monkeypatch.setattr(sys, 'argv', ['hlp', '--licenses'])
+    with pytest.raises(SystemExit, match='^0$'):
+        hlp.main()
+    out = capsys.readouterr().out
+    assert 'https://www.gnu.org/licenses/gpl-3.0.txt' in out and out.endswith('each under its own licence.\n')
+
+
+def test_hlp_menu_shows_the_licences(monkeypatch, capsys, tmp_path):
+    """Test that l, licences or licenses at the menu prints the licence and the notices, then the prompt follows."""
+    _bundle(tmp_path)
+    monkeypatch.setattr(sys, '_MEIPASS', str(tmp_path), raising=False)
+    monkeypatch.setattr(hlp, 'list_boards', lambda: [_board('B1')])
+    monkeypatch.setattr(sys, 'stdin', _typed('l', 'licences', 'Licenses', 'q'))
+    monkeypatch.setattr(sys, 'argv', ['hlp'])
+    hlp.main()
+    out = capsys.readouterr().out
+    assert '  l  licences' in out and out.count('Third-party notices for hlp\n') == 3
+    assert out.count('  m  this list') == 1
+
+
+def test_hlp_menu_fits_80_columns_and_shows_real_usage(monkeypatch, capsys):
+    """Test that the menu wraps to an 80-column terminal, and the usage of a real command that needs arguments."""
+    monkeypatch.setenv('COLUMNS', '80')
+    monkeypatch.setattr(hlp, 'list_boards', lambda: [_board('B1')])
+    monkeypatch.setattr(sys, 'stdin', _typed('fill', '', 'q'))
+    monkeypatch.setattr(sys, 'argv', ['hlp'])
+    hlp.main()
+    out = capsys.readouterr().out
+    typed = out.replace('): ', '):\n')     # at a console the typed Enter ends each prompt's line
+    assert max(len(line) for line in typed.splitlines()) <= 80
+    assert 'usage: hlp fill [-h]' in out and 'example: FF0000' in out and 'hlp fill not run' in out
 
 
 def test_a_later_command_sets_the_log_level_again(monkeypatch):

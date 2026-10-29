@@ -1,0 +1,20 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: requirements.txt
+# Folder: packaging
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# The versions build-app.ps1 and build-app.sh build the hlp app with, those PyInstaller and setuptools-scm need
+# included. macholib, which PyInstaller needs on macOS, is pinned once a macOS build has run.
+altgraph==0.17.5
+hidapi==0.15.0
+packaging==26.3
+pefile==2024.8.26; sys_platform == "win32"
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+pywin32-ctypes==0.2.3; sys_platform == "win32"
+setuptools==84.2.1
+setuptools-scm==10.2.1
+vcs-versioning==2.6.0

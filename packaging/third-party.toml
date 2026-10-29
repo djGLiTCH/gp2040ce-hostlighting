@@ -1,0 +1,61 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: third-party.toml
+# Folder: packaging
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# What notices.py needs for the hlp app's third-party notices. A library a build bundles is taken, in order, as
+# hidapi's by name; on Linux, as part of the Debian package that installed it; as a component below by name; or as
+# Python's when it is one of Python's own modules. A library none of these covers stops the build. Each text fetched
+# is checked against its SHA-256.
+
+# The texts of the licences named by an SPDX identifier
+spdx = "https://raw.githubusercontent.com/spdx/license-list-data/v3.29.0/text/{id}.txt"
+
+# Python's Doc/license.rst, the licences of the software Python incorporates, by the Python version a build uses
+python_licence = "https://raw.githubusercontent.com/python/cpython/v{version}/Doc/license.rst"
+
+[python_licences]
+"3.14.8" = "cd6f471c0bfdb099efefc25ddff9b3df8bf62e10428987f1f05e6f2f9e35d563"
+
+[licences]
+"Apache-2.0" = "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+"BSD-3-Clause" = "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d"
+
+[[component]]
+name = "hidapi (cython-hidapi and HIDAPI)"
+files = ["hid.*", "hidraw.*"]
+first = true
+licence = "BSD-3-Clause, GPL-3.0-only or the original HIDAPI licence, at the user's choice; its licence files follow"
+source = "https://github.com/trezor/cython-hidapi"
+texts = "hidapi"
+
+[[component]]
+name = "OpenSSL"
+files = ["libssl*", "libcrypto*"]
+licence = "Apache-2.0"
+copyright = "Copyright (c) 1998-2025 The OpenSSL Project Authors. All Rights Reserved."
+source = "https://www.openssl.org/source/"
+
+# Zstandard is BSD-3-Clause or GPL-2.0-only; the app takes it under BSD-3-Clause. python.org's macOS Python links it.
+[[component]]
+name = "Zstandard"
+files = ["libzstd*"]
+licence = "BSD-3-Clause"
+copyright = "Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved."
+source = "https://github.com/facebook/zstd"
+
+[[component]]
+name = "Microsoft Visual C++ and Universal C runtimes"
+files = ["vcruntime*", "msvcp*", "ucrtbase.dll", "api-ms-win-*"]
+licence = "Microsoft's terms for redistributing the runtime with an application"
+source = "https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files"
+
+[[component]]
+name = "Python"
+files = ["python3*.dll", "libpython3*", "python"]
+python = true
+licence = "PSF-2.0, and the licences of the software Python incorporates; Python's LICENSE.txt and Doc/license.rst follow"
+source = "https://www.python.org/downloads/source/"

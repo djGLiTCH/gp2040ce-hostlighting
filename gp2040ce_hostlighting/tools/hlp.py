@@ -14,12 +14,14 @@ board, then runs each command chosen on it until the user quits.
 import argparse
 import contextlib
 import io
+import pathlib
 import shlex
 import shutil
 import sys
 import textwrap
 import traceback
-from typing import Callable, Optional
+from importlib import metadata
+from typing import Any, Callable, Optional
 
 from gp2040ce_hostlighting.protocol import HostLightingError, list_boards
 from gp2040ce_hostlighting.records import BoardListing
@@ -56,6 +58,44 @@ MENU_EXAMPLES = (str(list(COMMANDS).index('ping') + 1), 'ping', 'show --seconds 
 
 # The commands that restart the board, which the menu asks to confirm
 RESTARTS = ('input-mode', 'reboot')
+
+# The GPL's own short notice, as its "How to Apply These Terms" gives it
+GPL_NOTICE = ("This program is free software: you can redistribute it and/or modify it under the terms of the GNU "
+              "General Public License as published by the Free Software Foundation, either version 3 of the "
+              "License, or (at your option) any later version. This program is distributed in the hope that it "
+              "will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or "
+              "FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License, below, for more details.")
+
+
+def _licences() -> str:
+    """Give hlp's licence and the notices of the libraries it bundles.
+
+    The app holds both, as its build bundled them. A pip install reads the licence text from the package's
+    metadata; it bundles no libraries, as pip installs hidapi and Python carries its own, each with its licence.
+    """
+    bundle = getattr(sys, '_MEIPASS', None)
+    if bundle is not None:
+        licence: Optional[str] = pathlib.Path(bundle, 'LICENSES', 'GPL-3.0-or-later.txt').read_text(encoding='utf-8')
+        notices = pathlib.Path(bundle, 'THIRD-PARTY-NOTICES.txt').read_text(encoding='utf-8')
+    else:
+        try:
+            licence = metadata.distribution('gp2040ce-hostlighting').read_text('licenses/LICENSES/GPL-3.0-or-later.txt')
+        except metadata.PackageNotFoundError:
+            licence = None
+        notices = ("Installed with pip, hlp bundles no libraries: pip installs hidapi, and Python carries its own, "
+                   "each under its own licence.")
+    licence = licence or "The licence text is at https://www.gnu.org/licenses/gpl-3.0.txt"
+    return '\n\n'.join([commands.COPYRIGHT, textwrap.fill(GPL_NOTICE, 78), licence.strip(), notices.strip()]) + '\n'
+
+
+class _Licences(argparse.Action):
+    """Print the licence and the third-party notices, then exit, as --version does."""
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: Any,
+                 option_string: Optional[str] = None) -> None:
+        """Print them and exit."""
+        print(_licences(), end='')
+        parser.exit()
 
 
 def _description(name: str) -> str:
@@ -168,7 +208,7 @@ def _show_commands(board: Optional[BoardListing]) -> None:
     print('\n' + _listed('examples:', examples, 9).replace('\N{NO-BREAK SPACE}', ' '))     # each wraps whole
     chosen = f"{board.board_label or '?'} ({board.board_id})" if board else "none chosen"
     print(f"\n  board: {chosen}")
-    print("  m  this list    b  another board    r  look for boards again    q  quit")
+    print("  m  this list    b  another board    r  look again    l  licences    q  quit")
 
 
 def _command(line: str) -> Optional[tuple[str, list[str]]]:
@@ -224,7 +264,7 @@ def _run_on_board(name: str, arguments: list[str], board: Optional[BoardListing]
 
 
 # The menu's letters other than q, and an empty line
-LETTERS = ('', 'm', 'b', 'r')
+LETTERS = ('', 'm', 'b', 'r', 'l')
 
 
 def _letter(letter: str, board: Optional[BoardListing]) -> tuple[Optional[BoardListing], bool]:
@@ -232,6 +272,9 @@ def _letter(letter: str, board: Optional[BoardListing]) -> tuple[Optional[BoardL
 
     :return: the board, which b and r choose again, and whether the command list shows next
     """
+    if letter == 'l':
+        print(f"\n{_licences()}", end='')
+        return board, False
     if letter in ('b', 'r'):
         return _choose_board(), True
     return board, True
@@ -257,8 +300,9 @@ def _menu() -> None:
                 continue
             if line.lower() in ('q', 'quit', 'exit'):
                 return
-            if line.lower() in LETTERS:
-                board, listing = _letter(line.lower(), board)
+            letter = 'l' if line.lower() in ('licences', 'licenses') else line.lower()
+            if letter in LETTERS:
+                board, listing = _letter(letter, board)
                 continue
             chosen = _command(line)
             if chosen is None:
@@ -284,6 +328,8 @@ def main() -> None:
                                          formatter_class=argparse.RawDescriptionHelpFormatter)
         parser.add_argument('-v', '--version', action='version', version=commands.VERSION_TEXT,
                             help="show version information and exit")
+        parser.add_argument('--licences', '--licenses', action=_Licences, nargs=0,
+                            help="show the licence and the notices of the libraries the app bundles, and exit")
         parser.add_argument('command', metavar='COMMAND', choices=list(COMMANDS), help="one of the commands below")
         parser.add_argument('arguments', metavar='ARGUMENT', nargs='*', help="the command's arguments")
         parsed = parser.parse_args(arguments)       # exits for --help, --version and a usage error

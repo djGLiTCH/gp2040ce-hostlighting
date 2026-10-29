@@ -1,0 +1,11 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: build-constraints.txt
+# Folder: packaging
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# The versions pip builds hidapi with when scripts/build-app.sh builds it from source, on Linux (PIP_CONSTRAINT)
+Cython==3.3.0
+setuptools==84.2.1

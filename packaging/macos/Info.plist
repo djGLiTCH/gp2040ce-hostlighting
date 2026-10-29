@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+Filename: Info.plist
+Folder: packaging/macos
+https://github.com/djGLiTCH/gp2040ce-hostlighting
+SPDX-FileCopyrightText: © 2026 Jacob Simpson (DJ GLiTCH)
+SPDX-License-Identifier: GPL-3.0-or-later
+See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+hlp.app's property list. build-app.sh writes the release numbers of the version, such as 1.0.0 for 1.0.0rc3, in
+place of @RELEASE@.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>hlp</string>
+    <key>CFBundleExecutable</key>
+    <string>hlp-launcher</string>
+    <key>CFBundleIconFile</key>
+    <string>hlp.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.djglitch.gp2040ce-hostlighting.hlp</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>hlp</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@RELEASE@</string>
+    <key>CFBundleVersion</key>
+    <string>@RELEASE@</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Jacob Simpson (DJ GLiTCH). GPL-3.0-or-later.</string>
+</dict>
+</plist>

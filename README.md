@@ -8,15 +8,27 @@ SPDX-License-Identifier: GPL-3.0-or-later
 See LICENSES/GPL-3.0-or-later.txt at the repository root.
 -->
 
-# gp2040ce-hostlighting
+<p align="center">
+  <img src="packaging/icons/hlp.svg" alt="The hlp icon: a leverless controller's buttons" width="128">
+</p>
 
-A Python library and tools for the GP2040-CE Host Lighting add-on, which lets
-host software drive a board's RGB LEDs live over a vendor HID interface.
+<h1 align="center">gp2040ce-hostlighting</h1>
+
+<p align="center">
+  A Python library and tools for the GP2040-CE Host Lighting add-on, which lets
+  host software drive a board's RGB LEDs live over a vendor HID interface.
+</p>
+
+<p align="center">
+  <a href="LICENSES/GPL-3.0-or-later.txt"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue" alt="Python 3.14 or later"></a>
+  <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-TBC-lightgrey" alt="GP2040-CE version: to be confirmed"></a>
+</p>
 
 ## Installation
 
 ```
-pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc2
+pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc3
 ```
 
 The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
@@ -30,14 +42,53 @@ development packages hidapi's README lists.
 From a clone, `pip install -e .[dev]` installs the commands and the development
 tools.
 
-## Standalone executables
+## The hlp app
 
-`packaging/hlp-tools.spec` builds the `hlp-*` commands as Windows executables
-that run without Python. From a clone with the development tools installed, run
-`pip install pyinstaller`, then `pyinstaller packaging/hlp-tools.spec` in the
-repository's root. `dist/hlp-tools` then holds one executable per command and
-the `_internal` folder they share, which also holds the licences of this
-package, Python and hidapi.
+The hlp app is `hlp` built as a single executable that needs no Python
+installed, for Windows, macOS and Linux. Opened from a file manager it shows its
+menu; in a terminal it works as `hlp` does.
+
+The app holds this package's licence and the notices of the libraries it
+bundles. `hlp --licences` (or `--licenses`), or `l` in the menu, prints them,
+and each build also writes them beside the app as `THIRD-PARTY-NOTICES.txt`. On
+Linux the libraries the app bundles besides Python and hidapi come from Ubuntu's
+packages, and each release also carries the source of those with a GPL-family
+licence named in their copyright file, as `hlp-linux-*-sources.tar.gz`.
+
+To build it from a clone, with Python 3.14 or later and git, run the script for
+the platform in the repository's root. On Linux the build compiles hidapi
+against the system's libudev and libusb, so it also needs a C compiler, binutils
+and their development packages (on Debian and Ubuntu: `build-essential
+libudev-dev libusb-1.0-0-dev`).
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\build-app.ps1
+sh scripts/build-app.sh
+```
+
+Each makes a virtual environment in `build/app-venv`, installs the versions in
+`packaging/requirements.txt` and runs PyInstaller on `packaging/hlp.spec`.
+PyInstaller builds for the platform and processor it runs on.
+
+* Windows: `dist\hlp.exe`, with the icon, and the author, copyright and version
+  in its Properties. It is not signed, so SmartScreen may warn on the first run.
+  Windows 11 on ARM runs it through its x64 emulation.
+* macOS: `dist/hlp`, and `dist/hlp.app`, signed ad hoc, which carries the icon
+  and opens `hlp` in Terminal. A downloaded copy is not notarised, so macOS
+  blocks its first run: open it once, then choose Open Anyway in System
+  Settings, Privacy & Security. `xattr -dr com.apple.quarantine hlp.app` in
+  Terminal does the same.
+* Linux: `dist/hlp`, with `hlp.desktop` and `hlp.png` beside it. To install
+  them for the logged-in user (the udev rule below gives access to the board):
+
+```
+install -D -m 755 dist/hlp ~/.local/bin/hlp
+install -D -m 644 dist/hlp.png ~/.local/share/icons/hicolor/256x256/apps/hlp.png
+mkdir -p ~/.local/share/applications
+sed "s|^Exec=hlp$|Exec=$HOME/.local/bin/hlp|" dist/hlp.desktop > ~/.local/share/applications/hlp.desktop
+```
+
+`scripts/make_icons.py` draws the icon files again; it needs Pillow.
 
 ## Layout
 
@@ -368,6 +419,8 @@ arguments shows its usage and an example first, and the menu asks before
   `--board-id <hex prefix of its board ID>`.
 * Actions, light kinds and colour formats are GP2040-CE's own enum values.
   Given GP2040-CE's `.proto` files (`-P`), the tools also print their names.
+* `hlp --licences` (or `--licenses`), or `l` in the menu, prints the licence
+  and the notices of the libraries the hlp app bundles.
 
 On Linux, the library uses hidapi's hidraw backend, which several applications
 can share. A board's hidraw node is open only to root until a udev rule grants
