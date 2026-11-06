@@ -32,29 +32,37 @@ from typing import Any, Callable, Generator, Iterator, Optional, Union
 from gp2040ce_hostlighting.claim import ClaimState, LightsClaim
 from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CLAIM_EXCLUSIVE, CLAIM_GIVE_UP, CLAIM_TAKE,
-                                            CLAIM_TAKE_OVER, CMD_CLAIM, CMD_CLEAR, CMD_COMMIT, CMD_CONFIGURE, CMD_FILL,
-                                            CMD_GET_PAGE, CMD_HELLO, CMD_REBOOT, CMD_RELEASE, CMD_SET_ANIMATION,
-                                            CMD_SET_ANIMATION_SPEED, CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE,
-                                            CMD_SET_KEYBOARD_MAPPING, CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE,
-                                            CMD_UNSTAGE, COMMAND_RANGES, EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER,
-                                            FLAG_GENERATION, FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE,
-                                            FLAG_NO_REPLY, GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, KEY_EXPANDER,
-                                            KEY_TRIGGER, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS, NAMES_GPIO_ACTION,
-                                            NAMES_LIGHT_TYPE, PAGE_ANIMATIONS, PAGE_CONTROLS, PAGE_GROUPS,
-                                            PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
-                                            PAGE_NAMES, PAGE_PROFILES, PAGE_RANGES, PAGE_STATE, PAGE_SUMMARY, PIN_NONE,
-                                            PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES, PROTOCOL_MAJOR,
-                                            RECORD_AREA, REPLY_FLAG, STATE_IDLE, STATE_LIVE, STATE_UNSAVED,
-                                            STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
-                                            SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY, HostLightingClaimedError,
-                                            HostLightingDevice, HostLightingDisconnectedError, HostLightingError,
-                                            HostLightingIncompatibleError, HostLightingRejectedError, decode_holder,
-                                            decode_key, decode_page_header, decode_records, decode_state_changed,
-                                            is_event, key_name, stage_capacity)
-from gp2040ce_hostlighting.records import (ControlInstances, ControlLights, ControlRecord, Hello, Holder,
-                                           InputModeRecord, Instances, KeyboardMappingRecord, LightRecord, Position,
-                                           Settings, StateRecord, Summary)
+                                            BOOT_HOLD_BUTTONS, BOOT_HOLD_INPUT_MODE, BOOT_HOLD_PINS,
+                                            BOOT_HOLD_UF2_BOOTLOADER, BOOT_HOLD_WEB_CONFIGURATOR, BRIGHTNESS_SAVED,
+                                            CLAIM_EXCLUSIVE, CLAIM_GIVE_UP, CLAIM_TAKE, CLAIM_TAKE_OVER, CMD_CLAIM,
+                                            CMD_CLEAR, CMD_COMMIT, CMD_CONFIGURE, CMD_FILL, CMD_GET_PAGE, CMD_HELLO,
+                                            CMD_REBOOT, CMD_RELEASE, CMD_SET_ANIMATION, CMD_SET_ANIMATION_SPEED,
+                                            CMD_SET_BRIGHTNESS, CMD_SET_INPUT_MODE, CMD_SET_KEYBOARD_MAPPING,
+                                            CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE, CMD_UNSTAGE, COMMAND_RANGES,
+                                            EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER, FLAG_GENERATION,
+                                            FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE, FLAG_NO_REPLY,
+                                            GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, INPUT_MODE_CATEGORY_MINI,
+                                            INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_CONFIG, INPUT_MODE_LIGHTING_ALWAYS,
+                                            INPUT_MODE_LIGHTING_NEVER, INPUT_MODE_LIGHTING_SETTING,
+                                            INPUT_MODE_USB_HOST_REQUIRED, KEY_EXPANDER, KEY_TRIGGER, MAGIC_INPUT_MODE,
+                                            MAGIC_REBOOT, NAME_ENUMS, NAMES_AUTH_TYPE, NAMES_BUTTON_LAYOUT,
+                                            NAMES_BUTTON_LAYOUT_ORIENTATION, NAMES_BUTTON_LAYOUT_RIGHT,
+                                            NAMES_DEVICE_TYPE, NAMES_DPAD_MODE, NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE,
+                                            NAMES_NON_PRESSED_EFFECT, NAMES_PRESSED_EFFECT, PAGE_ANIMATIONS,
+                                            PAGE_BOOT_HOLDS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
+                                            PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_NAMES,
+                                            PAGE_PROFILES, PAGE_RANGES, PAGE_STATE, PAGE_SUMMARY, PIN_NONE, PIXEL_RGB,
+                                            PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES, PROTOCOL_MAJOR, RECORD_AREA,
+                                            REPLY_FLAG, STATE_IDLE, STATE_LIVE, STATE_UNSAVED, STATUS_CLAIMED,
+                                            STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
+                                            SUMMARY_USB_HOST, SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY,
+                                            HostLightingClaimedError, HostLightingDevice, HostLightingDisconnectedError,
+                                            HostLightingError, HostLightingIncompatibleError, HostLightingRejectedError,
+                                            decode_holder, decode_key, decode_page_header, decode_records,
+                                            decode_state_changed, is_event, key_name, stage_capacity)
+from gp2040ce_hostlighting.records import (AnimationRecord, BootHoldRecord, ControlInstances, ControlLights,
+                                           ControlRecord, Hello, Holder, InputModeRecord, Instances,
+                                           KeyboardMappingRecord, LightRecord, Position, Settings, StateRecord, Summary)
 
 __all__ = ['CheckResult', 'Checks', 'run_checks', 'measure_round_trips', 'measure_paced_frames',
            'measure_unthrottled_frames']
@@ -77,7 +85,6 @@ _ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRE
                ADDRESSING_KIND}
 _PIXEL_FORMATS = set(PIXEL_SIZES)
 _EVENTS = {EVENT_STATE_CHANGED}
-_INPUT_MODE_CONFIG = 255
 _KEEPALIVE_MS = 300              # the timeout the timing checks run with
 
 
@@ -395,8 +402,13 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
     header = decode_page_header(device.get_page(PAGE_LIGHTS, 0, 1 << 15))
     yield checks.check((header.total, header.count, header.groups) == (total, 0, 0),
                        'a mask naming no defined group: the total, no records, an empty echo')
-    header = decode_page_header(device.get_page(PAGE_LIGHTS, total))
-    yield checks.check((header.total, header.count) == (total, 0), 'a start at the total: no records')
+    lights_first, lights_past = (decode_page_header(device.get_page(PAGE_LIGHTS, start)) for start in (0, total))
+    identity_first, identity_past = (decode_page_header(device.get_page(PAGE_IDENTITY, start)) for start in (0, 1))
+    yield checks.check((lights_past.total, lights_past.count, lights_past.groups, lights_past.stride)
+                       == (total, 0, lights_first.groups, lights_first.stride)
+                       and (identity_past.count, identity_past.groups, identity_past.stride)
+                       == (0, identity_first.groups, identity_first.stride),
+                       'a start at the total (pages 0 and 12): no records, the groups and stride of one')
     reply = device.get_page(PAGE_LIGHTS, 1, 0b11, token ^ 1)
     header = decode_page_header(reply)
     echoed = (header.page, header.start, header.token) == (PAGE_LIGHTS, 1, token)
@@ -409,7 +421,8 @@ def _check_pages(device: HostLightingDevice, checks: _Checker, hello: Hello) -> 
     yield checks.check(device.read_record(PAGE_SUMMARY, 0b10).records[0].changes == changes, 'a read steps no counter')
     summary = device.get_page(PAGE_SUMMARY, 0, 1)
     colour_format, flags = summary[HEADER_RECORDS + 6], summary[HEADER_RECORDS + 7]
-    yield checks.check(not flags & ~SUMMARY_WHITE_CHANNEL, 'Summary flags: bit 0 alone', f"0x{flags:02X}")
+    yield checks.check(not flags & ~(SUMMARY_WHITE_CHANNEL | SUMMARY_USB_HOST), 'Summary flags: bits 0 and 1 alone',
+                       f"0x{flags:02X}")
     # GP2040-CE's LEDFormat 2 and 3, GRBW and RGBW, have a white emitter
     yield checks.check(bool(flags & SUMMARY_WHITE_CHANNEL) == (colour_format in (2, 3)),
                        'Summary white channel: set for a GRBW or RGBW chain alone', f"colour format {colour_format}")
@@ -436,9 +449,13 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
                       f"{shown.brightness_step_shown}, takeover number {shown.takeover_number}")
     yield checks.note(f"input modes: {_listed_modes(modes)}")
     yield checks.check(state.state.input_mode in names, 'current input mode listed on page 2')
-    yield checks.check(_INPUT_MODE_CONFIG not in names, 'config mode not listed')
+    yield checks.check(INPUT_MODE_CONFIG not in names, 'config mode not listed')
+    yield checks.check(any(mode.mode.value == shown.input_mode and mode.mode.lighting for mode in modes),
+                       'current input mode carries the lighting interface (page 2 flag bit 0)')
     summary = device.read_record(PAGE_SUMMARY).records[0].summary
     yield checks.note(', '.join(f"{item.name} {getattr(summary, item.name)}" for item in fields(summary)))
+    yield from _check_input_modes(checks, modes, summary)
+    holds = yield from _check_boot_holds(device, checks, modes)
     tables: _Tables = {page: device.read_table(page).records
                        for page in (PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_ANIMATIONS)}
     for page, key in ((PAGE_PROFILES, 'profiles'), (PAGE_CONTROLS, 'controls'), (PAGE_LIGHTS, 'lights'),
@@ -461,7 +478,8 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     actions = [record.button.action for record in tables[PAGE_KEYBOARD_MAPPING]]
     yield checks.check(len(set(actions)) == len(actions), f"page {PAGE_KEYBOARD_MAPPING} lists each action once",
                        f"{sorted(action for action in set(actions) if actions.count(action) > 1)}")
-    yield from _check_names(device, checks, controls, lights, tables[PAGE_KEYBOARD_MAPPING])
+    yield from _check_names(device, checks, controls, lights, tables[PAGE_KEYBOARD_MAPPING], holds,
+                            _carried_values(state, modes, summary, tables[PAGE_ANIMATIONS]))
     yield from _check_ranges(checks, state, summary, tables)
     yield from _check_flags(device, checks)
     yield checks.check(decode_page_header(device.get_page(PAGE_CONTROLS)).token == token,
@@ -471,13 +489,92 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     return result
 
 
+def _check_input_modes(checks: _Checker, modes: tuple[InputModeRecord, ...], summary: Summary) -> Iterator[CheckResult]:
+    """Check that page 2's groups agree with one another and with page 8."""
+    values = [mode.mode.value for mode in modes]
+    yield checks.check(values == sorted(values), 'page 2: InputMode order')
+    full = [mode for mode in modes if mode.has('capabilities') and mode.has('authentication')
+            and mode.has('device_types')]
+    yield checks.check(len(full) == len(modes), 'page 2: every record with its five groups')
+    yield checks.check(all(not mode.mode.lighting or mode.capabilities.lighting != INPUT_MODE_LIGHTING_NEVER
+                           for mode in full), 'page 2: a mode with flag bit 0 can present the interface')
+    yield checks.check(all(mode.mode.lighting or mode.capabilities.lighting != INPUT_MODE_LIGHTING_ALWAYS
+                           for mode in full), 'page 2: a mode that always presents the interface has flag bit 0')
+    yield checks.check(all(not mode.mode.detected
+                           or (mode.mode.lighting and mode.capabilities.lighting == INPUT_MODE_LIGHTING_SETTING)
+                           for mode in full), 'page 2: flag bit 1 only for a lit mode lit by the setting')
+    yield checks.check(all(not mode.capabilities.player or mode.capabilities.lighting != INPUT_MODE_LIGHTING_NEVER
+                           for mode in full), 'page 2: the player bit only for a mode that can present the interface')
+    yield checks.check(all(mode.capabilities.category in (INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_CATEGORY_MINI)
+                           for mode in full), 'page 2: categories 0 and 1')
+    required = [mode for mode in full if mode.authentication.usb_host == INPUT_MODE_USB_HOST_REQUIRED]
+    yield checks.check(all(not mode.mode.accepted or summary.usb_host for mode in required),
+                       'page 2: a mode that requires the USB host peripheral accepted only while it is enabled',
+                       ', '.join(f"{mode.mode.value} {mode.mode.accepted}" for mode in required))
+    yield checks.check(all((mode.authentication.selected is None) == (not mode.authentication.methods)
+                           for mode in full),
+                       'page 2: an authentication method selected exactly when the mode supports one')
+    yield checks.check(all((mode.device_types.selected is None) == (not mode.device_types.supported) for mode in full),
+                       'page 2: a device type selected exactly when the mode supports one')
+
+
+def _check_boot_holds(device: HostLightingDevice, checks: _Checker,
+                      modes: tuple[InputModeRecord, ...]) -> Generator[CheckResult, None, tuple[BootHoldRecord, ...]]:
+    """Check page 4's records: their kinds and targets, and holds by buttons or by pins.
+
+    :return: the records, for the page 3 check of their actions
+    """
+    holds = device.read_table(PAGE_BOOT_HOLDS).records
+    yield checks.note(f"boot holds: {len(holds)}")
+    kinds = [hold.target.kind for hold in holds]
+    yield checks.check(all(kind in (BOOT_HOLD_INPUT_MODE, BOOT_HOLD_WEB_CONFIGURATOR, BOOT_HOLD_UF2_BOOTLOADER)
+                           for kind in kinds), 'page 4: kinds 0 to 2')
+    yield checks.check(kinds.count(BOOT_HOLD_UF2_BOOTLOADER) <= 1, 'page 4: at most one UF2 bootloader hold')
+    yield checks.check(all((hold.target.mode is not None) == (hold.target.kind == BOOT_HOLD_INPUT_MODE)
+                           for hold in holds), 'page 4: an InputMode exactly for an input mode hold')
+    listed = {mode.mode.value for mode in modes}
+    unlisted = sorted({hold.target.mode for hold in holds if hold.target.mode is not None} - listed)
+    yield checks.check(not unlisted, 'page 4: each InputMode listed on page 2', f"{unlisted}")
+    yield checks.check(all((bool(hold.hold.actions), bool(hold.hold.pins))
+                           == (hold.hold.source == BOOT_HOLD_BUTTONS, hold.hold.source == BOOT_HOLD_PINS)
+                           for hold in holds), 'page 4: buttons by action, or pins, as the source says')
+    yield checks.check(all(not hold.target.locked or (hold.hold.source == BOOT_HOLD_BUTTONS
+                                                      and hold.target.kind != BOOT_HOLD_UF2_BOOTLOADER)
+                           for hold in holds), 'page 4: locked only on a button hold, never the UF2 bootloader')
+    return holds
+
+
+def _carried_values(state: StateRecord, modes: tuple[InputModeRecord, ...], summary: Summary,
+                    animations: tuple[AnimationRecord, ...]) -> dict[int, set[int]]:
+    """Give the values pages 1, 2, 8 and 13 carry, by page 3 enum: all but actions and light kinds."""
+    def bits(mask: int) -> set[int]:
+        return {bit for bit in range(16) if mask >> bit & 1}
+    auth = [mode.authentication for mode in modes if mode.has('authentication')]
+    devices = [mode.device_types for mode in modes if mode.has('device_types')]
+    return {
+        NAMES_AUTH_TYPE: set().union(*(bits(item.methods) for item in auth))
+        | {item.selected for item in auth if item.selected is not None},
+        NAMES_DEVICE_TYPE: set().union(*(bits(item.supported) for item in devices))
+        | {item.selected for item in devices if item.selected is not None},
+        NAMES_DPAD_MODE: {state.state.dpad_mode},
+        NAMES_BUTTON_LAYOUT: {summary.button_layout},
+        NAMES_BUTTON_LAYOUT_RIGHT: {summary.button_layout_right},
+        NAMES_BUTTON_LAYOUT_ORIENTATION: {summary.button_layout_orientation},
+        NAMES_NON_PRESSED_EFFECT: {animation.effects.idle for animation in animations}
+        | {animation.effects.case for animation in animations},
+        NAMES_PRESSED_EFFECT: {animation.effects.pressed for animation in animations}}
+
+
 def _listed_modes(modes: tuple[InputModeRecord, ...]) -> str:
-    """List page 2's input modes with the lighting interface each carries."""
+    """List page 2's input modes with the lighting interface each carries, and those SET_INPUT_MODE refuses."""
     def lighting(mode: InputModeRecord) -> str:
         if not mode.mode.lighting:
             return ''
         return ' (lighting once a PC is detected)' if mode.mode.detected else ' (lighting)'
-    return ', '.join(f"{mode.mode.value} {mode.name}{lighting(mode)}" for mode in modes)
+
+    def refused(mode: InputModeRecord) -> str:
+        return '' if mode.mode.accepted else ' (not accepted by SET_INPUT_MODE)'
+    return ', '.join(f"{mode.mode.value} {mode.name}{lighting(mode)}{refused(mode)}" for mode in modes)
 
 
 def _unlit_positions(device: HostLightingDevice) -> list[int]:
@@ -601,7 +698,9 @@ def _record_bytes(device: HostLightingDevice, page: int, mask: int, offset: int)
 
 # each flags byte the specification gives with its other bits zero: (what, page, mask, offset, defined bits)
 _FLAGS = (('Holder claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
-          ('page 2 flags', PAGE_INPUT_MODES, 0b01, 1, 0b11),
+          ('page 2 flags', PAGE_INPUT_MODES, 0b00001, 1, 0b111),
+          ('page 2 capability bits', PAGE_INPUT_MODES, 0b00100, 2, 0b11),
+          ('page 4 target flags', PAGE_BOOT_HOLDS, 0b01, 3, 0b1),
           ('page 9 flags', PAGE_PROFILES, 0b1, 1, 0b1),
           ('page 10 flags', PAGE_CONTROLS, 0b0001, 3, 0b11),
           (f"page {PAGE_LIGHTS} flags", PAGE_LIGHTS, 0b000010, 1, 0b1),
@@ -1092,11 +1191,12 @@ def _check_staging(device: HostLightingDevice, checks: _Checker, tables: _Tables
 
 
 def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[ControlRecord, ...],
-                 lights: tuple[LightRecord, ...],
-                 keyboard: tuple[KeyboardMappingRecord, ...]) -> Iterator[CheckResult]:
+                 lights: tuple[LightRecord, ...], keyboard: tuple[KeyboardMappingRecord, ...],
+                 holds: tuple[BootHoldRecord, ...], carried: dict[int, set[int]]) -> Iterator[CheckResult]:
+    """Check page 3: each enum listed, each value once, and a name for every value the other pages carry."""
     records = device.read_table(PAGE_NAMES).records
     pairs = [(record.entry.enum, record.entry.value) for record in records]
-    yield checks.check(set(NAME_ENUMS) <= {enum for enum, _ in pairs}, 'page 3 lists GpioAction and LightType values',
+    yield checks.check(set(NAME_ENUMS) <= {enum for enum, _ in pairs}, 'page 3 lists every enum the pages carry',
                        f"enums {sorted({enum for enum, _ in pairs})}")
     yield checks.check(len(set(pairs)) == len(pairs), 'page 3 lists each value once')
     yield checks.check(all(record.name and record.name.isascii() and record.name.isprintable() for record in records),
@@ -1111,6 +1211,12 @@ def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[C
     shown = {light.kind.value for light in lights}
     yield checks.check(shown <= kinds, f"every light kind on page {PAGE_LIGHTS} has a name on page 3",
                        f"{sorted(shown - kinds)}")
+    held = {action for hold in holds for action in hold.hold.actions}
+    yield checks.check(held <= actions, f"every button action on page {PAGE_BOOT_HOLDS} has a name on page 3",
+                       f"{sorted(held - actions)}")
+    unnamed = {NAME_ENUMS[enum]: sorted(missing) for enum, values in carried.items()
+               if (missing := values - {value for named, value in pairs if named == enum})}
+    yield checks.check(not unnamed, 'every value pages 1, 2, 8 and 13 carry has a name on page 3', f"{unnamed}")
 
 
 def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Tables,
@@ -1135,8 +1241,16 @@ def _check_features(device: HostLightingDevice, checks: _Checker, tables: _Table
                            'SET_ANIMATION_SPEED out of range: status 2')
     if _lists_keyboard_mapping(tables['hello']):
         yield from _check_keyboard_arguments(device, checks, tables, claim)
-    reply = device.request(CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
+    reply = device.request(CMD_SET_INPUT_MODE, bytes([INPUT_MODE_CONFIG]) + MAGIC_INPUT_MODE)
     yield checks.check(_status(reply) == rejected, 'SET_INPUT_MODE config mode: status 2 at [3]')
+    # a wrong magic, so a board that took the mode would still refuse at [4] and never reboot
+    listed = {mode.mode.value for mode in tables['modes']}
+    probed = sorted(mode.mode.value for mode in tables['modes'] if not mode.mode.accepted)
+    probed.append(next(value for value in range(254, -1, -1) if value not in listed))
+    wrong = [value for value in probed
+             if _status(device.request(CMD_SET_INPUT_MODE, bytes([value]) + b'XXXX')) != rejected]
+    yield checks.check(not wrong, 'SET_INPUT_MODE a mode page 2 lists without flag bit 2, or does not list: '
+                       'status 2 at [3]', f"probed {probed}, not for {wrong}")
     # the current mode, since were the guard broken, the board would save and reboot into the mode it is in
     reply = device.request(CMD_SET_INPUT_MODE, bytes([state.state.input_mode]) + MAGIC_INPUT_MODE[:2] + b'X' +
                            MAGIC_INPUT_MODE[3:])
@@ -1193,7 +1307,7 @@ def _check_lowest_offset(device: HostLightingDevice, checks: _Checker, tables: _
               # addressing and n
               (CMD_STAGE, bytes([_unlisted(tables['hello'].addressing_modes, ((0, 15),))[0], 0]), 3),
               (CMD_STAGE, bytes([ADDRESSING_LED_RUN]) + struct.pack('<HB', summary.led_limit, 0), 4),
-              (CMD_SET_INPUT_MODE, bytes([_INPUT_MODE_CONFIG]) + b'XXXX', 3),      # mode and magic
+              (CMD_SET_INPUT_MODE, bytes([INPUT_MODE_CONFIG]) + b'XXXX', 3),       # mode and magic
               # the current mode, since were the guard broken, the board would reboot into the mode it is in
               (CMD_SET_INPUT_MODE, bytes([mode]) + MAGIC_INPUT_MODE[:1] + b'XX' + MAGIC_INPUT_MODE[3:], 5),
               (CMD_REBOOT, bytes([0xFF]) + b'XXXX', 3)]                           # target and magic

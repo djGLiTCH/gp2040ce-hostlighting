@@ -47,17 +47,19 @@ COMMANDS: dict[str, Callable[[], None]] = {
 # The others run as soon as they are named.
 EXAMPLES = {
     'fill': "FF0000, or --scope case 0000FF --seconds 5",
-    'input-mode': "0 (caps lists the modes the board accepts)",
+    'input-mode': "0 (caps lists the modes and which the board accepts)",
     'reboot': "gamepad, webconfig or bootsel",
     'set-light': "0:FF0000 1:00FF00, or --by action 1:FFFFFF",
 }
 
 # What the menu shows under the command list, as typed at its prompt
 MENU_EXAMPLES = (str(list(COMMANDS).index('ping') + 1), 'ping', 'show --seconds 30', 'fill FF0000',
-                 'set-light --by action 1:FFFFFF', 'caps --page keyboard')
+                 'set-light --by action 1:FFFFFF', 'caps --page boot-holds')
 
-# The commands that restart the board, which the menu asks to confirm
-RESTARTS = ('input-mode', 'reboot')
+# The commands that restart the board, which the menu asks to confirm before running them. input-mode asks itself
+# (commands.confirm_switch) once page 2's checks pass, right before the switch, so that a mode it refuses, or one
+# that needs --force, is shown first
+RESTARTS = ('reboot',)
 
 # The GPL's own short notice, as its "How to Apply These Terms" gives it
 GPL_NOTICE = ("This program is free software: you can redistribute it and/or modify it under the terms of the GNU "
@@ -261,7 +263,12 @@ def _run_on_board(name: str, arguments: list[str], board: Optional[BoardListing]
     if board and '--board-id' not in arguments:
         arguments = ['--board-id', board.board_id, *arguments]
     print(f"running {shlex.join(['hlp', name, *arguments])}")
-    _run(name, arguments)
+    if name == 'input-mode':
+        commands.confirm_switch = lambda what: (_ask(f"hlp input-mode will {what}. y to go on: ") or '').lower() == 'y'
+    try:
+        _run(name, arguments)
+    finally:
+        commands.confirm_switch = None
 
 
 # The menu's letters other than q, and an empty line

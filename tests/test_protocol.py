@@ -17,9 +17,9 @@ import pytest
 
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting import records
-from gp2040ce_hostlighting.testing import (FakeBoard, control_record, fake_device, hello_reply, identity_reply,
-                                           light_record, name_record, other_event, page_reply, state_event,
-                                           state_record, summary_record)
+from gp2040ce_hostlighting.testing import (FakeBoard, boot_hold_record, control_record, fake_device, hello_reply,
+                                           identity_reply, input_mode_record, light_record, name_record, other_event,
+                                           page_reply, state_event, state_record, summary_record)
 
 
 def test_build_request_frames_flags_and_payload():
@@ -87,7 +87,7 @@ def test_decode_hello():
     assert hello.board_id == '433030343237362E' and hello.reply_queue_limit == 16
     assert hello.request_flags == {0, 1, 2, 3, 4, 5, 6}     # four flags and the claim generation's three bits
     assert 0x33 in hello.commands and 0x71 in hello.commands and 0x06 not in hello.commands
-    assert hello.pages == {0, 1, 2, 3, 8, 9, 10, 11, 12, 13} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
+    assert hello.pages == {0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13} and hello.addressing_modes == {0, 1, 4, 5, 6, 7}
     assert hello.pixel_formats == {0, 1, 2} and hello.events == {0} and hello.events_enabled == frozenset()
 
 
@@ -160,16 +160,46 @@ def test_decode_keys():
 
 
 def test_decode_other_pages():
-    """Test pages 2, 8, 9 and 12."""
-    modes = [[bytes([0, 0x03]), b'XINPUT'.ljust(22, b'\x00')], [bytes([14, 0x01]), b'GENERIC'.ljust(22, b'\x00')]]
+    """Test pages 2, 4, 8, 9 and 12."""
+    modes = [input_mode_record(0, b'XInput', lighting=1, detected=1, capability_lighting=hl.INPUT_MODE_LIGHTING_SETTING,
+                               player=1, usb_host=hl.INPUT_MODE_USB_HOST_OPTIONAL, auth_methods=0b101, auth_selected=2,
+                               device_types=0b11011, device_selected=4),
+             input_mode_record(5, b'Xbox One', accepted=0, usb_host=hl.INPUT_MODE_USB_HOST_REQUIRED),
+             input_mode_record(6, b'Sega Genesis Mini', category=hl.INPUT_MODE_CATEGORY_MINI)]
     assert hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes)) == (
-        records.InputModeRecord(ordinal=0, mode=records.InputModeFlags(value=0, lighting=True, detected=True),
-                                name='XINPUT'),
-        records.InputModeRecord(ordinal=1, mode=records.InputModeFlags(value=14, lighting=True, detected=False),
-                                name='GENERIC'))
+        records.InputModeRecord(
+            ordinal=0, mode=records.InputModeFlags(value=0, lighting=True, detected=True, accepted=True), name='XInput',
+            capabilities=records.InputModeCapabilities(lighting=2, category=0, player=True, keyboard_codes=False),
+            authentication=records.InputModeAuthentication(usb_host=1, methods=0b101, selected=2),
+            device_types=records.InputModeDeviceTypes(supported=0b11011, selected=4)),)
+    (_, xbone, mini) = hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes, mask=0b00101))   # 5 bytes, nine a reply
+    assert xbone.mode == records.InputModeFlags(value=5, lighting=False, detected=False, accepted=False)
+    assert mini.capabilities.category == hl.INPUT_MODE_CATEGORY_MINI
+    (named,) = hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes, start=2, mask=0b00010))
+    assert named.name == 'Sega Genesis Mini'
+    (xbone, _) = hl.decode_records(page_reply(hl.PAGE_INPUT_MODES, modes, start=1, mask=0b11000))
+    assert xbone.authentication == records.InputModeAuthentication(usb_host=2, methods=0, selected=None)
+    assert xbone.device_types == records.InputModeDeviceTypes(supported=0, selected=None)
+    # the bitmaps as values
+    assert records.InputModeAuthentication(usb_host=1, methods=0b101, selected=2).method_values == (0, 2)
+    assert records.InputModeDeviceTypes(supported=0b1000000011011, selected=4).supported_values == (0, 1, 3, 4, 12)
+    assert xbone.authentication.method_values == () and xbone.device_types.supported_values == ()
+    holds = [boot_hold_record(hl.BOOT_HOLD_UF2_BOOTLOADER, actions=(13, 14, 1)),
+             boot_hold_record(hl.BOOT_HOLD_WEB_CONFIGURATOR, locked=1, actions=(14,)),
+             boot_hold_record(hl.BOOT_HOLD_INPUT_MODE, 17, 2, pins=(1 << 7) | (1 << 8))]
+    assert hl.decode_records(page_reply(hl.PAGE_BOOT_HOLDS, holds)) == (
+        records.BootHoldRecord(ordinal=0, target=records.BootTarget(kind=2, mode=None, profile=None, locked=False),
+                               hold=records.BootHold(source=0, actions=(13, 14, 1), pins=())),
+        records.BootHoldRecord(ordinal=1, target=records.BootTarget(kind=1, mode=None, profile=None, locked=True),
+                               hold=records.BootHold(source=0, actions=(14,), pins=())),
+        records.BootHoldRecord(ordinal=2, target=records.BootTarget(kind=0, mode=17, profile=2, locked=False),
+                               hold=records.BootHold(source=1, actions=(), pins=(7, 8))))
+    (summary,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [summary_record(usb_host=1)]))
+    assert summary.summary.usb_host and not summary.summary.white_channel   # page 8 flag bit 1
     (summary,) = hl.decode_records(page_reply(hl.PAGE_SUMMARY, [summary_record()]))
     assert summary.summary == records.Summary(
-        led_extent=19, led_limit=100, render_hz=40, colour_format=0, white_channel=False, brightness_maximum=255,
+        led_extent=19, led_limit=100, render_hz=40, colour_format=0, white_channel=False, usb_host=False,
+        brightness_maximum=255,
         brightness_steps=10, animation_speed_steps=10, button_layout=0, button_layout_right=0,
         button_layout_orientation=0, grid_width=9, grid_height=6, profiles=3, controls=12, lit_controls=10,
         unlit_controls=2, lights=16, animations=3)
@@ -667,7 +697,7 @@ def test_read_table_edge_cases(hlp_fake_device, hlp_fake_board):
 
 
 def test_get_page_takes_only_the_groups_it_asked_for(hlp_fake_device, hlp_fake_board):
-    """Test that a reply with our page and start but fewer groups (another application's mask) is skipped."""
+    """Test that a reply with our page and start but another application's mask is taken, then read again."""
     hlp_fake_board.before[hl.CMD_GET_PAGE] = [page_reply(hl.PAGE_LIGHTS, hlp_fake_board.lights, mask=0b1,
                                                          sequence=1)]
     decoded = hl.decode_records(hlp_fake_device.get_page(hl.PAGE_LIGHTS))
@@ -1059,9 +1089,10 @@ def test_read_names_gives_page_3_as_read_enum_names_does(hlp_fake_device, hlp_fa
     """Test page 3: the records decoded, and read_names() in read_enum_names()'s shape, an unknown enum left out."""
     record = hlp_fake_device.read_table(hl.PAGE_NAMES).records[0]
     assert record.entry == records.EnumValue(enum=hl.NAMES_GPIO_ACTION, value=-10) and record.name == 'NONE'
-    hlp_fake_board.names = hlp_fake_board.name_records() + [name_record(7, 1, 'LATER')]
+    hlp_fake_board.names = hlp_fake_board.name_records() + [name_record(10, 1, 'LATER')]
     names = hlp_fake_device.read_names()
-    assert set(names) == {'GpioAction', 'LightType'} and names['GpioAction'][1] == 'BUTTON_PRESS_UP'
+    assert set(names) == set(hl.NAME_ENUMS.values()) and names['GpioAction'][1] == 'BUTTON_PRESS_UP'
+    assert names['InputModeAuthType'][2] == 'INPUT_MODE_AUTH_TYPE_USB' and names['DpadMode'][0] == 'DPAD_MODE_DIGITAL'
     assert names['LightType'] == {0: 'ActionButton', 1: 'Case', 2: 'Turbo', 3: 'Player1Light', 4: 'Player2Light',
                                   5: 'Player3Light', 6: 'Player4Light'}
 
@@ -1074,3 +1105,29 @@ def test_read_names_reads_page_3_without_a_token(hlp_fake_device, hlp_fake_board
              if request[0] == hl.CMD_GET_PAGE and request[3] == hl.PAGE_NAMES]
     assert len(reads) == len(hlp_fake_board.name_records())
     assert all(struct.unpack_from('<I', request, 6)[0] == 0 for request in reads)
+
+
+def test_older_firmware_returns_the_first_groups_alone(hlp_fake_device, hlp_fake_board):
+    """Test a board that defines fewer of a page's groups, as firmware before a later addition does.
+
+    Its replies are taken as this request's, the groups it lacks read as not returned, and a mask naming only
+    groups it lacks gives no records instead of a wait for a reply that never comes.
+    """
+    hlp_fake_board.older_groups = {hl.PAGE_INPUT_MODES: 2}
+    modes = hlp_fake_device.read_table(hl.PAGE_INPUT_MODES).records
+    assert [mode.mode.value for mode in modes] == [0, 3, 4, 5] and modes[0].name == 'XInput'
+    assert modes[0].groups == {'mode', 'name'} and not modes[0].has('capabilities')
+    with pytest.raises(hl.HostLightingGroupNotReadError):
+        _ = modes[0].capabilities
+    assert hlp_fake_device.read_table(hl.PAGE_INPUT_MODES, 0b00100).records == ()
+    (mode,) = hlp_fake_device.read_table(hl.PAGE_INPUT_MODES, 0b00101).records[:1]
+    assert mode.groups == {'mode'}                        # asked for groups 0 and 2: group 2 cut off
+
+
+def test_another_applications_reply_with_other_groups_is_not_taken(hlp_fake_device, hlp_fake_board):
+    """Test that a reply echoing groups the request did not ask for, or no prefix of those it did, is not its own."""
+    for groups in (0b10000, 0b00110):                     # outside the mask; groups 1 and 2 without group 0
+        other = page_reply(hl.PAGE_INPUT_MODES, hlp_fake_board.modes, mask=groups, sequence=0)
+        hlp_fake_board.before[hl.CMD_GET_PAGE] = [other]
+        reply = hlp_fake_device.get_page(hl.PAGE_INPUT_MODES, 0, 0b00001 if groups == 0b10000 else 0)
+        assert reply != other

@@ -64,12 +64,14 @@ def test_a_board_refuses_staging_past_the_limit_or_the_capacity(board_type):
 
 @pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])
 def test_a_board_answers_page_0_stale_or_past_its_record(board_type):
-    """Test page 0 under a stale token (status 3) and from start 1 (the start echoed, no strings), as the firmware."""
+    """Test page 0 under a stale token, and from start 1 (no strings, the record's groups and stride)."""
     device = fake_device(board_type())
     stale = hl.decode_page_header(device.get_page(hl.PAGE_IDENTITY, token=1))
     assert (stale.page, stale.groups, stale.count) == (hl.PAGE_IDENTITY, 0, 0)
+    first = hl.decode_page_header(device.get_page(hl.PAGE_IDENTITY))
     past = hl.decode_page_header(device.get_page(hl.PAGE_IDENTITY, start=1))
-    assert (past.start, past.total, past.count, past.groups) == (1, 1, 0, 0)
+    assert (past.start, past.total, past.count) == (1, 1, 0) and first.count == 1
+    assert (past.groups, past.stride) == (first.groups, first.stride) and past.groups
 
 
 @pytest.mark.parametrize('board_type', [FakeBoard, ModelBoard])

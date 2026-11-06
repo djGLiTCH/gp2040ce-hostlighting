@@ -18,8 +18,9 @@ groups again. Records are immutable, compare equal when their page, ordinal and 
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 
-__all__ = ['AnimationRecord', 'BoardListing', 'Changes', 'ControlInput', 'ControlInstances', 'ControlLights',
-           'ControlRecord', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Holder', 'Identity', 'InputModeFlags',
+__all__ = ['AnimationRecord', 'BoardListing', 'BootHold', 'BootHoldRecord', 'BootTarget', 'Changes', 'ControlInput',
+           'ControlInstances', 'ControlLights', 'ControlRecord', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Holder',
+           'Identity', 'InputModeAuthentication', 'InputModeCapabilities', 'InputModeDeviceTypes', 'InputModeFlags',
            'InputModeRecord', 'Instances', 'KeyboardButton', 'KeyboardMappingRecord', 'LedRange', 'LightKind',
            'LightRecord', 'NameRecord', 'Owner', 'PageHeader', 'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
@@ -221,22 +222,67 @@ class InputModeFlags:
     """Page 2's first group: the InputMode value and its flags."""
 
     value: int
-    lighting: bool
-    detected: bool
+    lighting: bool                          # presents the lighting interface with the current settings
+    detected: bool                          # the interface appears only once the board has detected a PC
+    accepted: bool                          # SET_INPUT_MODE accepts it
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InputModeCapabilities:
+    """Page 2's Capabilities group."""
+
+    lighting: int                           # INPUT_MODE_LIGHTING_NEVER, _ALWAYS or _SETTING
+    category: int                           # INPUT_MODE_CATEGORY_PRIMARY or _MINI, as the web configurator lists it
+    player: bool                            # page 1's player field carries a number in the mode
+    keyboard_codes: bool                    # the mode sends page 11's codes
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InputModeAuthentication:
+    """Page 2's USB host and authentication group."""
+
+    usb_host: int                           # INPUT_MODE_USB_HOST_UNUSED, _OPTIONAL or _REQUIRED
+    methods: int                            # bit n set for InputModeAuthType value n
+    selected: Optional[int]                 # the InputModeAuthType the driver uses; None for a mode with none
+
+    @property
+    def method_values(self) -> tuple[int, ...]:
+        """The InputModeAuthType values the mode supports, from methods."""
+        return tuple(value for value in range(8) if self.methods >> value & 1)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InputModeDeviceTypes:
+    """Page 2's Device type group."""
+
+    supported: int                          # bit n set for InputModeDeviceType value n
+    selected: Optional[int]                 # GamepadOptions.inputDeviceType; None for a mode that supports none
+
+    @property
+    def supported_values(self) -> tuple[int, ...]:
+        """The InputModeDeviceType values the mode supports, from supported."""
+        return tuple(value for value in range(16) if self.supported >> value & 1)
 
 
 class InputModeRecord(_Record):
     """A page 2 record."""
 
     PAGE = 2
-    GROUPS = ('mode', 'name')
-    __slots__ = ('_mode', '_name')
+    GROUPS = ('mode', 'name', 'capabilities', 'authentication', 'device_types')
+    __slots__ = ('_mode', '_name', '_capabilities', '_authentication', '_device_types')
     mode = _Group[InputModeFlags]()
     name = _Group[str]()
+    capabilities = _Group[InputModeCapabilities]()
+    authentication = _Group[InputModeAuthentication]()
+    device_types = _Group[InputModeDeviceTypes]()
 
-    def __init__(self, *, ordinal: int, mode: Optional[InputModeFlags] = None, name: Optional[str] = None) -> None:
+    def __init__(self, *, ordinal: int, mode: Optional[InputModeFlags] = None, name: Optional[str] = None,
+                 capabilities: Optional[InputModeCapabilities] = None,
+                 authentication: Optional[InputModeAuthentication] = None,
+                 device_types: Optional[InputModeDeviceTypes] = None) -> None:
         """Hold the groups a read returned, None for the others."""
-        super().__init__(ordinal, {'mode': mode, 'name': name})
+        super().__init__(ordinal, {'mode': mode, 'name': name, 'capabilities': capabilities,
+                                   'authentication': authentication, 'device_types': device_types})
 
 
 # page 3, Names
@@ -245,7 +291,7 @@ class InputModeRecord(_Record):
 class EnumValue:
     """Page 3's first group: which GP2040-CE enum, and the value."""
 
-    enum: int                               # NAMES_GPIO_ACTION or NAMES_LIGHT_TYPE
+    enum: int                               # a page 3 enum number (NAME_ENUMS)
     value: int
 
 
@@ -263,6 +309,41 @@ class NameRecord(_Record):
         super().__init__(ordinal, {'entry': entry, 'name': name})
 
 
+# page 4, Boot holds
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BootTarget:
+    """Page 4's Target group: what the hold boots into."""
+
+    kind: int                               # BOOT_HOLD_INPUT_MODE, _WEB_CONFIGURATOR or _UF2_BOOTLOADER
+    mode: Optional[int]                     # the InputMode, for an input mode
+    profile: Optional[int]                  # the profile it boots into; None for the saved profile
+    locked: bool                            # the forced setup option makes the board ignore the hold
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BootHold:
+    """Page 4's Hold group: the buttons, by action, or the GPIO pins held at plug-in."""
+
+    source: int                             # BOOT_HOLD_BUTTONS or BOOT_HOLD_PINS
+    actions: tuple[int, ...]                # the GpioAction of each button held, for buttons
+    pins: tuple[int, ...]                   # the GPIO pins held, for pins
+
+
+class BootHoldRecord(_Record):
+    """A page 4 record."""
+
+    PAGE = 4
+    GROUPS = ('target', 'hold')
+    __slots__ = ('_target', '_hold')
+    target = _Group[BootTarget]()
+    hold = _Group[BootHold]()
+
+    def __init__(self, *, ordinal: int, target: Optional[BootTarget] = None, hold: Optional[BootHold] = None) -> None:
+        """Hold the groups a read returned, None for the others."""
+        super().__init__(ordinal, {'target': target, 'hold': hold})
+
+
 # page 8, Summary
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -274,6 +355,7 @@ class Summary:
     render_hz: int
     colour_format: int
     white_channel: bool
+    usb_host: bool                          # the board's USB host peripheral is enabled
     brightness_maximum: int
     brightness_steps: int
     animation_speed_steps: int

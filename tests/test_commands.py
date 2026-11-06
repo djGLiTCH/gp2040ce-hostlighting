@@ -16,8 +16,8 @@ import pytest
 
 from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting import records
-from gp2040ce_hostlighting.testing import (control_record, light_record, other_event, state_event, state_record,
-                                           summary_record)
+from gp2040ce_hostlighting.testing import (boot_hold_record, control_record, light_record, other_event, state_event,
+                                           state_record, summary_record)
 from gp2040ce_hostlighting.tools import commands as tools
 
 
@@ -33,7 +33,13 @@ def test_caps_prints_every_page(hlp_run_on_fake_board, capsys, monkeypatch):
     assert 'firmware version: v0.7.12-88-ga83f820' in out
     assert 'input mode 0 (INPUT_MODE_XINPUT), profile 1, player 1, animation 0, D-pad mode 0, brightness step 5' \
         in out
-    assert '0 XINPUT (lighting once a PC is detected)' in out and '4 PS4\n' in out
+    assert '0 XInput (lighting once a PC is detected)\n' in out and '4 PS4\n' in out
+    assert '5 Xbox One, not accepted by SET_INPUT_MODE\n' in out
+    assert 'lighting by setting, primary, player number' in out
+    assert 'USB host optional; authentication 0, 2, selected 0; device types 0, 1, 3, 4, selected 0' in out
+    assert 'lighting always, primary, keyboard codes\n      USB host not used\n' in out
+    assert 'page 4 (boot holds): 5\n  the UF2 bootloader: hold 13 + 14 + 1 (BUTTON_PRESS_UP)\n' in out
+    assert '  input mode 0 (INPUT_MODE_XINPUT): hold 6\n' in out and 'USB host peripheral not enabled' in out
     assert 'LED extent 19, limit 100, render rate 40 Hz, colour format 0, no white channel\n' in out
     assert 'button layouts 0 and 0, orientation 0\n' in out and 'changes counted on pages 8: 0, 9: 0' in out
     assert 'GP2 action 1 (BUTTON_PRESS_UP) LED 0 at (1,0), 1 light(s) from ordinal 0' in out
@@ -107,19 +113,46 @@ def test_set_light_reports_skipped_addresses(hlp_run_on_fake_board, hlp_fake_boa
     assert 'skipped addresses (no light, or none below the LED limit): [-10]' in out
 
 
+def test_input_mode_names_the_boot_holds_from_the_proto_files_first(hlp_run_on_fake_board, capsys, monkeypatch):
+    """Test that hlp-input-mode names the boot holds' modes as hlp-caps does: -P first, then page 2."""
+    monkeypatch.setattr(tools, 'enum_names', lambda device=None: {'InputMode': {0: 'INPUT_MODE_XINPUT'}})
+    hlp_run_on_fake_board(tools.input_mode, '--force', '4')
+    out = capsys.readouterr().out
+    assert '  input mode 0 (INPUT_MODE_XINPUT): hold 6\n' in out and '  input mode 3: hold 12\n' in out
+
+
 def test_input_mode_checks_page_2(hlp_run_on_fake_board, hlp_fake_board, capsys):
-    """Test hlp-input-mode: modes the board accepts, --force for one without lighting, and the guard magic."""
-    with pytest.raises(SystemExit, match='does not accept input mode 9'):
+    """Test hlp-input-mode: accepted modes, the boot holds back shown before --force, and the guard magic."""
+    with pytest.raises(SystemExit, match=r'does not accept input mode 9\. It accepts 0 \(XInput\), 3 \(Keyboard\), '
+                                         r'4 \(PS4\)$'):
         hlp_run_on_fake_board(tools.input_mode, '9')
+    with pytest.raises(SystemExit, match='does not accept input mode 5 while its USB host peripheral is off'):
+        hlp_run_on_fake_board(tools.input_mode, '5')
+    capsys.readouterr()
     with pytest.raises(SystemExit, match='Add --force'):
         hlp_run_on_fake_board(tools.input_mode, '4')
+    back = ['  the web configurator: hold 14', '  input mode 0 (XInput): hold 6', '  input mode 3 (Keyboard): hold 12']
+    heading = 'boot holds back to a mode with the lighting interface or the web configurator:\n'
+    assert capsys.readouterr().out.split(heading)[1].splitlines() == back      # shown before the choice
     assert not hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)
     hlp_run_on_fake_board(tools.input_mode, '3')
     assert hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)[-1][3:8] == b'\x03MODE'
+    capsys.readouterr()
     hlp_run_on_fake_board(tools.input_mode, '--force', '4')
     out = capsys.readouterr().out
+    assert out.split(heading)[1].splitlines()[:3] == back
     assert 'PS4 has no lighting interface' in out and 'input mode 4 (PS4) set' in out
     assert hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)[-1][3:8] == b'\x04MODE'
+    # page 3 is read only with --names
+    assert not [request for request in hlp_fake_board.sent(hl.CMD_GET_PAGE) if request[3] == hl.PAGE_NAMES]
+    # a hold the board ignores is left out, and with none left the command says so
+    hlp_fake_board.boot_holds = [boot_hold_record(hl.BOOT_HOLD_INPUT_MODE, 0, locked=1, actions=(6,)),
+                                 boot_hold_record(hl.BOOT_HOLD_WEB_CONFIGURATOR, locked=1, actions=(14,))]
+    hlp_run_on_fake_board(tools.input_mode, '--force', '4')
+    assert 'no boot hold on page 4 boots a mode with the lighting interface or the web configurator' in \
+        capsys.readouterr().out
+    hlp_run_on_fake_board(tools.input_mode, '--force', '--names', '4')
+    assert [request for request in hlp_fake_board.sent(hl.CMD_GET_PAGE) if request[3] == hl.PAGE_NAMES]
 
 
 def test_reboots_and_ping(hlp_run_on_fake_board, hlp_fake_board, capsys):
@@ -762,21 +795,28 @@ def test_caps_prints_every_decoded_page_as_json(hlp_run_on_fake_board, hlp_fake_
     hlp_run_on_fake_board(tools.caps, '--json')
     data = json.loads(capsys.readouterr().out)
     assert data['hello']['major'] == 2 and data['hello']['board_id'] == hlp_fake_board.board_id.hex().upper()
-    assert set(data['pages']) == {'0', '1', '2', '8', '9', '10', '11', '12', '13'}
+    assert set(data['pages']) == {'0', '1', '2', '4', '8', '9', '10', '11', '12', '13'}
+    assert data['pages']['4'][0]['target'] == {'kind': 2, 'mode': None, 'profile': None, 'locked': False}
+    assert data['pages']['2'][3]['mode']['accepted'] is False
     assert data['pages']['12'][0]['leds'] == {'first_led': 0, 'led_count': 1}
     assert data['pages']['11'][0]['button'] == {'action': 1, 'code': hlp_fake_board.keyboard_codes[1][0]}
     assert data['pages']['1'][0]['holder']['holder_token'] == 0 and data['pages']['0']['board_config']
 
 
 def test_the_commands_name_actions_from_page_3_without_proto_files(hlp_run_on_fake_board, capsys):
-    """Test that without -P, --names has the board's page 3 name actions and kinds, and hlp-caps count it."""
+    """Test that without -P, --names has page 3 name the enum values, hlp-caps count it, and page 2 the modes."""
     hlp_run_on_fake_board(tools.caps, '--names')
     out = capsys.readouterr().out
     assert 'page 3 (names): 35 GpioAction, 7 LightType' in out
     assert 'action 1 (BUTTON_PRESS_UP)' in out and 'kind 1 (Case)' in out
     assert 'page 11 (keyboard mapping): 32' in out and ' 0 action 1 (BUTTON_PRESS_UP): code 0x52' in out
     hlp_run_on_fake_board(tools.caps)
-    assert 'page 3 (names): not read (--names reads it)' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert 'page 3 (names): not read (--names reads it)' in out
+    # page 3 does not carry InputMode, so page 1 and page 4 take page 2's names
+    assert ': input mode 0 (XInput), profile 1,' in out and '  input mode 0 (XInput): hold 6\n' in out
+    hlp_run_on_fake_board(tools.caps, '--page', 'boot-holds')
+    assert '  input mode 3 (Keyboard): hold 12\n' in capsys.readouterr().out
     hlp_run_on_fake_board(tools.caps, '--json', '--names')
     assert json.loads(capsys.readouterr().out)['pages']['3']['GpioAction']['1'] == 'BUTTON_PRESS_UP'
 
@@ -798,6 +838,21 @@ def test_a_command_prints_each_line_as_it_comes(monkeypatch):
     monkeypatch.setattr(sys, 'stdout', out)
     tools.hlp_command(lambda: None)()
     assert out.line_buffering
+
+
+def test_boot_holds_note_up_in_an_analog_dpad_mode(hlp_run_on_fake_board, hlp_fake_board, capsys):
+    """Test that a hold with BUTTON_PRESS_UP notes the DIGITAL_DIRECTION_UP control in an analog D-pad mode alone."""
+    note = '(Up: the DIGITAL_DIRECTION_UP control in this D-pad mode)'
+    hlp_run_on_fake_board(tools.caps, '--page', 'boot-holds')
+    assert note not in capsys.readouterr().out                      # DPAD_MODE_DIGITAL
+    hlp_fake_board.set_state(9, bytes([1]))                          # DPAD_MODE_LEFT_ANALOG, State +9
+    hlp_run_on_fake_board(tools.caps, '--page', 'boot-holds')
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith('  the UF2 bootloader: hold 13 + 14 + 1') and lines[1].endswith(note)
+    assert sum(note in line for line in lines) == 1                  # the holds without Up have none
+    with pytest.raises(SystemExit):
+        hlp_run_on_fake_board(tools.input_mode, '4')
+    assert note not in capsys.readouterr().out                       # the way back has no Up hold here
 
 
 def test_caps_prints_the_pages_chosen(hlp_run_on_fake_board, hlp_fake_board, capsys):

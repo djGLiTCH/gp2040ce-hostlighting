@@ -23,11 +23,17 @@ the board and lists its capabilities. GET_PAGE reads the pages:
   shown and the saved one, takeover, whether the animations are idle, the
   application holding CLAIM, whether exclusively and the claim generation, and
   the CONFIGURE settings
-* page 2 (input modes): every mode SET_INPUT_MODE accepts, named by the firmware
+* page 2 (input modes): every input mode but the config mode, named by the
+  firmware, with whether it carries the lighting interface and whether
+  SET_INPUT_MODE accepts it, its category and capabilities, its USB host and
+  authentication use, and its device types
+* page 3 (names): the firmware's name for each enum value the pages carry
+* page 4 (boot holds): the buttons or pins held at plug-in that boot an input
+  mode, the web configurator or the UF2 bootloader
 * page 8 (summary): LED extent and limit, render rate, colour format and white
-  channel, brightness and speed steps, the display's button layouts and their
-  orientation, grid size, the profile, control, light and animation totals,
-  and a change counter per configuration page
+  channel, the USB host peripheral, brightness and speed steps, the display's
+  button layouts and their orientation, grid size, the profile, control, light
+  and animation totals, and a change counter per configuration page
 * page 9 (profiles), page 10 (controls: every input with an action, lit or
   not, keyed by GPIO pin, Hall-effect trigger or expander pin), page 11 (the
   keyboard mapping: the code the Keyboard input mode sends for each button),
@@ -54,13 +60,14 @@ import time
 from dataclasses import fields
 from typing import Any, Callable, Final, Iterable, Literal, Optional, Protocol, Sequence, overload
 
-from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, Changes, ControlInput, ControlInstances,
-                                           ControlLights, ControlRecord, Effects, EnumValue, GridCell, Hello, Holder,
-                                           Identity, InputModeFlags, InputModeRecord, Instances, KeyboardButton,
-                                           KeyboardMappingRecord, LedRange, LightKind, LightRecord, NameRecord, Owner,
-                                           PageHeader, PageRead, PaletteSlot, Position, Profile, ProfileRecord,
-                                           Requirements, Settings, Speeds, StageOutcome, State, StateChanged,
-                                           StateRecord, Summary, SummaryRecord)
+from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, BootHold, BootHoldRecord, BootTarget, Changes,
+                                           ControlInput, ControlInstances, ControlLights, ControlRecord, Effects,
+                                           EnumValue, GridCell, Hello, Holder, Identity, InputModeAuthentication,
+                                           InputModeCapabilities, InputModeDeviceTypes, InputModeFlags, InputModeRecord,
+                                           Instances, KeyboardButton, KeyboardMappingRecord, LedRange, LightKind,
+                                           LightRecord, NameRecord, Owner, PageHeader, PageRead, PaletteSlot, Position,
+                                           Profile, ProfileRecord, Requirements, Settings, Speeds, StageOutcome, State,
+                                           StateChanged, StateRecord, Summary, SummaryRecord)
 
 __all__ = [
     # the interface, framing and replies
@@ -75,11 +82,19 @@ __all__ = [
     'GENERATION_MAX', 'STATUS_OK', 'STATUS_UNSUPPORTED', 'STATUS_INVALID', 'STATUS_STALE', 'STATUS_CLAIMED',
     'STATUS_NAMES', 'EVENT_STATE_CHANGED',
     # pages
-    'NAMES_GPIO_ACTION', 'NAMES_LIGHT_TYPE', 'NAME_ENUMS',
-    'PAGE_IDENTITY', 'PAGE_STATE', 'PAGE_INPUT_MODES', 'PAGE_NAMES', 'PAGE_SUMMARY', 'PAGE_PROFILES', 'PAGE_CONTROLS',
+    'NAMES_GPIO_ACTION', 'NAMES_LIGHT_TYPE', 'NAMES_AUTH_TYPE', 'NAMES_DEVICE_TYPE', 'NAMES_DPAD_MODE',
+    'NAMES_BUTTON_LAYOUT', 'NAMES_BUTTON_LAYOUT_RIGHT', 'NAMES_BUTTON_LAYOUT_ORIENTATION', 'NAMES_NON_PRESSED_EFFECT',
+    'NAMES_PRESSED_EFFECT', 'NAME_ENUMS',
+    'INPUT_MODE_CONFIG', 'INPUT_MODE_LIGHTING_NEVER', 'INPUT_MODE_LIGHTING_ALWAYS', 'INPUT_MODE_LIGHTING_SETTING',
+    'INPUT_MODE_CATEGORY_PRIMARY', 'INPUT_MODE_CATEGORY_MINI', 'INPUT_MODE_USB_HOST_UNUSED',
+    'INPUT_MODE_USB_HOST_OPTIONAL', 'INPUT_MODE_USB_HOST_REQUIRED', 'BOOT_HOLD_INPUT_MODE',
+    'BOOT_HOLD_WEB_CONFIGURATOR', 'BOOT_HOLD_UF2_BOOTLOADER', 'BOOT_HOLD_BUTTONS', 'BOOT_HOLD_PINS',
+    'PAGE_IDENTITY', 'PAGE_STATE', 'PAGE_INPUT_MODES', 'PAGE_NAMES', 'PAGE_BOOT_HOLDS', 'PAGE_SUMMARY', 'PAGE_PROFILES',
+    'PAGE_CONTROLS',
     'PAGE_KEYBOARD_MAPPING', 'PAGE_LIGHTS', 'PAGE_ANIMATIONS', 'PAGE_RANGES', 'PAGE_GROUPS', 'HEADER_RECORDS',
     'RECORD_AREA', 'HEADER_TOKEN',
     'IDENTITY_GROUPS', 'IDENTITY_STRING_MAX', 'STATE_LIVE', 'STATE_UNSAVED', 'STATE_IDLE', 'SUMMARY_WHITE_CHANNEL',
+    'SUMMARY_USB_HOST',
     'KEY_SOURCES', 'KEY_TRIGGER', 'KEY_EXPANDER', 'KEY_PREFIXES', 'PIN_NONE', 'SLOT_NONE', 'INDEX_NONE',
     'ACTION_NONE', 'ANIMATION_OFF', 'SPEED_UNCHANGED', 'BRIGHTNESS_SAVED',
     # staging
@@ -176,6 +191,7 @@ PAGE_IDENTITY: Final = 0
 PAGE_STATE: Final = 1
 PAGE_INPUT_MODES: Final = 2
 PAGE_NAMES: Final = 3
+PAGE_BOOT_HOLDS: Final = 4
 PAGE_SUMMARY: Final = 8
 PAGE_PROFILES: Final = 9
 PAGE_CONTROLS: Final = 10
@@ -193,8 +209,9 @@ HEADER_TOKEN = 60
 # strings of up to 48 bytes each
 PAGE_GROUPS = {
     PAGE_STATE: (10, 22, 4),
-    PAGE_INPUT_MODES: (2, 22),
+    PAGE_INPUT_MODES: (2, 22, 3, 3, 3),
     PAGE_NAMES: (3, 40),
+    PAGE_BOOT_HOLDS: (4, 11),
     PAGE_SUMMARY: (30, 8),
     PAGE_PROFILES: (18,),
     PAGE_CONTROLS: (4, 4, 6, 4),
@@ -208,13 +225,45 @@ IDENTITY_STRING_MAX = 48
 # page 3's enums, by the name enums.proto gives each
 NAMES_GPIO_ACTION = 0
 NAMES_LIGHT_TYPE = 1
-NAME_ENUMS = {NAMES_GPIO_ACTION: 'GpioAction', NAMES_LIGHT_TYPE: 'LightType'}
+NAMES_AUTH_TYPE = 2
+NAMES_DEVICE_TYPE = 3
+NAMES_DPAD_MODE = 4
+NAMES_BUTTON_LAYOUT = 5
+NAMES_BUTTON_LAYOUT_RIGHT = 6
+NAMES_BUTTON_LAYOUT_ORIENTATION = 7
+NAMES_NON_PRESSED_EFFECT = 8
+NAMES_PRESSED_EFFECT = 9
+NAME_ENUMS = {NAMES_GPIO_ACTION: 'GpioAction', NAMES_LIGHT_TYPE: 'LightType', NAMES_AUTH_TYPE: 'InputModeAuthType',
+              NAMES_DEVICE_TYPE: 'InputModeDeviceType', NAMES_DPAD_MODE: 'DpadMode',
+              NAMES_BUTTON_LAYOUT: 'ButtonLayout', NAMES_BUTTON_LAYOUT_RIGHT: 'ButtonLayoutRight',
+              NAMES_BUTTON_LAYOUT_ORIENTATION: 'ButtonLayoutOrientation',
+              NAMES_NON_PRESSED_EFFECT: 'AnimationNonPressedEffects',
+              NAMES_PRESSED_EFFECT: 'AnimationPressedEffects'}
+
+# page 2: the config mode is never listed (REBOOT target 1 enters it); its capabilities' values
+INPUT_MODE_CONFIG = 255
+INPUT_MODE_LIGHTING_NEVER = 0
+INPUT_MODE_LIGHTING_ALWAYS = 1
+INPUT_MODE_LIGHTING_SETTING = 2                         # by the XInput Lighting setting
+INPUT_MODE_CATEGORY_PRIMARY = 0
+INPUT_MODE_CATEGORY_MINI = 1                            # console minis
+INPUT_MODE_USB_HOST_UNUSED = 0
+INPUT_MODE_USB_HOST_OPTIONAL = 1
+INPUT_MODE_USB_HOST_REQUIRED = 2
+
+# page 4: a hold's kinds (1 and 2 as REBOOT targets) and sources
+BOOT_HOLD_INPUT_MODE = 0
+BOOT_HOLD_WEB_CONFIGURATOR = 1
+BOOT_HOLD_UF2_BOOTLOADER = 2
+BOOT_HOLD_BUTTONS = 0
+BOOT_HOLD_PINS = 1
 
 # page 1's State flags and page 8's Summary flags
 STATE_LIVE = 0x01
 STATE_UNSAVED = 0x02
 STATE_IDLE = 0x04
 SUMMARY_WHITE_CHANNEL = 0x01
+SUMMARY_USB_HOST = 0x02
 
 # page 10 keys: GPIO pin p is key p, Hall-effect trigger n is KEY_TRIGGER + n and PCF8575 pin n is
 # KEY_EXPANDER + n. The rest are reserved
@@ -567,6 +616,20 @@ def decode_page_header(reply: bytes) -> PageHeader:
                       stride=reply[9], groups=_u16(reply, 10), token=_u32(reply, HEADER_TOKEN))
 
 
+def _echoes_groups(page: int, mask: int, groups: int) -> bool:
+    """Say whether a table page reply's groups answer a request with this mask.
+
+    The board returns every group asked for that it defines, and with mask 0 newer firmware's too. Groups are added
+    at the end of a record, so older firmware defines a prefix of this library's: the groups asked for, cut off where
+    its groups end. A group outside a mask is another application's.
+    """
+    known = (1 << len(PAGE_GROUPS[page])) - 1
+    asked, got = (mask or known) & known, groups & known
+    if (mask and groups & ~mask) or (not mask and not got):
+        return False
+    return any(got == asked & ((1 << defined) - 1) for defined in range(len(PAGE_GROUPS[page]) + 1))
+
+
 def _stride_error(header: PageHeader) -> Optional[str]:
     """Say why a table page reply's stride is one its echoed field groups cannot have in this layout.
 
@@ -617,11 +680,39 @@ def _settings(data: bytes) -> Settings:
 
 
 def _input_mode_flags(data: bytes) -> InputModeFlags:
-    return InputModeFlags(value=data[0], lighting=bool(data[1] & 0x01), detected=bool(data[1] & 0x02))
+    return InputModeFlags(value=data[0], lighting=bool(data[1] & 0x01), detected=bool(data[1] & 0x02),
+                          accepted=bool(data[1] & 0x04))
 
 
 def _input_mode_name(data: bytes) -> str:
     return _string(data[:22])
+
+
+def _none_ff(value: int) -> Optional[int]:
+    return None if value == 0xFF else value
+
+
+def _input_mode_capabilities(data: bytes) -> InputModeCapabilities:
+    return InputModeCapabilities(lighting=data[0], category=data[1], player=bool(data[2] & 0x01),
+                                 keyboard_codes=bool(data[2] & 0x02))
+
+
+def _input_mode_authentication(data: bytes) -> InputModeAuthentication:
+    return InputModeAuthentication(usb_host=data[0], methods=data[1], selected=_none_ff(data[2]))
+
+
+def _input_mode_device_types(data: bytes) -> InputModeDeviceTypes:
+    return InputModeDeviceTypes(supported=_u16(data, 0), selected=_none_ff(data[2]))
+
+
+def _boot_target(data: bytes) -> BootTarget:
+    return BootTarget(kind=data[0], mode=_none_ff(data[1]), profile=_none_ff(data[2]), locked=bool(data[3] & 0x01))
+
+
+def _boot_hold(data: bytes) -> BootHold:
+    actions = tuple(a for a in struct.unpack_from('<hhh', data, 1) if a != -0x8000)
+    mask = _u32(data, 7)
+    return BootHold(source=data[0], actions=actions, pins=tuple(p for p in range(32) if mask & (1 << p)))
 
 
 def _enum_value(data: bytes) -> EnumValue:
@@ -634,7 +725,8 @@ def _enum_name(data: bytes) -> str:
 
 def _summary(data: bytes) -> Summary:
     return Summary(led_extent=_u16(data, 0), led_limit=_u16(data, 2), render_hz=_u16(data, 4), colour_format=data[6],
-                   white_channel=bool(data[7] & SUMMARY_WHITE_CHANNEL), brightness_maximum=data[8],
+                   white_channel=bool(data[7] & SUMMARY_WHITE_CHANNEL), usb_host=bool(data[7] & SUMMARY_USB_HOST),
+                   brightness_maximum=data[8],
                    brightness_steps=data[9], animation_speed_steps=data[10], button_layout=data[11],
                    button_layout_right=data[12], button_layout_orientation=data[13], grid_width=_u16(data, 14),
                    grid_height=_u16(data, 16), profiles=_u16(data, 18), controls=_u16(data, 20),
@@ -729,8 +821,12 @@ def _speeds(data: bytes) -> Speeds:
 # each table page's record type, and the attribute and decoder of each field group in mask bit order
 _PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], ...]]] = {
     PAGE_STATE: (StateRecord, (('state', _state), ('holder', decode_holder), ('settings', _settings))),
-    PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name))),
+    PAGE_INPUT_MODES: (InputModeRecord, (('mode', _input_mode_flags), ('name', _input_mode_name),
+                                         ('capabilities', _input_mode_capabilities),
+                                         ('authentication', _input_mode_authentication),
+                                         ('device_types', _input_mode_device_types))),
     PAGE_NAMES: (NameRecord, (('entry', _enum_value), ('name', _enum_name))),
+    PAGE_BOOT_HOLDS: (BootHoldRecord, (('target', _boot_target), ('hold', _boot_hold))),
     PAGE_SUMMARY: (SummaryRecord, (('summary', _summary), ('changes', _changes))),
     PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
     PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _control_instances),
@@ -749,7 +845,7 @@ def decode_records(reply: bytes) -> tuple[Any, ...]:
     reply's start plus its index in the reply). Reading a group the reply did not echo raises
     HostLightingGroupNotReadError.
 
-    :param reply: the reply report of a table page (1-3, 8-13)
+    :param reply: the reply report of a table page (1-4, 8-13)
     :return: the records
     :raises HostLightingError: for a page that is not a table, a stride narrower than the groups it echoes, or
         more records than the reply holds
@@ -1313,7 +1409,9 @@ class HostLightingDevice:
 
         A reply to another application's request with this one's numbers is told apart by its echoed page, start
         and field groups, and by the state token. A request that names none is never stale, and one that does
-        is answered under that token or shown another.
+        is answered under that token or shown another. A call can send more than one request: another
+        application's reply is read again, and a reply with fewer groups than asked is confirmed by asking for
+        the first missing group alone.
 
         :param page: page number
         :param start: first record
@@ -1329,6 +1427,27 @@ class HostLightingDevice:
         _check_range('start', start, 0xFFFF)
         _check_range('mask', mask, 0xFFFF)
         _check_range('token', token, 0xFFFFFFFF)
+        reply = self._get_page_once(page, start, mask, token)
+        # A reply with fewer of the groups asked for is older firmware's, which defines fewer, or another
+        # application's with a narrower mask. The first group missing, asked for alone, says which: older firmware
+        # returns no group, and then the reply stands. Otherwise the page is read again
+        for _ in range(3):
+            if reply[2] != STATUS_OK or page not in PAGE_GROUPS:
+                return reply
+            known = (1 << len(PAGE_GROUPS[page])) - 1
+            asked = (mask or known) & known
+            missing = asked & ~decode_page_header(reply).groups
+            if not missing:
+                return reply
+            first = missing & -missing
+            probe = self._get_page_once(page, start, first, token)
+            if probe[2] != STATUS_OK or not decode_page_header(probe).groups & first:
+                return reply
+            reply = self._get_page_once(page, start, mask, token)
+        return reply
+
+    def _get_page_once(self, page: int, start: int, mask: int, token: int) -> bytes:
+        """Send one GET_PAGE and take the first reply that echoes it, as get_page() describes."""
 
         def echoes(reply: bytes) -> bool:
             if reply[2] not in (STATUS_OK, STATUS_STALE):
@@ -1346,9 +1465,7 @@ class HostLightingDevice:
             # this request did not ask for, which another application's mask returned
             if _stride_error(header) and not (mask and header.groups & ~mask):
                 return True
-            # a table page returns every group asked for that it defines, and with mask 0 newer firmware's too
-            known = (1 << len(PAGE_GROUPS[page])) - 1
-            return header.groups & known == (mask or known) & known and not (mask and header.groups & ~mask)
+            return _echoes_groups(page, mask, header.groups)
 
         reply = self.request(CMD_GET_PAGE, struct.pack('<BHIH', page, start, token, mask), accept=echoes)
         if reply[2] not in (STATUS_OK, STATUS_STALE):
@@ -1369,6 +1486,10 @@ class HostLightingDevice:
     @overload
     def read_table(self, page: Literal[3], mask: int = 0, token: int = 0,
                    attempts: int = 5) -> PageRead[NameRecord]: ...
+
+    @overload
+    def read_table(self, page: Literal[4], mask: int = 0, token: int = 0,
+                   attempts: int = 5) -> PageRead[BootHoldRecord]: ...
 
     @overload
     def read_table(self, page: Literal[8], mask: int = 0, token: int = 0,
@@ -1470,7 +1591,7 @@ class HostLightingDevice:
         return PageRead(records=decode_records(reply), token=decode_page_header(reply).token)
 
     def read_names(self) -> dict[str, dict[int, str]]:
-        """Read page 3: the names the board's firmware gives its GpioAction and LightType values.
+        """Read page 3: the names the board's firmware gives the enum values its pages carry.
 
         Page 3 is fixed for the firmware and outside the state token, so it is read without one, and a change
         of the board's state during the walk does not start it again. A host can keep the names by firmware
@@ -1785,16 +1906,20 @@ class HostLightingDevice:
     def set_input_mode(self, mode: int, allow_no_lighting: bool = False) -> bool:
         """Save an input mode and reboot the board into it.
 
-        By default page 2 is read first and a mode without the lighting interface is refused, since no host can
-        switch the board back from it. A mode page 2 does not list is sent, and the board refuses it.
+        By default page 2 is read first, and a mode the board does not accept (flag bit 2 clear) or a mode without
+        the lighting interface is refused, since no host can switch the board back from the latter. A mode page 2
+        does not list is sent, and the board refuses it.
 
         :param mode: an InputMode value, as page 2 lists them
-        :param allow_no_lighting: switch into a mode without the lighting interface too
+        :param allow_no_lighting: switch into a mode without the lighting interface too, page 2 not read
         :return: True when the board acknowledged, False when it left the bus before the reply was read
-        :raises ValueError: for a listed mode without the lighting interface, unless allowed
+        :raises ValueError: for a listed mode the board does not accept, or without the lighting interface, unless
+            allowed
         """
         if not allow_no_lighting:
             listed = {record.mode.value: record for record in self.read_table(PAGE_INPUT_MODES, 0b1).records}
+            if mode in listed and not listed[mode].mode.accepted:
+                raise ValueError(f"the board does not accept input mode {mode}")
             if mode in listed and not listed[mode].mode.lighting:
                 raise ValueError(f"input mode {mode} has no lighting interface, and no host can switch the board "
                                  "back from it. Pass allow_no_lighting=True to switch anyway")

@@ -15,9 +15,10 @@ board's lights. The on-board animations return when the host stops.
 - The board's own animations return when the host releases control or
   disconnects. When the host stops or crashes they return within a timeout, 2 s
   by default.
-- The board describes its LED layout, controls, keyboard mapping, profiles and
-  animations from its live configuration, user remaps included. Host software
-  needs no per-board configuration and no update when a new board is released.
+- The board describes its LED layout, controls, keyboard mapping, profiles,
+  animations and input modes from its live configuration, user remaps included.
+  Host software needs no per-board configuration and no update when a new board
+  is released.
 - A host can also switch the input profile, animation, animation speed and
   brightness as the board's hotkeys do, and change the input mode. It can set
   the codes the Keyboard input mode sends when the user allows it.
@@ -78,7 +79,9 @@ Lighting section, decides when the board presents the lighting interface.
   controller interface. The operating system's own Xbox 360 driver binds the
   controller interface, on Windows through MS OS descriptors and on Linux
   through the kernel's xpad vendor match. In this mode the lighting device
-  appears a few seconds after plug-in.
+  appears a few seconds after plug-in. A bus reset that follows a suspend, as
+  when a USB switch moves the board or some PCs resume from sleep, returns the
+  board to its stock identity, and it detects the host again.
 - **Always On**: The board presents the composite identity from boot. It works
   only on a PC while this is set.
 - **Off**: The board always presents the stock XInput identity. XInput mode has
@@ -153,7 +156,7 @@ sharing a board, events and a clean shutdown.
 
 1. Discover by usage page and usage. Send `HELLO`. Require the `GPHL` magic and
    major 2, check the capabilities the host uses, and bind by the board ID.
-2. Read page 8 with `GET_PAGE`. Read pages 0, 2, 3 and 9-13 as the use case
+2. Read page 8 with `GET_PAGE`. Read pages 0, 2-4 and 9-13 as the use case
    needs (table below).
 3. Send `CLAIM`. Make it exclusive to keep applications that do not claim from
    changing the board.
@@ -202,8 +205,9 @@ The two differ as follows.
 | Learning of a change of holder | Within each keepalive timeout | Within each keepalive timeout | Step 3 |
 | Shutdown | `CLAIM` give up | `RELEASE` and `SET_BRIGHTNESS` 0xFF, unless another application holds the claim | Step 8 |
 
-Repeat from step 1 after a replug, reboot or input-mode change. Drop the cached
-pages and their change counters, which start again at 0 with each boot.
+Repeat from step 1 after a replug, reboot or input-mode change, and in XInput
+Auto after a suspend and bus reset (Supported modes). Drop the cached pages and
+their change counters, which start again at 0 with each boot.
 
 | Use case | Commands and pages |
 |---|---|
@@ -216,9 +220,10 @@ pages and their change counters, which start again at 0 with each boot.
 | Switch the input profile | `SET_PROFILE`; 9 |
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
 | Set an animation's speeds | `SET_ANIMATION_SPEED`; 13 for the speeds, 8 for the step count |
-| Switch the input mode | `SET_INPUT_MODE`; 2 |
-| Name actions and light kinds | 3 |
-| Full inventory and UI | 0, 2, 3, 8-13 |
+| Switch the input mode | `SET_INPUT_MODE`; 2, 4 |
+| Show what each input mode needs and supports | 2, 3 |
+| Name actions, light kinds and the other values the pages carry | 3 |
+| Full inventory and UI | 0, 2-4, 8-13 |
 | Share a board with other applications | `CLAIM`, the generation; 1 |
 | Keep applications that do not claim off the board | `CLAIM` exclusive, `HOLDER` and the generation; 1 |
 | Stay current | `SUBSCRIBE`, or poll 1 |
@@ -279,9 +284,9 @@ Each quantity has one width wherever it appears:
 | 8-bit | Pin, key, kind, grid coordinate, enumerated value, string byte; sequence, takeover number, versions, page, profile, brightness, animation speed, player, palette slot, button layout, keyboard code, change counter, reply queue limit; counts, offsets and strides within one report |
 | 16-bit | LED index and count, light ordinal and count, animation ordinal, record index and count, control instance and instances, grid size, render rate, time in ms |
 | 16-bit, signed | Action, page 3 value |
-| 32-bit | State token, host token |
+| 32-bit | State token, host token, boot hold pin mask |
 | 64-bit | Board ID |
-| 1 bit per member | Bitmaps: request flags (bits 0-3 and 7), claim flags (8), addressing modes (16), pixel formats (16), events (16), pages (32), commands (128), field groups (16), `STAGE` and `UNSTAGE` outcome (32) |
+| 1 bit per member | Bitmaps: request flags (bits 0-3 and 7), claim flags (8), addressing modes (16), pixel formats (16), events (16), pages (32), commands (128), field groups (16), `STAGE` and `UNSTAGE` outcome (32), authentication methods (8), device types (16) |
 | Per format | Pixel: 24, 32 or 16 bits (Pixel formats) |
 
 Strings are UTF-8, byte for byte as the board stores them. Every string length
@@ -438,7 +443,7 @@ flash counts toward no timeout.
 | 0x34 | SET_KEYBOARD_MAPPING | `[3]` expected profile, `[4..5]` first record, `[6]` count, `[7..]` one code per record | - |
 | | **Privileged management, magic-guarded (0x70-0x7F)** | | |
 | 0x70 | SET_INPUT_MODE | `[3]` InputMode, `[4..7]="MODE"` | - |
-| 0x71 | REBOOT | `[3]` target (0 gamepad, 1 web configurator, 2 BOOTSEL), `[4..7]="BOOT"` | - |
+| 0x71 | REBOOT | `[3]` target (0 saved input mode, 1 web configurator, 2 UF2 bootloader), `[4..7]="BOOT"` | - |
 
 `HELLO` reply:
 
@@ -681,16 +686,16 @@ and a saved `SET_BRIGHTNESS` write the board's settings flash.
   pixels, it scales them.
 
 `SET_INPUT_MODE` takes a value of the running firmware's `InputMode` enum
-(`proto/enums.proto`). A mode the firmware has no driver for is an invalid
-argument. So is the config mode (`INPUT_MODE_CONFIG`), which `REBOOT` target 1
-enters. The board saves the mode and reboots into it. It does not write the
-current mode again, but still reboots.
+(`proto/enums.proto`). A mode page 2 does not list, or lists without flag bit
+2, is an invalid argument. The config mode (`INPUT_MODE_CONFIG`) is not listed.
+`REBOOT` target 1 enters it. The board saves the mode and reboots into it. It
+does not write the current mode again, but still reboots.
 
 A mode without the lighting interface is left only through the web
-configurator, a boot-time button hold, the reboot hotkeys or, on a board with a
-display, its menu. Page 2 lists the modes with a driver and those with the
-interface. Into a mode with page 2 flag bit 1, the interface can take a few
-seconds and a second re-enumeration to return (Supported modes).
+configurator, a boot hold (page 4), the reboot hotkeys or, on a board with a
+display, its menu. Page 2 flag bit 0 marks the modes with the interface. Into a
+mode with page 2 flag bit 1, the interface can take a few seconds and a second
+re-enumeration to return (Supported modes).
 
 `REBOOT` targets are the web configurator's reboot modes (its `/api/reboot`
 `bootMode`), as the running firmware defines them: 0 into the saved input mode,
@@ -707,9 +712,10 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | | **Board (0-7)** | | |
 | 0 | Identity | The board and its firmware: label, board config, platform, version and build | For display and diagnostics. It changes only with the firmware |
 | 1 | State | What is happening now: input mode, profile, player, animation, brightness, takeover and its `CONFIGURE` settings, the D-pad mode, the application holding `CLAIM` and the claim generation | To poll, or as the `STATE_CHANGED` payload. It changes at any time |
-| 2 | Input modes | The input modes `SET_INPUT_MODE` accepts: value, name, and whether each presents the lighting interface | Before `SET_INPUT_MODE`. It changes only with the firmware and its settings |
-| 3 | Names | The names of the `GpioAction` and `LightType` values the pages carry, as GP2040-CE's `proto/enums.proto` gives them | To name actions and light kinds. It changes only with the firmware |
-| 4-7 | - | Free for board pages | - |
+| 2 | Input modes | Every input mode but the config mode: value, name, whether `SET_INPUT_MODE` accepts it, its lighting interface, and what it needs and supports: USB host peripheral, authentication, device types | Before `SET_INPUT_MODE`, or to show what each mode offers. It changes only with the firmware and its settings |
+| 3 | Names | The names of the GP2040-CE enum values the pages carry: actions, light kinds, authentication methods, device types, D-pad modes, button layouts and their orientation, and animation effects, as GP2040-CE's `proto/enums.proto` gives them | To name those values. It changes only with the firmware |
+| 4 | Boot holds | The buttons or pins held at plug-in that boot an input mode, the web configurator or the UF2 bootloader | With page 2, to show how to reach a mode without a host, above all one without the lighting interface. It changes only with the firmware and its settings |
+| 5-7 | - | Free for board pages | - |
 | | **Configuration (8-15)** | | |
 | 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, the record counts of pages 9, 10, 12 and 13, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
@@ -733,8 +739,9 @@ Every reply has the same header:
     [12..59] records                  [60..63] state token
 
 The page, start and field groups sit where the request has them. Pages 0, 1 and
-8 are tables of one record. A start at or past the total returns no records. An
-unknown page is an invalid argument.
+8 are tables of one record. A start at or past the total returns no records,
+with the field groups and stride a record would have. An unknown page is an
+invalid argument.
 
 Each page defines its record as an ordered list of **field groups**, one mask
 bit per group. The reply takes the requested groups in bit order and returns
@@ -811,9 +818,8 @@ State:
 A held `SUSTAIN_DP_MODE_*` button sets the D-pad mode, `SUSTAIN_DP_MODE_DP`
 before `SUSTAIN_DP_MODE_LS` and `SUSTAIN_DP_MODE_RS`. With none held it is
 `GamepadOptions.dpadMode`, which the D-pad hotkeys change and save.
-`proto/enums.proto` lists the modes. Page 11 depends only on whether the mode
-is `DPAD_MODE_DIGITAL`. A host must treat a mode it does not know as one it
-cannot name.
+`proto/enums.proto` lists the modes, and page 3 names them. Which controls send
+page 11's D-pad codes depends only on whether the mode is `DPAD_MODE_DIGITAL`.
 
 The player number is the one the input mode's driver records.
 
@@ -852,36 +858,74 @@ While the animations are off, an overlay's unstaged pixels show only the
 board's RGB player and turbo indicators. Going idle and waking each raise
 `STATE_CHANGED`.
 
-**Page 2 - Input modes**, one record per mode `SET_INPUT_MODE` accepts, in
-`InputMode` order. These are every `InputMode` the firmware has a driver for,
-the config mode excluded. The records are fixed while the interface exists.
+**Page 2 - Input modes**, one record per value of `InputMode`, in `InputMode`
+order, the config mode excluded (`REBOOT` target 1 enters it). The records are
+fixed while the interface exists.
 
 | Bit | Group | Bytes |
 |---|---|---|
 | 0 | InputMode, flags | 2 |
 | 1 | Name | 22 |
+| 2 | Capabilities | 3 |
+| 3 | USB host and authentication | 3 |
+| 4 | Device type | 3 |
 
-All groups make a 24-byte record, two per reply. Bit 0 alone gives 24 per
-reply.
+All groups make a 33-byte record, one per reply. Bits 0 and 1 give 24 bytes,
+two per reply. Bit 0 alone gives 24 per reply.
 
 | Field | Meaning |
 |---|---|
 | InputMode | The mode's value, verbatim |
-| Flags | Bit 0 lighting; bit 1 detected; rest zero (below) |
+| Flags | Bit 0 lighting; bit 1 detected; bit 2 accepted; rest zero (below) |
 | Name | The firmware's name for the mode, as its display menu shows it; up to 22 bytes, NUL-padded |
+
+Capabilities:
+
+| Off | Field |
+|---|---|
+| +0 | Lighting interface: 0 never, 1 always, 2 by the `XInput Lighting` setting |
+| +1 | Category, as the web configurator lists the mode: 0 primary, 1 console mini |
+| +2 | Bit 0 player: page 1's player field carries a number in the mode; bit 1 keyboard codes: the mode sends page 11's codes; rest zero |
+
+USB host and authentication:
+
+| Off | Field |
+|---|---|
+| +0 | USB host peripheral: 0 not used, 1 optional, 2 required |
+| +1 | Authentication methods the mode supports: bit n set for `InputModeAuthType` value n; 0 none |
+| +2 | Authentication method selected, `InputModeAuthType` verbatim; 0xFF none |
+
+Device type:
+
+| Off | Field |
+|---|---|
+| +0..1 | Device types the mode supports: bit n set for `InputModeDeviceType` value n; 0 none |
+| +2 | Device type selected, `GamepadOptions.inputDeviceType` verbatim; 0xFF none |
 
 Flag bit 0, lighting, is set for a mode that presents this interface. XInput
 presents it when the `XInput Lighting` setting is Auto or Always On. Flag bit
 1, detected, marks a mode if its interface appears only once the board has
 detected a PC, a few seconds after it enumerates. XInput under Auto is such a
-mode.
+mode. Flag bit 2, accepted, is set for a mode `SET_INPUT_MODE` accepts: one the
+firmware has a driver for, and one that requires the USB host peripheral only
+while it is enabled (page 8 flag bit 1), as the web configurator allows.
 
-A host that offers a mode switch should list these modes and warn for one
-without flag bit 0.
+Capability bit 0, player, follows page 1's player table: XInput and SInput.
+The selected authentication method is `GamepadOptions.ps4AuthType` for PS4,
+`ps5AuthType` for PS5 and `xinputAuthType` for XInput. P5 General supports USB
+alone. One device type setting serves every mode that supports one, so the
+selected value can be one a mode does not support.
 
-**Page 3 - Names**, one record per value of `GpioAction` (pages 10 to 12),
-then of `LightType` (page 12), each in the order `proto/enums.proto` gives.
-The records are fixed for the firmware.
+A host that offers a mode switch should list the modes with flag bit 2, warn
+for one without flag bit 0, and show how to return from it (page 4). A host
+must treat a category it does not know as unknown.
+
+**Page 3 - Names**, one record per value of `GpioAction` (pages 4 and 10 to
+12), then of `LightType` (page 12), `InputModeAuthType` and
+`InputModeDeviceType` (page 2), `DpadMode` (page 1), `ButtonLayout`,
+`ButtonLayoutRight` and `ButtonLayoutOrientation` (page 8), and
+`AnimationNonPressedEffects` and `AnimationPressedEffects` (page 13), each in
+the order `proto/enums.proto` gives. The records are fixed for the firmware.
 
 | Bit | Group | Bytes |
 |---|---|---|
@@ -893,12 +937,60 @@ reply.
 
 | Field | Meaning |
 |---|---|
-| Enum | 0 `GpioAction`, 1 `LightType` |
+| Enum | 0 `GpioAction`, 1 `LightType`, 2 `InputModeAuthType`, 3 `InputModeDeviceType`, 4 `DpadMode`, 5 `ButtonLayout`, 6 `ButtonLayoutRight`, 7 `ButtonLayoutOrientation`, 8 `AnimationNonPressedEffects`, 9 `AnimationPressedEffects` |
 | Value | The value, signed 16-bit, verbatim |
 | Name | The value's name in `proto/enums.proto`; up to 40 bytes, NUL-padded |
 
-A host names an action or a light kind from these records. A value with no
-record has no name in the board's firmware.
+A host names each of those values from these records. A value with no record
+has no name in the board's firmware.
+
+**Page 4 - Boot holds**, one record per hold that boots the board into an input
+mode, the web configurator or the UF2 bootloader when held at plug-in, in the
+order the board checks them. The records are fixed while the interface exists.
+
+| Bit | Group | Bytes |
+|---|---|---|
+| 0 | Target | 4 |
+| 1 | Hold | 11 |
+
+All groups make a 15-byte record, three per reply. Bit 0 alone gives 12 per
+reply.
+
+Target:
+
+| Off | Field |
+|---|---|
+| +0 | Kind: 0 input mode, 1 web configurator, 2 UF2 bootloader (as `REBOOT` targets 1 and 2) |
+| +1 | `InputMode`, verbatim, for kind 0; 0xFF none |
+| +2 | Profile the board boots into, a page 9 profile number; 0xFF the saved profile |
+| +3 | Flags: bit 0 locked: the forced setup option makes the board ignore the hold; rest zero |
+
+Hold:
+
+| Off | Field |
+|---|---|
+| +0 | Source: 0 buttons, 1 GPIO pins |
+| +1..6 | Source 0: the actions of the buttons held, three signed 16-bit `GpioAction` values, 0x8000 in an unused slot. Source 1: 0x8000 in each |
+| +7..10 | Source 1: the pins held, bit n for GPIO pin n. Source 0: zero |
+
+With `BootModeOptions.enabled` the board reads pins: `usbModePinMask` (the UF2
+bootloader), `webConfigPinMask` (the web configurator), then each
+`BootModeOptions.inputModeMappings` entry, with its profile. A pin hold matches
+only when exactly its pins are held. Otherwise the board reads buttons: S1, S2
+and Up (the UF2 bootloader), S2 (the web configurator), then B1, B2, B3, B4,
+L1, L2, R1 and R2, each into the mode `GamepadOptions.inputModeB1` to
+`inputModeR2` gives. S1, S2 and Up match whatever else is held. B1 to R2 match
+only with no other of B1-B4, L1, R1, L2, R2, S1, S2, L3, R3 and A1-A4 held,
+whatever the D-pad holds. The board takes the first hold that matches. The
+buttons are the controls with those actions (page 10). The board applies its
+D-pad mode first, so in the analog modes the Up of S1, S2 and Up is a
+`DIGITAL_DIRECTION_UP` control, as on page 11.
+
+A disabled hold (a mode below zero, or a pin mask of zero or below) has no
+record. A hold into the config mode (`INPUT_MODE_CONFIG`) is a web configurator
+hold, kind 1. The forced setup option's mode switch lock covers B1 to R2, and
+its web configurator lock covers S2. A host must treat a kind it does not know
+as unknown.
 
 **Page 8 - Summary**, one record in two field groups:
 
@@ -915,7 +1007,7 @@ Summary:
 | +2..3 | Addressable LED limit: `STAGE`, `UNSTAGE` and `FILL` write below it |
 | +4..5 | Render rate in Hz; 0 not stated |
 | +6 | Colour format (the firmware's `LEDFormat`): 0 GRB, 1 RGB, 2 GRBW, 3 RGBW |
-| +7 | Flags: bit 0 white channel, set when the chain has a white emitter, as GRBW and RGBW chains do; rest zero |
+| +7 | Flags: bit 0 white channel, set when the chain has a white emitter, as GRBW and RGBW chains do; bit 1 USB host: the board's USB host peripheral is enabled; rest zero |
 | +8 | Brightness maximum, 0-255; at least the step count |
 | +9 | Brightness steps: the highest State brightness step |
 | +10 | Animation speed steps: the highest speed. Speeds run from 0 to it. GP2040-CE's speed hotkeys step from 0 to one below it, and its web configurator sets 1 to it |
@@ -943,7 +1035,7 @@ to the limit can be staged but are never shown. The lit and unlit counts come
 from the same walk as the Controls records and carry the same token.
 
 The button layouts are the ones the board's display draws, set by the board's
-configuration or its user. `proto/enums.proto` lists them. The orientation says
+configuration or its user. Page 3 names them. The orientation says
 where the display draws them, each in one half of the display: 0 each in its
 own half, 1 southpaw, each in the other half and flipped left to right within
 it, and 2 switched, each in the other half. A host that draws the display's
@@ -1197,7 +1289,7 @@ Lights and controls are named by GP2040-CE's own values, reported verbatim.
 | 2 | Turbo |
 | 3-6 | Player LEDs 1-4 |
 
-Page 13's effects are GP2040-CE's own values too (`proto/enums.proto`). The
+Page 13's effects are GP2040-CE's own values too, named by page 3. The
 idle and case effects are `AnimationNonPressedEffects` values. The pressed
 effect is an `AnimationPressedEffects` value.
 
@@ -1220,11 +1312,11 @@ effect is an `AnimationPressedEffects` value.
 | 2-3 | Jiggle: one colour, two colours |
 | 4-5 | Burst, small burst |
 
-The tables list the values today, and `proto/enums.proto` has the rest. All are
+The tables list the values today, and page 3 names every one. All are
 reported as the running firmware defines them. An action, kind or effect that
 GP2040-CE adds later is reported with no protocol change, and such an action or
 kind is addressable. A host must treat a kind it does not know as a plain
-light, and an action or effect it does not know as one it cannot name.
+light. Page 3 names an action or effect it does not know.
 
 An action is not unique. A board can wire two buttons to one action, a second
 Up for example, and both lights carry it. Flag bit 0 on the Controls and Lights
@@ -1358,7 +1450,8 @@ Polling page 1 remains supported.
 | Entity | Key | Appears on | Join |
 |---|---|---|---|
 | Board | Factory-unique ID | `HELLO` | Bind persistently by it |
-| Input mode | `InputMode` | Page 2 records, State `+1`, `SET_INPUT_MODE` | - |
+| Input mode | `InputMode` | Page 2 records, page 4 target, State `+1`, `SET_INPUT_MODE` | Page 4 target `InputMode` = page 2 `InputMode` |
+| Boot hold | Page 4 ordinal | Page 4 records | Page 4 hold action = page 10 action |
 | Profile | Profile number | Page 9 records, State `+2`, `SET_PROFILE`, `SET_KEYBOARD_MAPPING` `[3]` | - |
 | Control | Page 10 key: GPIO pin or add-on input | Page 10 records, page 12 owner pin, `STAGE` by pin | Page 12 owner pin = page 10 key |
 | Keyboard mapping record | Page 11 ordinal, the `KeyboardMapping` field order | Page 11 records, `SET_KEYBOARD_MAPPING` | Page 11 action = page 10 action |
@@ -1389,8 +1482,10 @@ reserved range.
 | Claim flags, bits 0-7 | - | 1-7 |
 | Commands | `0x01-0x0F` session and discovery, `0x10-0x1F` frame staging, `0x20-0x2F` frame lifecycle, `0x30-0x4F` board features, `0x50-0x6F` reserved for new groups, `0x70-0x7F` privileged management; `0x00` is never a command | `0x06-0x0F`, `0x14-0x1F`, `0x22-0x2F`, `0x35-0x4F`, `0x72-0x7F` |
 | `HELLO` reply | `[3..16]` identity, `[17]` limits, `[18..44]` capabilities, `[45..46]` session | `[47..63]` |
-| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 4-7, 14-15, 16-23 |
-| Page 3 enums, 0-255 | - | 2-255 |
+| Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 5-7, 14-15, 16-23 |
+| Page 2 categories, 0-255 | - | 2-255 |
+| Page 3 enums, 0-255 | - | 10-255 |
+| Page 4 kinds, 0-255 | - | 3-255 |
 | Field groups, bits 0-15 of each page | In the order of the page's record | After each page's last group |
 | Addressing (`STAGE`, `UNSTAGE`), 0-15 | 0-3 runs, 4-15 entries | 2-3, 8-15 |
 | Page 10 keys, 0-254 | `0x00-0x7F` GPIO pins, `0x80-0xBF` Hall-effect triggers, `0xC0-0xDF` I/O-expander pins, `0xE0-0xFE` reserved for new groups; `0xFF` is never a key | `0x30-0x7F`, `0xA0-0xBF`, `0xD0-0xDF` |
@@ -1415,7 +1510,7 @@ report is 64 bytes, and every byte not shown is zero.
                                                the claim generation
              3e 00 0f 00 03 00 0f 00  [19..34] commands 0x01-0x05, 0x10-0x13,
              00 00 00 00 00 00 03 00           0x20-0x21, 0x30-0x33, 0x70-0x71
-             0f 3f 00 00              [35..38] pages 0-3 and 8-13
+             1f 3f 00 00              [35..38] pages 0-4 and 8-13
              f3 00 07 00 01 00        [39..44] addressing 0, 1 and 4-7; pixel
                                                formats 0-2; event 0
              00 00                    [45..46] no events enabled
@@ -1553,8 +1648,9 @@ yet seen the change, and its next frame is refused:
   never exceed the 48-byte record area, since `STATE_CHANGED` carries all of
   them.
 - Values carried from GP2040-CE are those of the running firmware: actions,
-  keyboard codes, kinds, `InputMode`, `DpadMode`, colour format, effect IDs,
-  button layouts and their orientation, and reboot targets.
+  keyboard codes, kinds, `InputMode`, authentication methods, device types,
+  `DpadMode`, colour format, effect IDs, button layouts and their orientation,
+  and reboot targets.
 - A host must send unused and reserved bytes and bits as zero. The board
   ignores unknown flag bits, mask bits, bits and bytes a layout marks zero, and
   trailing payload bytes. It zeroes every unused reply byte and bit.

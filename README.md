@@ -370,9 +370,11 @@ lost.
 The pages carry GP2040-CE's enum values verbatim, such as an action or a light
 type. `read_enum_names()` in `gp2040ce_hostlighting.enums` reads their names
 from GP2040-CE's `enums.proto`, given as the file or its directory, so a host
-can show `BUTTON_PRESS_UP` beside action 1. The board gives the names of its
-own actions and light kinds on page 3, and `HostLightingDevice.read_names()`
-reads them in the same shape, so a host needs no `.proto` file for those.
+can show `BUTTON_PRESS_UP` beside action 1. The board gives the names of every
+enum value its pages carry on page 3: actions, light kinds, authentication
+methods, device types, D-pad modes, button layouts and their orientation, and
+animation effects. `HostLightingDevice.read_names()` reads them in the same
+shape, so a host needs no `.proto` file for those.
 Page 3 is fixed for the firmware and outside the state token, so
 `read_names()` reads it without one, and a host can keep the names by
 firmware version. The commands read page 3 only with `--names`, when `-P`
@@ -463,17 +465,21 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10c6", TAG+="uacc
 * `hlp-ping` says HELLO, checks the magic and protocol version, and times the
   command round trip.
 * `hlp-caps` decodes everything the board reports about itself: the HELLO
-  capabilities, identity, state, input modes, summary, input profiles,
-  controls, keyboard mapping, lights and on-board animations. The state
-  includes the D-pad mode, the application holding the claim and the claim
-  generation. The summary includes the display's button layouts and each
-  configuration page's change counter.
+  capabilities, identity, state, input modes, boot holds, summary, input
+  profiles, controls, keyboard mapping, lights and on-board animations. The
+  state includes the D-pad mode, the application holding the claim and the
+  claim generation. Each input mode is listed with whether `SET_INPUT_MODE`
+  accepts it, its lighting interface, category, USB host peripheral use,
+  authentication methods and device types. The summary includes the USB host
+  peripheral, the display's button layouts and each configuration page's
+  change counter.
   Controls are listed lit or not. Each light is listed with its LEDs, kind,
   owner and grid cell, and each animation with its speeds.
   `--page NAME|NUMBER`, repeated as needed, prints only those pages: identity,
-  state, input-modes, names, summary, profiles, controls, keyboard, lights or
-  animations, or their numbers. `--names` reads page 3 for the enum names when
-  `-P` names none, and `--json` prints the same as JSON.
+  state, input-modes, names, boot-holds, summary, profiles, controls, keyboard,
+  lights or animations, or their numbers. `--names` reads page 3 for the enum
+  names when `-P` names none, and `--json` prints the same as JSON. Input modes
+  are named from page 2 when `-P` names none.
 * `hlp-fill` fills the LEDs with a colour
   (`--scope all|buttons|turbo|case|players`) as a quick visual test, then
   restores the board's own animations. `--seconds` sets how long it holds
@@ -526,8 +532,11 @@ KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10c6", TAG+="uacc
   application with the interface open receives the event until the board's USB
   session ends. `--seconds` stops it after that long (default: until Ctrl-C).
 * `hlp-input-mode` sets the board's input mode and reboots into it. It accepts
-  the modes the board lists. A mode without the lighting interface needs
-  `--force`, because these tools cannot switch the board back from one.
+  the modes page 2 marks as accepted. For a mode without the lighting
+  interface it first prints page 4's boot holds that start a mode with it or
+  the web configurator, and switches only with `--force`, because these tools
+  cannot switch the board back. `--names` names the holds' buttons from page 3
+  when `-P` names none.
 * `hlp-reboot gamepad|webconfig|bootsel` reboots the board into its saved input
   mode, the web configurator or the BOOTSEL bootloader for flashing. The saved
   input mode can differ from the one the board runs when a boot hotkey chose

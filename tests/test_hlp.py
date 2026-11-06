@@ -18,6 +18,7 @@ from importlib import metadata
 
 import pytest
 
+from gp2040ce_hostlighting import protocol as hl
 from gp2040ce_hostlighting import records
 from gp2040ce_hostlighting.tools import commands, hlp
 
@@ -127,6 +128,26 @@ def _board(board_id, label='Fake board'):
 def _typed(*lines):
     """Lines for input() to read, as typed at a console."""
     return _Console(''.join(f'{line}\n' for line in lines))
+
+
+def test_hlp_menu_confirms_input_mode_after_its_checks(hlp_run_on_fake_board, hlp_fake_board, capsys, monkeypatch):
+    """Test that the menu asks before an input mode switch only once page 2's checks pass, after any boot holds."""
+    monkeypatch.setenv('COLUMNS', '200')
+    monkeypatch.setattr(hlp, 'list_boards', lambda: [_board('433030343237362E')])
+    # not accepted, then without the lighting interface (refused, no --force), then Keyboard declined, then confirmed
+    monkeypatch.setattr(sys, 'stdin', _typed('input-mode 5', 'input-mode 4', 'input-mode 3', 'n', 'input-mode 3', 'y',
+                                             'q'))
+    hlp_run_on_fake_board(hlp.main)
+    captured = capsys.readouterr()
+    prompt = 'hlp input-mode will switch the board to input mode 3 (Keyboard) and restart it. y to go on: '
+    assert captured.out.count(prompt) == 2 and 'restarts the board. y to go on' not in captured.out
+    assert 'does not accept input mode 5' in captured.err and 'Add --force to switch anyway' in captured.err
+    holds_shown = captured.out.index('boot holds back to a mode with the lighting interface or the web configurator')
+    assert holds_shown < captured.out.index(prompt)               # the way back shown, and no prompt before it
+    assert 'input mode 3 not set' in captured.out and 'input mode 3 (Keyboard) set' in captured.out
+    assert [request[3] for request in hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)] == [3]   # once, after the y
+    assert commands.confirm_switch is None
+    assert 'caps --page boot-holds' in captured.out                 # the menu's examples
 
 
 def test_hlp_menu_picks_the_board_and_runs_commands(hlp_run_on_fake_board, capsys, monkeypatch):

@@ -33,19 +33,30 @@ from gp2040ce_hostlighting.enums import read_enum_names
 from gp2040ce_hostlighting.frames import Frame, publish_frame
 from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, ADDRESSING_KIND, ADDRESSING_LED_RUN,
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
-                                            BRIGHTNESS_SAVED, CMD_HELLO, CMD_SET_KEYBOARD_MAPPING, EVENT_STATE_CHANGED,
-                                            KIND_BUTTON, KIND_CASE, KIND_PLAYERS, KIND_TURBO, PAGE_ANIMATIONS,
-                                            PAGE_CONTROLS, PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING,
-                                            PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB,
-                                            PIXEL_RGBW, REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG,
-                                            SPEED_UNCHANGED, STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
+                                            BOOT_HOLD_INPUT_MODE, BOOT_HOLD_PINS, BOOT_HOLD_UF2_BOOTLOADER,
+                                            BOOT_HOLD_WEB_CONFIGURATOR, BRIGHTNESS_SAVED, CMD_HELLO,
+                                            CMD_SET_KEYBOARD_MAPPING, EVENT_STATE_CHANGED, INPUT_MODE_CATEGORY_MINI,
+                                            INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_LIGHTING_ALWAYS,
+                                            INPUT_MODE_LIGHTING_NEVER, INPUT_MODE_LIGHTING_SETTING,
+                                            INPUT_MODE_USB_HOST_OPTIONAL, INPUT_MODE_USB_HOST_REQUIRED,
+                                            INPUT_MODE_USB_HOST_UNUSED, KIND_BUTTON, KIND_CASE, KIND_PLAYERS,
+                                            KIND_TURBO, PAGE_ANIMATIONS, PAGE_BOOT_HOLDS, PAGE_CONTROLS, PAGE_IDENTITY,
+                                            PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_NAMES,
+                                            PAGE_PROFILES, PAGE_STATE, PAGE_SUMMARY, PIXEL_RGB, PIXEL_RGBW,
+                                            REBOOT_BOOTSEL, REBOOT_GAMEPAD, REBOOT_WEBCONFIG, SPEED_UNCHANGED,
+                                            STATUS_CLAIMED, TAKEOVER_OVERLAY, TAKEOVER_WHOLE_FRAME,
                                             HostLightingClaimedError, HostLightingDevice, HostLightingError,
                                             HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
                                             stage_capacity)
-from gp2040ce_hostlighting.records import ControlRecord, Hello, Identity, LightRecord, Settings, StateRecord, jsonable
+from gp2040ce_hostlighting.records import (BootHoldRecord, ControlRecord, Hello, Identity, InputModeRecord, LightRecord,
+                                           Settings, StateRecord, jsonable)
 
 logger = logging.getLogger(__name__)
+
+# Set by the hlp app's menu: hlp-input-mode asks it, with what it is about to do, after page 2's checks and right
+# before SET_INPUT_MODE. False leaves the board as it is.
+confirm_switch: Optional[Callable[[str], bool]] = None
 
 
 def version() -> str:
@@ -131,7 +142,7 @@ def enum_names(device: Optional[HostLightingDevice] = None) -> dict[str, dict[in
 
     -P takes the file or the directory that holds it. A directory without enums.proto is skipped.
 
-    :param device: the board, with page 3 naming its actions and light kinds when -P names nothing
+    :param device: the board, with page 3 naming the enum values its pages carry when -P names nothing
     :return: {enum name: {value: value name}}, empty when neither gives a name
     """
     names = read_enum_names(common_options.proto_files_path)
@@ -140,6 +151,21 @@ def enum_names(device: Optional[HostLightingDevice] = None) -> dict[str, dict[in
     if not names and device is not None and PAGE_NAMES in device.hello().pages:
         names = device.read_names()
     return names
+
+
+def _with_input_mode_names(device: HostLightingDevice, names: dict[str, dict[int, str]],
+                           modes: Optional[Sequence[InputModeRecord]] = None) -> dict[str, dict[int, str]]:
+    """Add page 2's input mode names when -P names none, since page 3 does not carry InputMode.
+
+    :param modes: page 2's records when already read, else page 2 is read when the board lists it
+    """
+    if 'InputMode' in names:
+        return names
+    if modes is None:
+        if PAGE_INPUT_MODES not in device.hello().pages:
+            return names
+        modes = device.read_table(PAGE_INPUT_MODES, 0b11).records
+    return {**names, 'InputMode': {mode.mode.value: mode.name for mode in modes}}
 
 
 def _named(value: int, names: dict[str, dict[int, str]], enum: str) -> str:
@@ -292,8 +318,8 @@ def caps() -> None:
     parser.add_argument('--json', action='store_true',
                         help="print HELLO and every page the library decodes as JSON, the records' fields by name")
     parser.add_argument('--names', action='store_true',
-                        help="name actions and light kinds from the board's page 3 when -P names none "
-                             "(148 more requests)")
+                        help="name the enum values the pages carry from the board's page 3 when -P names none "
+                             "(one request per name)")
     parser.add_argument('--page', type=_caps_page, action='append',
                         help="print only this page, by name or number, repeated as needed: "
                              + ', '.join(f"{name} ({number})" for name, number in CAPS_PAGES.items()))
@@ -309,11 +335,16 @@ def caps() -> None:
             return
         board_names = device.read_names() if read_names and PAGE_NAMES in hello.pages else {}
         names = enum_names() or board_names
+        modes: Optional[Sequence[InputModeRecord]] = None        # page 2, read once for its names and itself
+        if not chosen or {PAGE_STATE, PAGE_BOOT_HOLDS} & set(chosen):
+            modes = device.read_table(PAGE_INPUT_MODES).records if PAGE_INPUT_MODES in hello.pages else ()
+            names = _with_input_mode_names(device, names, modes)
         pages: dict[int, Callable[[], None]] = {
             PAGE_IDENTITY: lambda: _print_identity(device),
             PAGE_STATE: lambda: _print_state(device, names),
-            PAGE_INPUT_MODES: lambda: _print_input_modes(device),
+            PAGE_INPUT_MODES: lambda: _print_input_modes(device, names, modes),
             PAGE_NAMES: lambda: _print_names(board_names, read_names),
+            PAGE_BOOT_HOLDS: lambda: _print_boot_holds(device, names),
             PAGE_SUMMARY: lambda: _print_summary(device, names),
             PAGE_PROFILES: lambda: _print_profiles(device),
             PAGE_CONTROLS: lambda: _print_controls(device, names),
@@ -333,8 +364,9 @@ def caps() -> None:
 
 # The pages hlp-caps --page takes, by name, in the order hlp-caps prints them
 CAPS_PAGES = {'identity': PAGE_IDENTITY, 'state': PAGE_STATE, 'input-modes': PAGE_INPUT_MODES, 'names': PAGE_NAMES,
-              'summary': PAGE_SUMMARY, 'profiles': PAGE_PROFILES, 'controls': PAGE_CONTROLS,
-              'keyboard': PAGE_KEYBOARD_MAPPING, 'lights': PAGE_LIGHTS, 'animations': PAGE_ANIMATIONS}
+              'boot-holds': PAGE_BOOT_HOLDS, 'summary': PAGE_SUMMARY, 'profiles': PAGE_PROFILES,
+              'controls': PAGE_CONTROLS, 'keyboard': PAGE_KEYBOARD_MAPPING, 'lights': PAGE_LIGHTS,
+              'animations': PAGE_ANIMATIONS}
 _CAPS_PAGE_NAMES = {number: name for name, number in CAPS_PAGES.items()}
 
 
@@ -357,7 +389,8 @@ def _caps_json(device: HostLightingDevice, hello: Hello, names: bool, chosen: Se
         PAGE_IDENTITY: device.read_identity,
         PAGE_STATE: lambda: device.read_record(PAGE_STATE).records,
         PAGE_SUMMARY: lambda: device.read_record(PAGE_SUMMARY).records}
-    for page in (PAGE_INPUT_MODES, PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_ANIMATIONS):
+    for page in (PAGE_INPUT_MODES, PAGE_BOOT_HOLDS, PAGE_PROFILES, PAGE_CONTROLS, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS,
+                 PAGE_ANIMATIONS):
         readers[page] = functools.partial(lambda number: device.read_table(number).records, page)
     if names:
         readers[PAGE_NAMES] = device.read_names
@@ -421,15 +454,94 @@ def _print_state(device: HostLightingDevice, names: dict[str, dict[int, str]]) -
         print(f"  unclaimed, claim generation {holder.claim_generation}")
 
 
-def _print_input_modes(device: HostLightingDevice) -> None:
-    """Read and print page 2, the input modes SET_INPUT_MODE accepts."""
-    modes = device.read_table(PAGE_INPUT_MODES).records
+_LIGHTING_SUPPORT = {INPUT_MODE_LIGHTING_NEVER: 'never', INPUT_MODE_LIGHTING_ALWAYS: 'always',
+                     INPUT_MODE_LIGHTING_SETTING: 'by setting'}
+_CATEGORIES = {INPUT_MODE_CATEGORY_PRIMARY: 'primary', INPUT_MODE_CATEGORY_MINI: 'console mini'}
+_USB_HOST = {INPUT_MODE_USB_HOST_UNUSED: 'not used', INPUT_MODE_USB_HOST_OPTIONAL: 'optional',
+             INPUT_MODE_USB_HOST_REQUIRED: 'required'}
+
+
+def _values_named(values: Sequence[int], names: dict[str, dict[int, str]], enum: str) -> str:
+    """Show enum values, each with its name when known; 'none' when there are none."""
+    return ', '.join(_named(value, names, enum) for value in values) or 'none'
+
+
+def _print_input_modes(device: HostLightingDevice, names: dict[str, dict[int, str]],
+                       modes: Optional[Sequence[InputModeRecord]] = None) -> None:
+    """Print page 2, every input mode but the config mode with what it needs and supports, read unless given."""
+    modes = device.read_table(PAGE_INPUT_MODES).records if modes is None else modes
     print(f"page 2 (input modes): {len(modes)}")
     for mode in modes:
         note = ''
         if mode.mode.lighting:
             note = ' (lighting once a PC is detected)' if mode.mode.detected else ' (lighting)'
-        print(f"  {mode.mode.value:3d} {mode.name}{note}")
+        accepted = '' if mode.mode.accepted else ', not accepted by SET_INPUT_MODE'
+        print(f"  {mode.mode.value:3d} {mode.name}{note}{accepted}")
+        if mode.has('capabilities'):                    # older firmware defines page 2's first two groups alone
+            caps = mode.capabilities
+            extras = [name for name, on in (('player number', caps.player), ('keyboard codes', caps.keyboard_codes))
+                      if on]
+            print(f"      lighting {_LIGHTING_SUPPORT.get(caps.lighting, caps.lighting)}, "
+                  f"{_CATEGORIES.get(caps.category, f'category {caps.category}')}"
+                  + ''.join(f", {extra}" for extra in extras))
+        if mode.has('authentication'):
+            auth = mode.authentication
+            line = f"      USB host {_USB_HOST.get(auth.usb_host, auth.usb_host)}"
+            if auth.methods:
+                selected = 'none' if auth.selected is None else _named(auth.selected, names, 'InputModeAuthType')
+                methods = _values_named(auth.method_values, names, 'InputModeAuthType')
+                line += f"; authentication {methods}, selected {selected}"
+            if mode.has('device_types') and mode.device_types.supported:
+                devices = mode.device_types
+                selected = ('none' if devices.selected is None
+                            else _named(devices.selected, names, 'InputModeDeviceType'))
+                supported = _values_named(devices.supported_values, names, 'InputModeDeviceType')
+                line += f"; device types {supported}, selected {selected}"
+            print(line)
+
+
+_HOLD_KINDS = {BOOT_HOLD_INPUT_MODE: 'input mode', BOOT_HOLD_WEB_CONFIGURATOR: 'the web configurator',
+               BOOT_HOLD_UF2_BOOTLOADER: 'the UF2 bootloader'}
+
+
+def _print_boot_holds(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
+    """Read and print page 4, the buttons or pins held at plug-in that boot each target."""
+    holds = device.read_table(PAGE_BOOT_HOLDS).records
+    print(f"page 4 (boot holds): {len(holds)}")
+    analog = _analog_dpad(device)
+    for hold in holds:
+        print(f"  {_boot_hold(hold, names, analog)}")
+
+
+# GpioAction BUTTON_PRESS_UP and DpadMode DPAD_MODE_DIGITAL, for the note on the analog D-pad modes
+_BUTTON_PRESS_UP = 1
+_DPAD_MODE_DIGITAL = 0
+
+
+def _analog_dpad(device: HostLightingDevice) -> bool:
+    """Say whether the board's D-pad mode (page 1) is an analog one, where Up moves a stick."""
+    return device.read_record(PAGE_STATE).records[0].state.dpad_mode != _DPAD_MODE_DIGITAL
+
+
+def _boot_hold(hold: BootHoldRecord, names: dict[str, dict[int, str]], analog_dpad: bool = False) -> str:
+    """Show one page 4 record: its target, and the buttons or pins held.
+
+    In an analog D-pad mode the board reads Up from a DIGITAL_DIRECTION_UP control, so a hold with
+    BUTTON_PRESS_UP says so.
+    """
+    target, held = hold.target, hold.hold
+    what = _HOLD_KINDS.get(target.kind, f"kind {target.kind}")
+    if target.kind == BOOT_HOLD_INPUT_MODE and target.mode is not None:
+        what = f"input mode {_named(target.mode, names, 'InputMode')}"
+    if target.profile is not None:
+        what += f", profile {target.profile}"
+    if held.source == BOOT_HOLD_PINS:
+        how = 'pins ' + ', '.join(f"GP{pin}" for pin in held.pins)
+    else:
+        how = ' + '.join(_named(action, names, 'GpioAction') for action in held.actions)
+    note = (' (Up: the DIGITAL_DIRECTION_UP control in this D-pad mode)'
+            if analog_dpad and held.source != BOOT_HOLD_PINS and _BUTTON_PRESS_UP in held.actions else '')
+    return f"{what}: hold {how}{' (locked)' if target.locked else ''}{note}"
 
 
 def _print_summary(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
@@ -444,6 +556,7 @@ def _print_summary(device: HostLightingDevice, names: dict[str, dict[int, str]])
           f"animation speed steps {summary.animation_speed_steps}; grid {summary.grid_width}x{summary.grid_height}")
     print(f"  {summary.profiles} profiles, {summary.controls} controls ({summary.lit_controls} lit, "
           f"{summary.unlit_controls} unlit), {summary.lights} lights, {summary.animations} animations")
+    print(f"  USB host peripheral {'enabled' if summary.usb_host else 'not enabled'}")
     print(f"  button layouts {_named(summary.button_layout, names, 'ButtonLayout')} and "
           f"{_named(summary.button_layout_right, names, 'ButtonLayoutRight')}, orientation "
           f"{_named(summary.button_layout_orientation, names, 'ButtonLayoutOrientation')}")
@@ -559,8 +672,8 @@ def settings() -> None:
                              "Consecutive ordinals go in one request, written once. The board's settings must "
                              "allow hosts to change the keyboard mapping")
     parser.add_argument('--names', action='store_true',
-                        help="name actions and light kinds from the board's page 3 when -P names none "
-                             "(148 more requests)")
+                        help="name the enum values the pages carry from the board's page 3 when -P names none "
+                             "(one request per name)")
     add_claim_arguments(parser)
     args = parser.parse_args()
     speeds = _checked_options(args)
@@ -1036,7 +1149,7 @@ def buttons() -> None:
     parser.add_argument('--seconds', type=float, default=5.0, help="how long each phase holds (default: 5)")
     parser.add_argument('--names', action='store_true',
                         help="take the buttons' actions from the board's page 3 when -P names none "
-                             "(148 more requests)")
+                             "(one request per name)")
     add_claim_arguments(parser)
     args = parser.parse_args()
     device = open_device(args.board_id)
@@ -1091,32 +1204,65 @@ def input_mode() -> None:
     """Set a board's input mode over Host Lighting."""
     parser = device_parser("Set a GP2040-CE board's input mode. The board saves it and reboots into it.")
     parser.add_argument('mode', type=ranged(0, 0xFF),
-                        help="InputMode value, decimal or 0x hex. Page 2 (hlp-caps) lists the modes the board accepts "
-                             "and which carry the lighting interface")
+                        help="InputMode value, decimal or 0x hex. Page 2 (hlp-caps) lists every mode, which ones "
+                             "the board accepts and which carry the lighting interface")
     parser.add_argument('--force', action='store_true',
                         help="switch even into a mode without the lighting interface, which these tools cannot leave")
+    parser.add_argument('--names', action='store_true',
+                        help="name the boot holds' buttons from the board's page 3 when -P names none "
+                             "(one request per name)")
     args = parser.parse_args()
     device = open_device(args.board_id)
     try:
         modes = device.read_table(PAGE_INPUT_MODES).records
         known = {mode.mode.value: mode for mode in modes}
-        if args.mode not in known:
-            raise SystemExit(f"the board does not accept input mode {args.mode}. It accepts "
-                             + ', '.join(f"{mode.mode.value} ({mode.name})" for mode in modes))
-        if not known[args.mode].mode.lighting:
-            leave = ("only the web configurator, a boot-time button hold, the reboot hotkeys or the display menu "
-                     "leave it")
+        record = known.get(args.mode)
+        if record is None or not record.mode.accepted:
+            why = (" while its USB host peripheral is off" if record is not None and record.has('authentication')
+                   and record.authentication.usb_host == INPUT_MODE_USB_HOST_REQUIRED else "")
+            raise SystemExit(f"the board does not accept input mode {args.mode}{why}. It accepts "
+                             + ', '.join(f"{mode.mode.value} ({mode.name})" for mode in modes if mode.mode.accepted))
+        if not record.mode.lighting:
+            # the way back, shown before the choice to switch
+            _print_holds_back(device, modes, enum_names(device if args.names else None))
+            leave = "only the web configurator, a boot hold, the reboot hotkeys or the display menu leave it"
             if not args.force:
-                raise SystemExit(f"{known[args.mode].name} has no lighting interface and these tools cannot "
-                                 f"switch the board back. {leave.capitalize()}. Add --force to switch anyway")
-            print(f"note: {known[args.mode].name} has no lighting interface, and {leave}")
-        elif known[args.mode].mode.detected:
-            print(f"note: {known[args.mode].name} presents the lighting interface once the board has detected "
-                  "a PC, a few seconds and a second enumeration after it starts")
+                raise SystemExit(f"{record.name} has no lighting interface and these tools cannot switch the board "
+                                 f"back. {leave.capitalize()}. Add --force to switch anyway")
+            print(f"note: {record.name} has no lighting interface, and {leave}")
+        elif record.mode.detected:
+            print(f"note: {record.name} presents the lighting interface once the board has detected a PC, a few "
+                  "seconds and a second enumeration after it starts")
+        if confirm_switch is not None and not confirm_switch(f"switch the board to input mode {args.mode} "
+                                                             f"({record.name}) and restart it"):
+            print(f"input mode {args.mode} not set")
+            return
         device.set_input_mode(args.mode, allow_no_lighting=True)      # checked against page 2 above
-        print(f"input mode {args.mode} ({known[args.mode].name}) set. The board is rebooting")
+        print(f"input mode {args.mode} ({record.name}) set. The board is rebooting")
     finally:
         device.close()
+
+
+def _print_holds_back(device: HostLightingDevice, modes: tuple[InputModeRecord, ...],
+                      names: dict[str, dict[int, str]]) -> None:
+    """Print page 4's holds that boot a mode with the lighting interface or the web configurator.
+
+    A hold the board ignores (locked by the forced setup option) is left out. Input modes are named from -P, else
+    from page 2.
+    """
+    if PAGE_BOOT_HOLDS not in device.hello().pages:
+        print("the board lists no boot holds (page 4)")
+        return
+    lit = {mode.mode.value for mode in modes if mode.mode.lighting}
+    names = _with_input_mode_names(device, names, modes)
+    analog = _analog_dpad(device)
+    holds = [_boot_hold(hold, names, analog) for hold in device.read_table(PAGE_BOOT_HOLDS).records
+             if not hold.target.locked and (hold.target.kind == BOOT_HOLD_WEB_CONFIGURATOR
+                                            or (hold.target.kind == BOOT_HOLD_INPUT_MODE and hold.target.mode in lit))]
+    print("boot holds back to a mode with the lighting interface or the web configurator:" if holds
+          else "no boot hold on page 4 boots a mode with the lighting interface or the web configurator")
+    for hold in holds:
+        print(f"  {hold}")
 
 
 # hlp-reboot's targets: the REBOOT target and what the command prints

@@ -71,7 +71,7 @@ def state_record(takeover_live: int = 0, input_mode: int = 0, profile: int = 1, 
 
 
 def summary_record(led_extent: int = 19, led_limit: int = 100, render_hz: int = 40, colour_format: int = 0,
-                   white_channel: int = 0, brightness_maximum: int = 255, brightness_steps: int = 10,
+                   white_channel: int = 0, usb_host: int = 0, brightness_maximum: int = 255, brightness_steps: int = 10,
                    animation_speed_steps: int = 10, button_layout: int = 0, button_layout_right: int = 0,
                    button_layout_orientation: int = 0, grid_width: int = 9, grid_height: int = 6,
                    profiles: int = 3, controls: int = 12, lit_controls: int = 10, unlit_controls: int = 2,
@@ -80,7 +80,8 @@ def summary_record(led_extent: int = 19, led_limit: int = 100, render_hz: int = 
 
     Each keyword is the field of the same name in records.Summary or Changes.
     """
-    return [struct.pack('<HHHBBBBBBBBHHHHHHHH', led_extent, led_limit, render_hz, colour_format, white_channel,
+    return [struct.pack('<HHHBBBBBBBBHHHHHHHH', led_extent, led_limit, render_hz, colour_format,
+                        white_channel | usb_host << 1,
                         brightness_maximum, brightness_steps, animation_speed_steps, button_layout,
                         button_layout_right, button_layout_orientation, grid_width, grid_height, profiles, controls,
                         lit_controls, unlit_controls, lights, animations),
@@ -91,11 +92,51 @@ def summary_record(led_extent: int = 19, led_limit: int = 100, render_hz: int = 
 _ACTION_NAMES = {-10: 'NONE', -5: 'RESERVED', 0: 'ASSIGNED_TO_ADDON', 1: 'BUTTON_PRESS_UP', 5: 'BUTTON_PRESS_B1',
                  13: 'BUTTON_PRESS_S1'}
 _KIND_NAMES = ('ActionButton', 'Case', 'Turbo', 'Player1Light', 'Player2Light', 'Player3Light', 'Player4Light')
+# and of the other enums the pages carry: every value of the short ones, the first few of the layouts and effects
+_OTHER_NAMES = {
+    hl.NAMES_AUTH_TYPE: ('INPUT_MODE_AUTH_TYPE_NONE', 'INPUT_MODE_AUTH_TYPE_KEYS', 'INPUT_MODE_AUTH_TYPE_USB',
+                         'INPUT_MODE_AUTH_TYPE_I2C'),
+    hl.NAMES_DEVICE_TYPE: ('INPUT_MODE_DEVICE_TYPE_GAMEPAD', 'INPUT_MODE_DEVICE_TYPE_WHEEL',
+                           'INPUT_MODE_DEVICE_TYPE_HOTAS', 'INPUT_MODE_DEVICE_TYPE_GUITAR',
+                           'INPUT_MODE_DEVICE_TYPE_DRUM', 'INPUT_MODE_DEVICE_TYPE_MECHA',
+                           'INPUT_MODE_DEVICE_TYPE_ARCADE_STICK',
+                           'INPUT_MODE_DEVICE_TYPE_GAMEPAD_ALT'),
+    hl.NAMES_DPAD_MODE: ('DPAD_MODE_DIGITAL', 'DPAD_MODE_LEFT_ANALOG', 'DPAD_MODE_RIGHT_ANALOG'),
+    hl.NAMES_BUTTON_LAYOUT: ('BUTTON_LAYOUT_STICK', 'BUTTON_LAYOUT_STICKLESS'),
+    hl.NAMES_BUTTON_LAYOUT_RIGHT: ('BUTTON_LAYOUT_ARCADE', 'BUTTON_LAYOUT_STICKLESSB'),
+    hl.NAMES_BUTTON_LAYOUT_ORIENTATION: ('BUTTON_ORIENTATION_DEFAULT', 'BUTTON_ORIENTATION_SOUTHPAW',
+                                         'BUTTON_ORIENTATION_SWITCHED'),
+    hl.NAMES_NON_PRESSED_EFFECT: ('EFFECT_STATIC_COLOR', 'EFFECT_RAINBOW_SYNCED', 'EFFECT_RAINBOW_ROTATE'),
+    hl.NAMES_PRESSED_EFFECT: ('PRESSEDEFFECT_STATIC_COLOR', 'PRESSEDEFFECT_RANDOM'),
+}
 
 
 def name_record(enum: int, value: int, name: str) -> list[bytes]:
-    """One page 3 record: the enum (NAMES_GPIO_ACTION or NAMES_LIGHT_TYPE), the value and its name."""
+    """One page 3 record: the enum (a NAMES_ number), the value and its name."""
     return [struct.pack('<Bh', enum, value), name.encode().ljust(40, b'\x00')[:40]]
+
+
+def input_mode_record(value: int, name: bytes, *, lighting: int = 0, detected: int = 0, accepted: int = 1,
+                      capability_lighting: int = hl.INPUT_MODE_LIGHTING_NEVER,
+                      category: int = hl.INPUT_MODE_CATEGORY_PRIMARY, player: int = 0, keyboard_codes: int = 0,
+                      usb_host: int = hl.INPUT_MODE_USB_HOST_UNUSED, auth_methods: int = 0, auth_selected: int = 0xFF,
+                      device_types: int = 0, device_selected: int = 0xFF) -> list[bytes]:
+    """One page 2 record as its five groups.
+
+    Each keyword is a field of records.InputModeFlags, InputModeCapabilities, InputModeAuthentication or
+    InputModeDeviceTypes, 0xFF meaning none.
+    """
+    return [bytes([value, lighting | detected << 1 | accepted << 2]), name.ljust(22, b'\x00')[:22],
+            bytes([capability_lighting, category, player | keyboard_codes << 1]),
+            bytes([usb_host, auth_methods, auth_selected]), struct.pack('<HB', device_types, device_selected)]
+
+
+def boot_hold_record(kind: int, mode: int = 0xFF, profile: int = 0xFF, locked: int = 0,
+                     actions: Sequence[int] = (), pins: int = 0) -> list[bytes]:
+    """One page 4 record as its two groups: buttons by action, or a pin mask when pins is given."""
+    slots = list(actions) + [-0x8000] * (3 - len(actions))
+    return [bytes([kind, mode, profile, locked]),
+            bytes([hl.BOOT_HOLD_PINS if pins else hl.BOOT_HOLD_BUTTONS]) + struct.pack('<hhhI', *slots, pins)]
 
 
 def control_record(key: int, action: int, duplicated: int = 0, lit: int = 1, instance: int = 1,
@@ -132,11 +173,14 @@ def light_record(first_led: int, led_count: int = 1, kind: int = 0, duplicated: 
 
 
 def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, start: int = 0) -> bytes:
-    """Build a page 0 reply: strings in bit order while they fit in the 48-byte area, and none past start 0."""
+    """Build a page 0 reply: strings in bit order while they fit in the 48-byte area.
+
+    Past start 0 the reply carries no record, with the groups and stride the record would have.
+    """
     area = b''
     groups = 0
     for group, text in enumerate(strings):
-        if start or not mask & (1 << group):
+        if not mask & (1 << group):
             continue
         raw = text.encode()[:hl.IDENTITY_STRING_MAX]
         piece = raw + (b'\x00' if len(raw) < hl.IDENTITY_STRING_MAX else b'')
@@ -145,8 +189,9 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
         area += piece
         groups |= 1 << group
     header = bytes([hl.CMD_GET_PAGE | hl.REPLY_FLAG, sequence, hl.STATUS_OK, hl.PAGE_IDENTITY])
-    header += struct.pack('<HHBBH', start, 1, 1 if groups else 0, len(area), groups)
-    return header + area[:hl.RECORD_AREA].ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
+    header += struct.pack('<HHBBH', start, 1, 1 if groups and not start else 0, len(area), groups)
+    records = b'' if start else area[:hl.RECORD_AREA]
+    return header + records.ljust(hl.RECORD_AREA, b'\x00') + struct.pack('<I', 0x1234ABCD)
 
 
 # what this firmware's HELLO lists with keyboard mapping changes allowed, the fakes' defaults. A fake without
@@ -154,7 +199,7 @@ def identity_reply(strings: list[str], mask: int = 0xFF, sequence: int = 1, star
 HELLO_REQUEST_FLAGS = frozenset(range(7))
 HELLO_COMMANDS = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x30, 0x31, 0x32,
                             0x33, 0x34, 0x70, 0x71))
-HELLO_PAGES = frozenset((0, 1, 2, 3, 8, 9, 10, 11, 12, 13))
+HELLO_PAGES = frozenset((0, 1, 2, 3, 4, 8, 9, 10, 11, 12, 13))
 HELLO_ADDRESSING_MODES = frozenset((0, 1, 4, 5, 6, 7))
 HELLO_PIXEL_FORMATS = frozenset((0, 1, 2))
 HELLO_EVENTS = frozenset((0,))
@@ -275,9 +320,20 @@ class FakeBoard:
                          control_record(hl.KEY_EXPANDER + 3, 5, lit=0, light_count=0)]
         self.lights = [light_record(0, pin=2, action=1, instance=1, instances=1),
                        light_record(1, 3, kind=1, slot=0)]
-        self.modes = [[bytes([0, 0x03]), b'XINPUT'.ljust(22, b'\x00')],
-                      [bytes([3, 0x01]), b'KEYBOARD'.ljust(22, b'\x00')],
-                      [bytes([4, 0x00]), b'PS4'.ljust(22, b'\x00')]]
+        self.modes = [input_mode_record(0, b'XInput', lighting=1, detected=1,
+                                        capability_lighting=hl.INPUT_MODE_LIGHTING_SETTING, player=1,
+                                        usb_host=hl.INPUT_MODE_USB_HOST_OPTIONAL, auth_methods=0b101, auth_selected=0,
+                                        device_types=0b11011, device_selected=0),
+                      input_mode_record(3, b'Keyboard', lighting=1, capability_lighting=hl.INPUT_MODE_LIGHTING_ALWAYS,
+                                        keyboard_codes=1),
+                      input_mode_record(4, b'PS4', usb_host=hl.INPUT_MODE_USB_HOST_OPTIONAL, auth_methods=0b111,
+                                        auth_selected=0, device_types=0b10111, device_selected=0),
+                      input_mode_record(5, b'Xbox One', accepted=0, usb_host=hl.INPUT_MODE_USB_HOST_REQUIRED)]
+        self.boot_holds = [boot_hold_record(hl.BOOT_HOLD_UF2_BOOTLOADER, actions=(13, 14, 1)),
+                           boot_hold_record(hl.BOOT_HOLD_WEB_CONFIGURATOR, actions=(14,)),
+                           boot_hold_record(hl.BOOT_HOLD_INPUT_MODE, 4, actions=(5,)),
+                           boot_hold_record(hl.BOOT_HOLD_INPUT_MODE, 0, actions=(6,)),
+                           boot_hold_record(hl.BOOT_HOLD_INPUT_MODE, 3, actions=(12,))]
         self.profiles = [[bytes([1, 1]) + b'Base'.ljust(16, b'\x00')]]
         self.animations = [[bytes([1, 2, 1, 2]), bytes([5, 5, 5])]]
         # page 11: the buttons' actions, and each profile's codes by profile number. A profile without codes of
@@ -309,6 +365,8 @@ class FakeBoard:
         self.after: dict[int, list[bytes]] = {}
         # page -> a group newer firmware adds, the same bytes in every record
         self.later_groups: dict[int, bytes] = {}
+        # page -> how many of its groups older firmware defines, the first ones
+        self.older_groups: dict[int, int] = {}
         self.board_id = BOARD_ID
         # LED index -> colour, the staged frame, and every frame published
         self.staged: dict[int, tuple[int, ...]] = {}
@@ -427,7 +485,8 @@ class FakeBoard:
     def _guarded(self, ok: bytes, request: bytes) -> bytes:
         """SET_INPUT_MODE and REBOOT: a listed mode or a known target, then the magic, byte by byte."""
         if request[0] == hl.CMD_SET_INPUT_MODE:
-            valid, magic = request[3] != 255 and request[3] in [mode[0][0] for mode in self.modes], hl.MAGIC_INPUT_MODE
+            accepted = [mode[0][0] for mode in self.modes if mode[0][1] & 0x04]       # page 2 flag bit 2
+            valid, magic = request[3] != 255 and request[3] in accepted, hl.MAGIC_INPUT_MODE
         else:
             valid, magic = request[3] in (hl.REBOOT_GAMEPAD, hl.REBOOT_WEBCONFIG, hl.REBOOT_BOOTSEL), hl.MAGIC_REBOOT
         if not valid:
@@ -675,7 +734,7 @@ class FakeBoard:
         page, start, token, mask = struct.unpack_from('<BHIH', request, 3)
         state = [self.state[0], self._holder()] + self.state[2:]
         tables = {hl.PAGE_STATE: [state], hl.PAGE_INPUT_MODES: self.modes, hl.PAGE_NAMES: self.name_records(),
-                  hl.PAGE_SUMMARY: [self.summary],
+                  hl.PAGE_BOOT_HOLDS: self.boot_holds, hl.PAGE_SUMMARY: [self.summary],
                   hl.PAGE_PROFILES: self.profiles, hl.PAGE_CONTROLS: self.controls,
                   hl.PAGE_KEYBOARD_MAPPING: self.keyboard_records(), hl.PAGE_LIGHTS: self.lights,
                   hl.PAGE_ANIMATIONS: self.animations}
@@ -689,6 +748,9 @@ class FakeBoard:
         if page == hl.PAGE_IDENTITY:
             return identity_reply(self.identity, mask or 0xFF, sequence, start)
         records, widths = tables[page], hl.PAGE_GROUPS[page]
+        if page in self.older_groups:
+            defined = self.older_groups[page]
+            records, widths = [list(record)[:defined] for record in records], widths[:defined]
         if page in self.later_groups:
             later = self.later_groups[page]
             records, widths = [list(record) + [later] for record in records], widths + (len(later),)
@@ -768,10 +830,13 @@ class FakeBoard:
         actions = {struct.unpack_from('<h', control[0], 1)[0] for control in self.controls}
         actions |= {struct.unpack_from('<h', light[2], 1)[0] for light in self.lights} - {hl.ACTION_NONE}
         actions |= set(self.keyboard_actions)
+        actions |= {action for hold in self.boot_holds for action in struct.unpack_from('<hhh', hold[1], 1)} - {-0x8000}
         actions |= set(_ACTION_NAMES)
         records = [name_record(hl.NAMES_GPIO_ACTION, value, _ACTION_NAMES.get(value, f'ACTION_{value}'))
                    for value in sorted(actions)]
-        return records + [name_record(hl.NAMES_LIGHT_TYPE, value, name) for value, name in enumerate(_KIND_NAMES)]
+        records += [name_record(hl.NAMES_LIGHT_TYPE, value, name) for value, name in enumerate(_KIND_NAMES)]
+        return records + [name_record(enum, value, name) for enum, names in sorted(_OTHER_NAMES.items())
+                          for value, name in enumerate(names)]
 
     def derived_summary(self) -> bytes:
         """Build the Summary group the pages give: the LED extent and grid from the lights, the totals from the pages.

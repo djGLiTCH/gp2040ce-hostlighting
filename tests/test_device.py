@@ -108,7 +108,9 @@ def test_set_keyboard_mapping_sends_codes_and_sends_again_while_a_switch_is_pend
 
 
 def test_set_input_mode_refuses_a_mode_without_lighting(hlp_fake_device, hlp_fake_board):
-    """Test that SET_INPUT_MODE reads page 2 first and refuses a mode without the interface unless allowed."""
+    """Test that SET_INPUT_MODE reads page 2 first, refusing a mode not accepted, or unlit unless allowed."""
+    with pytest.raises(ValueError, match='the board does not accept input mode 5'):
+        hlp_fake_device.set_input_mode(5)
     with pytest.raises(ValueError, match='input mode 4 has no lighting interface'):
         hlp_fake_device.set_input_mode(4)
     assert not hlp_fake_board.sent(hl.CMD_SET_INPUT_MODE)
@@ -214,10 +216,10 @@ def test_capabilities_are_named_and_required():
     """Test missing_capabilities() and require_capabilities() against HELLO's bitmaps."""
     hello = hl.decode_hello(hello_reply())
     needs = hl.Requirements(commands=frozenset({hl.CMD_UNSTAGE, 0x06}), request_flags=frozenset({7}),
-                            pages=frozenset({4}), addressing_modes=frozenset({hl.ADDRESSING_PIN, 2}),
+                            pages=frozenset({5}), addressing_modes=frozenset({hl.ADDRESSING_PIN, 2}),
                             pixel_formats=frozenset({hl.PIXEL_RGB565, 5}), events=frozenset({0, 1}))
     assert hl.missing_capabilities(hello, needs) == [
-        'command 0x06', 'request flag bit 7', 'page 4', 'addressing mode 2', 'pixel format 5', 'event 1']
+        'command 0x06', 'request flag bit 7', 'page 5', 'addressing mode 2', 'pixel format 5', 'event 1']
     assert hl.missing_capabilities(hello, hl.Requirements(commands=frozenset({hl.CMD_STAGE}))) == []
     hl.require_capabilities(hello, hl.Requirements(events=frozenset({hl.EVENT_STATE_CHANGED})))
     with pytest.raises(hl.HostLightingIncompatibleError, match=r'does not offer command 0x06, request flag bit 7'):
