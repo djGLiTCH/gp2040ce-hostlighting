@@ -7,11 +7,12 @@ board's lights. The on-board animations return when the host stops.
 
 ## Overview
 
-- The add-on is disabled by default. While it is disabled, every input mode
-  presents byte-identical USB descriptors to stock firmware.
+- The add-on is disabled by default. While it and the keyboard interface are
+  off, every input mode presents byte-identical USB descriptors to stock
+  firmware.
 - XInput, Keyboard, Generic HID and SInput modes carry it. Console modes never
   do. In XInput mode a console sees a stock controller unless XInput Lighting
-  is set to Always On.
+  is set to Always On or the keyboard interface to On.
 - The board's own animations return when the host releases control or
   disconnects. When the host stops or crashes they return within a timeout, 2 s
   by default.
@@ -21,7 +22,8 @@ board's lights. The on-board animations return when the host stops.
   is released.
 - A host can also switch the input profile, animation, animation speed and
   brightness as the board's hotkeys do, and change the input mode. It can set
-  the codes the Keyboard input mode sends when the user allows it.
+  the codes the Keyboard input mode and the keyboard interface send when the
+  user allows it.
 
 Users need only this section, How it works and Supported modes. Host developers
 continue with Discovery and Typical host flow, and use the Protocol reference
@@ -52,11 +54,12 @@ interface next to the regular controller interface. Hosts exchange fixed
   identity and current state from the board's live configuration, user remaps
   included. A host can subscribe to be told when they change.
 
-Host software can read the codes the Keyboard input mode sends at any time. It
-can change them only while `Allow hosts to change the keyboard mapping`, in the
-web configurator's Host Lighting section, is on. The setting is off by default.
-A change applies only to the input profile active when it is made, and the
-other profiles keep their codes. Board makers can ship it on by defining
+Host software can read the codes the Keyboard input mode and the keyboard
+interface send at any time. It can change them only while
+`Allow hosts to change the keyboard mapping`, in the web configurator's Host
+Lighting section, is on. The setting is off by default. A change applies only
+to the input profile active when it is made, and the other profiles keep their
+codes. Board makers can ship it on by defining
 `HOST_LIGHTING_ALLOW_KEYBOARD_MAPPING_CHANGES 1` in a board config.
 
 ## Supported modes
@@ -84,8 +87,15 @@ Lighting section, decides when the board presents the lighting interface.
   board to its stock identity, and it detects the host again.
 - **Always On**: The board presents the composite identity from boot. It works
   only on a PC while this is set.
-- **Off**: The board always presents the stock XInput identity. XInput mode has
-  no lighting interface.
+- **Off**: XInput mode has no lighting interface. The board presents the stock
+  XInput identity unless the keyboard interface is On, or Auto on a PC.
+
+The keyboard interface's setting, on the web configurator's Settings page,
+takes part in the same choice, and XInput Lighting counts only while the add-on
+is enabled. The board presents the composite from boot when XInput Lighting is
+Always On or the keyboard interface is On, and otherwise detects the host as in
+Auto when either is Auto. The composite carries each interface with a setting
+other than Off, the lighting interface first.
 
 The composite presents its own USB identity, chosen so that Windows queries the
 MS OS descriptors that bind its Xbox 360 driver. A user USB ID override
@@ -114,7 +124,7 @@ the host uses. Bind a board persistently by the factory-unique board ID in the
 
 On Linux a board's hidraw node is open only to root until a udev rule grants
 access. The [gp2040ce-hostlighting][tools] README gives a rule for the lighting
-modes' USB IDs.
+interface at the lighting modes' USB IDs.
 
 Boards connected at once are independent lighting devices. Each has its own
 interface and is addressed separately.
@@ -216,7 +226,7 @@ their change counters, which start again at 0 with each boot.
 | Per-light effects with geometry | 8, 12 |
 | Hand single lights back to the animation | `UNSTAGE` in overlay takeover. No pages |
 | Configure host inputs from the board | 9, 10 |
-| Read or set the codes the Keyboard input mode sends | `SET_KEYBOARD_MAPPING`, when `HELLO` lists it; 1, 10, 11 |
+| Read or set the codes the Keyboard input mode and the keyboard interface send | `SET_KEYBOARD_MAPPING`, when `HELLO` lists it; 1, 10, 11 |
 | Switch the input profile | `SET_PROFILE`; 9 |
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
 | Set an animation's speeds | `SET_ANIMATION_SPEED`; 13 for the speeds, 8 for the step count |
@@ -720,7 +730,7 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, the record counts of pages 9, 10, 12 and 13, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
 | 10 | Controls | Every control in the active profile, lit or not. A control is a GPIO pin or add-on input with an action. Each record gives which instance of its action it is, where it sits, and its lights | To configure host inputs, or to show where each control sits |
-| 11 | Keyboard mapping | The code the Keyboard input mode sends for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`, when `HELLO` lists it) |
+| 11 | Keyboard mapping | The code the Keyboard input mode and the keyboard interface send for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`, when `HELLO` lists it) |
 | 12 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
 | 13 | Animations | The on-board animations: enabled, idle, pressed and case effects, and their speeds | To show or pick the idle animation (`SET_ANIMATION`) or set its speeds (`SET_ANIMATION_SPEED`) |
 | 14-15 | - | Free for configuration pages | - |
@@ -1161,7 +1171,7 @@ The group makes a 3-byte record, sixteen per reply.
 | Field | Meaning |
 |---|---|
 | Action | The `GpioAction` of the button, verbatim: `BUTTON_PRESS_UP` for `keyDpadUp` to `BUTTON_PRESS_E12` for `keyButtonE12` |
-| Code | The code the Keyboard input mode sends for the button, 8-bit, as `KeyboardDriver` presses it. 4-0xE7 a HID keyboard usage (usage page 0x07, the modifiers 0xE0-0xE7 included). 1-3 HID's keyboard error usages, which are not keys. Above 0xE7 a media key where GP2040-CE defines one (`KEYBOARD_MULTIMEDIA_*`) and none otherwise. 0 none |
+| Code | The code the Keyboard input mode and the keyboard interface send for the button, 8-bit, as `KeyboardDriver` presses it. 4-0xE7 a HID keyboard usage (usage page 0x07, the modifiers 0xE0-0xE7 included). 1-3 HID's keyboard error usages, which are not keys. Above 0xE7 a media key where GP2040-CE defines one (`KEYBOARD_MULTIMEDIA_*`) and none otherwise. 0 none |
 
 Profile 1 has the base mapping and each other profile its own. The page gives
 the active profile's codes in every input mode, so a host can read them before
@@ -1189,6 +1199,10 @@ exceptions.
   `BUTTON_PRESS_R3`, the page 11 actions `PCF8575Addon` reads, and holds its
   D-pad directions in every D-pad mode. Other actions on an add-on input hold
   no button this page lists.
+
+The keyboard interface sends a button's code from the same gamepad state, with
+the same exceptions, while the button is in the active profile's keyboard
+button mask and its code is not 0.
 
 One media key is sent at a time. A pending volume step of the Rotary Encoder
 add-on sends its own. Otherwise it is that of the last pressed button in field

@@ -450,16 +450,18 @@ On Linux, the library uses hidapi's hidraw backend, which several applications
 can share. A board's hidraw node is open only to root until a udev rule grants
 access. The rule below lets the logged-in user reach the lighting interface in
 each mode that carries it, at the mode's USB ID. A USB ID override in the web
-configurator changes that ID. Put the rule in
-`/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
+configurator changes that ID. The rule matches only HID interfaces with two
+endpoints, so the board's keyboards, which have one, stay closed. Put the rule
+in `/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
 `sudo udevadm control --reload-rules` and replug the board.
 
 ```
 # XInput, Keyboard, Generic HID and SInput with Host Lighting
-KERNEL=="hidraw*", ATTRS{idVendor}=="24c6", ATTRS{idProduct}=="5bad", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="cafe", ATTRS{idProduct}=="0001", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="82c0", TAG+="uaccess"
-KERNEL=="hidraw*", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="10c6", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEMS=="usb", IMPORT{builtin}="usb_id"
+KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="24c6", ENV{ID_MODEL_ID}=="5bad", ATTRS{bNumEndpoints}=="02", TAG+="uaccess"
+KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="cafe", ENV{ID_MODEL_ID}=="0001", ATTRS{bNumEndpoints}=="02", TAG+="uaccess"
+KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="10c4", ENV{ID_MODEL_ID}=="82c0", ATTRS{bNumEndpoints}=="02", TAG+="uaccess"
+KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="2e8a", ENV{ID_MODEL_ID}=="10c6", ATTRS{bNumEndpoints}=="02", TAG+="uaccess"
 ```
 
 * `hlp-ping` says HELLO, checks the magic and protocol version, and times the
