@@ -451,8 +451,9 @@ can share. A board's hidraw node is open only to root until a udev rule grants
 access. The rule below lets the logged-in user reach the lighting interface in
 each mode that carries it, at the mode's USB ID. A USB ID override in the web
 configurator changes that ID. The rule matches only HID interfaces with two
-endpoints, so the board's keyboards, which have one, stay closed. Put the rule
-in `/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
+endpoints, so the board's keyboards, which have one, stay closed. It also opens
+the board's lighting report, which has two. Put the rule in
+`/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
 `sudo udevadm control --reload-rules` and replug the board.
 
 ```

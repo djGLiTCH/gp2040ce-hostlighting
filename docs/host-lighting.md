@@ -12,7 +12,10 @@ board's lights. The on-board animations return when the host stops.
   firmware.
 - XInput, Keyboard, Generic HID and SInput modes carry it. Console modes never
   do. In XInput mode a console sees a stock controller unless XInput Lighting
-  is set to Always On or the keyboard interface to On.
+  is set to Always On, or the keyboard interface or the lighting report to On.
+- The lighting report, off by default, gives software that drives lights
+  through standard HID output values a red, green and blue value for each
+  light.
 - The board's own animations return when the host releases control or
   disconnects. When the host stops or crashes they return within a timeout, 2 s
   by default.
@@ -25,9 +28,9 @@ board's lights. The on-board animations return when the host stops.
   the codes the Keyboard input mode and the keyboard interface send when the
   user allows it.
 
-Users need only this section, How it works and Supported modes. Host developers
-continue with Discovery and Typical host flow, and use the Protocol reference
-as needed.
+Users need only this section, How it works, Supported modes and Lighting
+report. Host developers continue with Discovery and Typical host flow, and use
+the Protocol reference as needed.
 
 ## How it works
 
@@ -88,14 +91,16 @@ Lighting section, decides when the board presents the lighting interface.
 - **Always On**: The board presents the composite identity from boot. It works
   only on a PC while this is set.
 - **Off**: XInput mode has no lighting interface. The board presents the stock
-  XInput identity unless the keyboard interface is On, or Auto on a PC.
+  XInput identity unless the keyboard interface or the lighting report is On,
+  or Auto on a PC.
 
-The keyboard interface's setting, on the web configurator's Settings page,
-takes part in the same choice, and XInput Lighting counts only while the add-on
-is enabled. The board presents the composite from boot when XInput Lighting is
-Always On or the keyboard interface is On, and otherwise detects the host as in
-Auto when either is Auto. The composite carries each interface with a setting
-other than Off, the lighting interface first.
+The keyboard interface's setting, on the web configurator's Settings page, and
+the lighting report's setting take part in the same choice. XInput Lighting and
+the lighting report count only while the add-on is enabled. The board presents
+the composite from boot when XInput Lighting is Always On or another setting is
+On. Otherwise it detects the host as in Auto when any setting is Auto. The
+composite carries each interface with a setting other than Off, in this order:
+the keyboard interface, the lighting report, the lighting interface.
 
 The composite presents its own USB identity, chosen so that Windows queries the
 MS OS descriptors that bind its Xbox 360 driver. A user USB ID override
@@ -106,6 +111,31 @@ can leave the controller interface unbound on that PC.
 The lighting interface is HID class and enumerates regardless, so Host Lighting
 works under an overridden ID. If the controller side fails after an override in
 this mode, choose an ID that PC has not seen before.
+
+## Lighting report
+
+The lighting report is a second lighting interface, for software that drives
+lights through standard HID output values. It does not use the Host Lighting
+Protocol. Set `Lighting Report`, in the web configurator's Host
+Lighting section, to On, or to Auto, which in XInput mode presents it to a PC
+only. It is off by default. Board makers can ship it on by defining
+`HOST_LIGHTING_REPORT_MODE 1` in a board config.
+
+- Its top-level collection is usage page `0x01`, usage `0x00` (Generic
+  Desktop, Undefined).
+- Each light has a red, green and blue output value, 0-255, in the light order
+  of page 12. An output report carries 21 lights, report ID 1 from the first
+  light. Report 1 also carries one constant input byte.
+- A string descriptor names each value by its light and channel, such as
+  `B1 R` or `Case 2 B`. A light takes its control's button, numbered when
+  several controls share the button. A control's later lights are `Light n`,
+  and other lights `Turbo`, `Player n`, `Case n` or `Light n`. Lights past the
+  79th have no names.
+- The board shows the values from the first report until USB suspends,
+  unmounts or resets. The animations show until the next report, and lights it
+  does not set are off.
+- The board's brightness applies. A Host Lighting takeover shows over the
+  values.
 
 ## Discovery
 
