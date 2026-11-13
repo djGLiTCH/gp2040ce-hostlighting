@@ -458,9 +458,15 @@ can share. A board's hidraw node is open only to root until a udev rule grants
 access. The rule below lets the logged-in user reach the lighting interface in
 each mode that carries it, at the mode's USB ID. A USB ID override in the web
 configurator changes that ID. The rule matches only HID interfaces with two
-endpoints, so the board's keyboards, which have one, stay closed. It also opens
-the Lighting Report add-on's interface, which has two, for lighting software
-that drives it. The library itself does not use that interface. Put the rule in
+endpoints. Those with one stay closed: the keyboard interface, and the
+controller interface in the Keyboard and Generic HID modes. It also opens two
+other interfaces with two endpoints: the controller interface in SInput mode,
+and the Lighting Report add-on's interface, for lighting software that drives
+it. The library itself uses neither. hidapi finds the lighting interface
+without opening each node. A host that opens every node at these IDs to read
+its report descriptor is refused the closed ones. It should pass over a refused
+node on an interface without two endpoints (`bNumEndpoints` in sysfs) rather
+than report missing permission. Put the rule in
 `/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
 `sudo udevadm control --reload-rules` and replug the board.
 
