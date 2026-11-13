@@ -7,15 +7,16 @@ board's lights. The on-board animations return when the host stops.
 
 ## Overview
 
-- The add-on is disabled by default. While it and the keyboard interface are
-  off, every input mode presents byte-identical USB descriptors to stock
-  firmware.
+- The add-on is disabled by default. While it, the lighting report and the
+  keyboard interface are off, every input mode presents byte-identical USB
+  descriptors to stock firmware.
 - XInput, Keyboard, Generic HID and SInput modes carry it. Console modes never
-  do. In XInput mode a console sees a stock controller unless XInput Lighting
-  is set to Always On, or the keyboard interface or the lighting report to On.
-- The lighting report, off by default, gives software that drives lights
-  through standard HID output values a red, green and blue value for each
-  light.
+  do. In XInput mode a console sees a stock controller unless Host Lighting's
+  or the lighting report's XInput Lighting, or the keyboard interface's XInput
+  Keyboard, is Always On.
+- The lighting report, its own add-on and off by default, gives software that
+  drives lights through standard HID output values a red, green and blue
+  value for each light.
 - The board's own animations return when the host releases control or
   disconnects. When the host stops or crashes they return within a timeout, 2 s
   by default.
@@ -59,10 +60,10 @@ interface next to the regular controller interface. Hosts exchange fixed
 
 Host software can read the codes the Keyboard input mode and the keyboard
 interface send at any time. It can change them only while
-`Allow hosts to change the keyboard mapping`, in the web configurator's Host
-Lighting section, is on. The setting is off by default. A change applies only
-to the input profile active when it is made, and the other profiles keep their
-codes. Board makers can ship it on by defining
+`Allow Host Lighting apps to change the keyboard mapping`, in the web
+configurator's Host Lighting section, is on. The setting is off by default. A
+change applies only to the input profile active when it is made, and the other
+profiles keep their codes. Board makers can ship it on by defining
 `HOST_LIGHTING_ALLOW_KEYBOARD_MAPPING_CHANGES 1` in a board config.
 
 ## Supported modes
@@ -91,16 +92,16 @@ Lighting section, decides when the board presents the lighting interface.
 - **Always On**: The board presents the composite identity from boot. It works
   only on a PC while this is set.
 - **Off**: XInput mode has no lighting interface. The board presents the stock
-  XInput identity unless the keyboard interface or the lighting report is On,
-  or Auto on a PC.
+  XInput identity unless the keyboard interface's XInput Keyboard or the
+  lighting report's XInput Lighting is Always On, or either is Auto on a PC.
 
-The keyboard interface's setting, on the web configurator's Settings page, and
-the lighting report's setting take part in the same choice. XInput Lighting and
-the lighting report count only while the add-on is enabled. The board presents
-the composite from boot when XInput Lighting is Always On or another setting is
-On. Otherwise it detects the host as in Auto when any setting is Auto. The
-composite carries each interface with a setting other than Off, in this order:
-the keyboard interface, the lighting report, the lighting interface.
+The keyboard interface's XInput Keyboard, on the web configurator's Settings
+page, and the lighting report's XInput Lighting take part in the same choice.
+Each setting counts only while its function is enabled. The board presents the
+composite from boot when any setting is Always On. Otherwise it detects the
+host as in Auto when any setting is Auto. The composite carries each interface
+with a setting other than Off, in this order: the keyboard interface, the
+lighting report, the lighting interface.
 
 The composite presents its own USB identity, chosen so that Windows queries the
 MS OS descriptors that bind its Xbox 360 driver. A user USB ID override
@@ -116,10 +117,12 @@ this mode, choose an ID that PC has not seen before.
 
 The lighting report is a second lighting interface, for software that drives
 lights through standard HID output values. It does not use the Host Lighting
-Protocol. Set `Lighting Report`, in the web configurator's Host
-Lighting section, to On, or to Auto, which in XInput mode presents it to a PC
-only. It is off by default. Board makers can ship it on by defining
-`HOST_LIGHTING_REPORT_MODE 1` in a board config.
+Protocol and does not need the Host Lighting add-on. Enable the
+`Lighting Report` add-on in the web configurator. It is off by default.
+Keyboard, Generic HID and SInput modes then carry it. In XInput mode its
+`XInput Lighting` setting works as Host Lighting's does, with Auto the
+default. Board makers can ship it on by defining `LIGHTING_REPORT_ENABLED 1`
+in a board config.
 
 - Its top-level collection is usage page `0x01`, usage `0x00` (Generic
   Desktop, Undefined).
@@ -499,9 +502,9 @@ bitmaps. Bit n set means the board implements request flag n, command n, page
 n, addressing mode n, pixel format n or event n. Request flag bits 4-6 stand
 for the claim generation. `[45..46]` are the events this USB session is
 subscribed to. The capability bitmaps are fixed for a boot. The commands bitmap
-also depends on the `Allow hosts to change the keyboard mapping` setting
-(`SET_KEYBOARD_MAPPING`), which only the web configurator changes. A host must
-check the capabilities it uses (Compatibility and versioning).
+also depends on the `Allow Host Lighting apps to change the keyboard mapping`
+setting (`SET_KEYBOARD_MAPPING`), which only the web configurator changes. A
+host must check the capabilities it uses (Compatibility and versioning).
 
 `GET_PAGE` reads a page (Pages).
 
@@ -699,7 +702,8 @@ mapping, which writes the flash once. Other profiles' mappings are unchanged.
 A host sets another profile's codes by selecting it with `SET_PROFILE` first.
 
 The board implements `SET_KEYBOARD_MAPPING` only while the web configurator's
-`Allow hosts to change the keyboard mapping` setting is on (How it works).
+`Allow Host Lighting apps to change the keyboard mapping` setting is on (How it
+works).
 While it is off, `HELLO` does not list 0x34 and the command returns status 1.
 Page 11 reports the codes either way.
 
@@ -1541,8 +1545,8 @@ The bitmaps in `HELLO` cover these ranges.
 ### Worked examples
 
 Captured from a Haute42 COSMOX (16 LEDs) in XInput mode, with
-`Allow hosts to change the keyboard mapping` off. Bytes are in hex. Each
-report is 64 bytes, and every byte not shown is zero.
+`Allow Host Lighting apps to change the keyboard mapping` off. Bytes are in hex.
+Each report is 64 bytes, and every byte not shown is zero.
 
 `HELLO`:
 

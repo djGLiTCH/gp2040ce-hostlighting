@@ -397,8 +397,9 @@ animations go idle, and `frames` keeps every frame it published.
 
 A fake board's `HELLO` comes from its attributes: `magic`, `version`,
 `request_flags`, `commands`, `pages`, `addressing_modes`, `pixel_formats` and
-`events`, by default what the firmware lists with `Allow hosts to change the
-keyboard mapping` on. A command or page left out answers as one the firmware
+`events`, by default what the firmware lists with
+`Allow Host Lighting apps to change the keyboard mapping` on. A command or page
+left out answers as one the firmware
 lacks, so a fake without `CMD_SET_KEYBOARD_MAPPING` in `commands` answers as
 the firmware does by default. `drop` discards the commands it names,
 neither run nor answered, and `reject` answers each it names with a status and
@@ -517,7 +518,8 @@ KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="2e8a", ENV{ID_MODEL_ID}=="10c6", ATTRS{bN
   `--speed ORDINAL --idle/--pressed/--case`, `--brightness`,
   `--keyboard-code ORDINAL=CODE`, repeated as needed, consecutive ordinals
   sent in one request). `--keyboard-code` needs the board's
-  `Allow hosts to change the keyboard mapping` setting, off by default, and
+  `Allow Host Lighting apps to change the keyboard mapping` setting, off by
+  default, and
   the codes show as read-only without it. `--profile` switches the live
   button mapping. Each differing value is written to the board's settings
   flash, a profile or keyboard code at once and the others about a second
@@ -587,7 +589,7 @@ they do.
   `show: 900 frames at 60 fps (46 lights)`.
 
 Sample usage, from a board with
-`Allow hosts to change the keyboard mapping` on:
+`Allow Host Lighting apps to change the keyboard mapping` on:
 
 ```
 % hlp-ping
