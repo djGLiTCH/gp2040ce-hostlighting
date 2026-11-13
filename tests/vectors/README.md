@@ -113,7 +113,7 @@ page 1 is compared.
 | `stale_token` | A page read under another token: status 3 with the page and start; the same read under the current token; page 3 without a token |
 | `state_changed` | After `SUBSCRIBE`, a claim and its give up each raise one `STATE_CHANGED`, laid out as page 1 |
 | `idle_and_set_animation` | Model only. The idle flag and its events; `SET_ANIMATION` with the animation shown, another (shown at once, awake at the next render tick), and off |
-| `keyboard_mapping` | Page 11 in two reads. `SET_KEYBOARD_MAPPING` from past the last record is refused at [4], of no records or of records past the last at [6], and with the profile, first record and count wrong at [4], the range checked first. For profile 0, never active, it is refused with status 3 |
+| `keyboard_mapping` | Page 11's codes (group 0) in two reads and its flags (group 1) in one. `SET_KEYBOARD_MAPPING` from past the last record is refused at [4], of no records or of records past the last at [6], and with the profile, first record and count wrong at [4], the range checked first. For profile 0, never active, it is refused with status 3 |
 | `keyboard_mapping_not_allowed` | Settings that do not allow keyboard mapping changes. `HELLO` without `SET_KEYBOARD_MAPPING`, and page 11 read. `SET_KEYBOARD_MAPPING` is status 1, and still status 1, not 4, without `HOLDER` under an exclusive claim |
 | `keyboard_code_change` | Model only. `SET_KEYBOARD_MAPPING` of the code shown changes nothing. A new code steps page 11's counter and the token, with one `STATE_CHANGED`, and the old code again puts the token back |
 | `full_reply_queue` | Model only. 16 `HELLO` requests are sent and their replies left unread; the 17th, which needs a reply, is discarded |

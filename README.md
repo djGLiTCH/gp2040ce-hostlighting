@@ -242,12 +242,14 @@ moved counter, kept or not. A host calls it after each change of the state
 token, and calls `clear()` after a reconnect. `lights_reached()` gives the
 lights a `STAGE` entry reaches, as the board resolves it: by ordinal, pin,
 action or kind, leaving out a light with no LED below the addressable limit.
-`controls_with()` gives the controls with a key or an action, and
-`keyboard_code()` the code the Keyboard input mode sends for an action's
-button, from page 11. Up to Right on a GPIO pin or Hall-effect trigger send
-their codes only in the digital D-pad mode (page 1). The Summary's
-`brightness_scale()` gives the scale the board applies at a brightness step,
-and `stream_rate()` the render rate, past which frames are not shown.
+`controls_with()` gives the controls with a key or an action,
+`keyboard_code()` the code the Keyboard input mode and the keyboard interface
+send for an action's button, from page 11, and `sends_key()` whether the
+keyboard interface sends that code in place of the button's controller input.
+Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the
+digital D-pad mode (page 1). The Summary's `brightness_scale()` gives the
+scale the board applies at a brightness step, and `stream_rate()` the render
+rate, past which frames are not shown.
 
 A `Session` runs the specification's whole host flow on these parts. `start()`,
 or a `with` block, checks the board's capabilities, reads the configuration,
@@ -526,8 +528,9 @@ KERNEL=="hidraw*", ENV{ID_VENDOR_ID}=="2e8a", ENV{ID_MODEL_ID}=="10c6", ATTRS{bN
   `--names` reads the buttons' actions from page 3 when `-P` names none.
 * `hlp-settings` shows the input profile, animation, animation speeds,
   brightness and the active profile's keyboard codes with the values each
-  accepts, with the D-pad mode the codes of Up to Right depend on, and changes
-  them (`--profile`, `--animation N|off`,
+  accepts, with the D-pad mode the codes of Up to Right depend on, and marks
+  the buttons the keyboard interface sends as keys. It changes them
+  (`--profile`, `--animation N|off`,
   `--speed ORDINAL --idle/--pressed/--case`, `--brightness`,
   `--keyboard-code ORDINAL=CODE`, repeated as needed, consecutive ordinals
   sent in one request). `--keyboard-code` needs the board's
@@ -642,7 +645,7 @@ animation 0 (an enabled ordinal, or off); speeds 0-10:
   ...
 brightness step 4 of 0-10 (maximum 199)
 D-pad mode 0 (Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the digital D-pad mode)
-keyboard codes, the active profile's (page 11 ordinal, its button's action, code):
+keyboard codes, the active profile's (page 11 ordinal, its button's action, code, and whether it is sent as a key):
    0 action 1: code 0x52
   ...
    4 action 5: code 0xE1

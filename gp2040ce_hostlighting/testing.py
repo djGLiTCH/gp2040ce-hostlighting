@@ -150,9 +150,9 @@ def control_record(key: int, action: int, duplicated: int = 0, lit: int = 1, ins
             struct.pack('<HH', first_light if lit else 0xFFFF, light_count)]
 
 
-def keyboard_record(action: int, code: int) -> list[bytes]:
-    """One page 11 record: a button's action and the code the Keyboard input mode sends for it."""
-    return [struct.pack('<hB', action, code)]
+def keyboard_record(action: int, code: int, sends_key: bool = False) -> list[bytes]:
+    """One page 11 record as its two groups: a button's action and the code it sends, and its flags."""
+    return [struct.pack('<hB', action, code), bytes([hl.KEYBOARD_SENDS_KEY if sends_key else 0])]
 
 
 # the fakes' keyboard mapping: KeyboardMapping's fields in order, each with its button's GpioAction as enums.proto
@@ -341,6 +341,9 @@ class FakeBoard:
         # gives each listed profile its own copy, so that a change stays in its profile
         self.keyboard_actions = [action for action, _ in _KEYBOARD_BUTTONS]
         self.keyboard_codes: dict[int, list[int]] = {1: [code for _, code in _KEYBOARD_BUTTONS]}
+        # the actions of the buttons in the keyboard interface's mask while it is present, none while it is not. A
+        # button in it with a code sends that code in place of its controller input
+        self.keyboard_mask: set[int] = set()
         self.identity = ['Haute42 COSMOX M Ultra', 'Haute42COSMOXMUltra', 'rp2040', 'v0.7.12-88-ga83f820',
                          '0.7.12', 'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
         self.token = 0x1234ABCD
@@ -594,8 +597,8 @@ class FakeBoard:
         return 0
 
     def keyboard_records(self) -> list[list[bytes]]:
-        """Build page 11's records: each button's action and the applied profile's code."""
-        return [keyboard_record(action, code)
+        """Build page 11's records: each button's action, the applied profile's code, and whether it sends it."""
+        return [keyboard_record(action, code, action in self.keyboard_mask and code != 0)
                 for action, code in zip(self.keyboard_actions, self.profile_codes(self.applied_profile()))]
 
     def profile_codes(self, profile: int) -> list[int]:

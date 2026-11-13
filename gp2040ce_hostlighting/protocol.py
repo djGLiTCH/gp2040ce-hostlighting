@@ -36,9 +36,10 @@ the board and lists its capabilities. GET_PAGE reads the pages:
   and animation totals, and a change counter per configuration page
 * page 9 (profiles), page 10 (controls: every input with an action, lit or
   not, keyed by GPIO pin, Hall-effect trigger or expander pin), page 11 (the
-  keyboard mapping: the code the Keyboard input mode sends for each button),
-  page 12 (lights: every light's LEDs, kind, owner and grid cell) and page 13
-  (the on-board animations and their speeds)
+  keyboard mapping: the code the Keyboard input mode and the keyboard interface
+  send for each button, and which buttons the keyboard interface sends as
+  keys), page 12 (lights: every light's LEDs, kind, owner and grid cell) and
+  page 13 (the on-board animations and their speeds)
 
 Actions, light kinds and colour formats are GP2040-CE's own enum values,
 reported verbatim.
@@ -64,10 +65,10 @@ from gp2040ce_hostlighting.records import (AnimationRecord, BoardListing, BootHo
                                            ControlInput, ControlInstances, ControlLights, ControlRecord, Effects,
                                            EnumValue, GridCell, Hello, Holder, Identity, InputModeAuthentication,
                                            InputModeCapabilities, InputModeDeviceTypes, InputModeFlags, InputModeRecord,
-                                           Instances, KeyboardButton, KeyboardMappingRecord, LedRange, LightKind,
-                                           LightRecord, NameRecord, Owner, PageHeader, PageRead, PaletteSlot, Position,
-                                           Profile, ProfileRecord, Requirements, Settings, Speeds, StageOutcome, State,
-                                           StateChanged, StateRecord, Summary, SummaryRecord)
+                                           Instances, KeyboardButton, KeyboardFlags, KeyboardMappingRecord, LedRange,
+                                           LightKind, LightRecord, NameRecord, Owner, PageHeader, PageRead, PaletteSlot,
+                                           Position, Profile, ProfileRecord, Requirements, Settings, Speeds,
+                                           StageOutcome, State, StateChanged, StateRecord, Summary, SummaryRecord)
 
 __all__ = [
     # the interface, framing and replies
@@ -95,7 +96,7 @@ __all__ = [
     'PAGE_KEYBOARD_MAPPING', 'PAGE_LIGHTS', 'PAGE_ANIMATIONS', 'PAGE_RANGES', 'PAGE_GROUPS', 'HEADER_RECORDS',
     'RECORD_AREA', 'HEADER_TOKEN',
     'IDENTITY_GROUPS', 'IDENTITY_STRING_MAX', 'STATE_LIVE', 'STATE_UNSAVED', 'STATE_IDLE', 'SUMMARY_WHITE_CHANNEL',
-    'SUMMARY_USB_HOST',
+    'SUMMARY_USB_HOST', 'KEYBOARD_SENDS_KEY',
     'KEY_SOURCES', 'KEY_TRIGGER', 'KEY_EXPANDER', 'KEY_PREFIXES', 'PIN_NONE', 'SLOT_NONE', 'INDEX_NONE',
     'ACTION_NONE', 'ANIMATION_OFF', 'SPEED_UNCHANGED', 'BRIGHTNESS_SAVED',
     # staging
@@ -216,7 +217,7 @@ PAGE_GROUPS = {
     PAGE_SUMMARY: (30, 8),
     PAGE_PROFILES: (18,),
     PAGE_CONTROLS: (4, 4, 6, 4),
-    PAGE_KEYBOARD_MAPPING: (3,),
+    PAGE_KEYBOARD_MAPPING: (3, 1),
     PAGE_LIGHTS: (4, 2, 3, 4, 2, 1),
     PAGE_ANIMATIONS: (4, 3),
 }
@@ -268,6 +269,7 @@ STATE_UNSAVED = 0x02
 STATE_IDLE = 0x04
 SUMMARY_WHITE_CHANNEL = 0x01
 SUMMARY_USB_HOST = 0x02
+KEYBOARD_SENDS_KEY = 0x01           # page 11 flags: the keyboard interface sends the code in place of the button
 
 # page 10 keys: GPIO pin p is key p, Hall-effect trigger n is KEY_TRIGGER + n and PCF8575 pin n is
 # KEY_EXPANDER + n. The rest are reserved
@@ -793,6 +795,10 @@ def _keyboard_button(data: bytes) -> KeyboardButton:
     return KeyboardButton(action=_s16(data, 0), code=data[2])
 
 
+def _keyboard_flags(data: bytes) -> KeyboardFlags:
+    return KeyboardFlags(sends_key=bool(data[0] & KEYBOARD_SENDS_KEY))
+
+
 def _led_range(data: bytes) -> LedRange:
     return LedRange(first_led=_u16(data, 0), led_count=_u16(data, 2))
 
@@ -835,7 +841,7 @@ _PAGE_RECORDS: dict[int, tuple[type, tuple[tuple[str, Callable[[bytes], Any]], .
     PAGE_PROFILES: (ProfileRecord, (('profile', _profile),)),
     PAGE_CONTROLS: (ControlRecord, (('input', _control_input), ('instances', _control_instances),
                                     ('position', _position), ('lights', _control_lights))),
-    PAGE_KEYBOARD_MAPPING: (KeyboardMappingRecord, (('button', _keyboard_button),)),
+    PAGE_KEYBOARD_MAPPING: (KeyboardMappingRecord, (('button', _keyboard_button), ('flags', _keyboard_flags))),
     PAGE_LIGHTS: (LightRecord, (('leds', _led_range), ('kind', _light_kind), ('owner', _owner),
                                 ('owner_instances', _instances), ('grid', _grid_cell), ('palette', _palette_slot))),
     PAGE_ANIMATIONS: (AnimationRecord, (('effects', _effects), ('speeds', _speeds))),

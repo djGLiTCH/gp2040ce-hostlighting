@@ -395,11 +395,14 @@ def test_settings_shows_and_changes(hlp_run_on_fake_board, hlp_fake_board, capsy
 def test_settings_shows_and_sets_keyboard_codes(hlp_run_on_fake_board, hlp_fake_board, capsys):
     """Test hlp-settings' keyboard codes: page 11 shown, and one request for each run of consecutive ordinals."""
     base = list(hlp_fake_board.keyboard_codes[1])
+    hlp_fake_board.keyboard_mask = {5, 54}          # B1 has a code, so it is sent as a key; action 54 has none
     hlp_run_on_fake_board(tools.settings)
     out = capsys.readouterr().out
+    assert f"   4 action 5: code 0x{base[4]:02X}, sent as a key\n" in out and '  31 action 54: no code\n' in out
     assert 'D-pad mode 0 (Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the digital ' \
            'D-pad mode)\n' in out
-    assert "keyboard codes, the active profile's (page 11 ordinal, its button's action, code):" in out
+    assert "keyboard codes, the active profile's (page 11 ordinal, its button's action, code, and whether it is sent " \
+           "as a key):" in out
     assert f"   4 action 5: code 0x{base[4]:02X}" in out and '  31 action 54: no code' in out
     hlp_run_on_fake_board(tools.settings, '--keyboard-code', '6=7', '--keyboard-code', '4=0x04',
                           '--keyboard-code', '9=1', '--keyboard-code', '5=2', '--keyboard-code', '9=0x09')

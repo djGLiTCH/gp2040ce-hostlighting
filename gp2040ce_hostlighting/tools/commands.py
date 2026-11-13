@@ -51,8 +51,8 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             HostLightingRejectedError, HostLightingTimeoutError,
                                             HostLightingUnansweredError, decode_state_changed, key_name, open_device,
                                             stage_capacity)
-from gp2040ce_hostlighting.records import (BootHoldRecord, ControlRecord, Hello, Identity, InputModeRecord, LightRecord,
-                                           Settings, StateRecord, jsonable)
+from gp2040ce_hostlighting.records import (BootHoldRecord, ControlRecord, Hello, Identity, InputModeRecord,
+                                           KeyboardMappingRecord, LightRecord, Settings, StateRecord, jsonable)
 
 logger = logging.getLogger(__name__)
 
@@ -602,13 +602,15 @@ def _print_keyboard_mapping(device: HostLightingDevice, names: dict[str, dict[in
     read = device.read_table(PAGE_KEYBOARD_MAPPING)
     print(f"page {PAGE_KEYBOARD_MAPPING} (keyboard mapping): {len(read.records)}, token 0x{read.token:08X}")
     for record in read.records:
-        print(f"  {_keyboard_line(record.ordinal, record.button.action, record.button.code, names)}")
+        print(f"  {_keyboard_line(record, names)}")
 
 
-def _keyboard_line(ordinal: int, action: int, code: int, names: dict[str, dict[int, str]]) -> str:
-    """Show one page 11 record: its ordinal, its button's action and its code, in hex."""
+def _keyboard_line(record: KeyboardMappingRecord, names: dict[str, dict[int, str]]) -> str:
+    """Show one page 11 record: its ordinal, its button's action, its code in hex, and whether it is sent as a key."""
+    code = record.button.code
     shown = f"code 0x{code:02X}" if code else 'no code'
-    return f"{ordinal:2d} action {_named(action, names, 'GpioAction')}: {shown}"
+    sent = ', sent as a key' if record.has('flags') and record.flags.sends_key else ''
+    return f"{record.ordinal:2d} action {_named(record.button.action, names, 'GpioAction')}: {shown}{sent}"
 
 
 def _print_lights(device: HostLightingDevice, names: dict[str, dict[int, str]]) -> None:
@@ -804,9 +806,9 @@ def _print_settings(device: HostLightingDevice, names: dict[str, dict[int, str]]
         print(f"D-pad mode {_named(state.dpad_mode, names, 'DpadMode')} (Up to Right on a GPIO pin or Hall-effect "
               "trigger send their codes only in the digital D-pad mode)")
         print(f"keyboard codes, the active profile's (page {PAGE_KEYBOARD_MAPPING} ordinal, its button's action, "
-              "code):")
+              "code, and whether it is sent as a key):")
         for record in device.read_table(PAGE_KEYBOARD_MAPPING).records:
-            print(f"  {_keyboard_line(record.ordinal, record.button.action, record.button.code, names)}")
+            print(f"  {_keyboard_line(record, names)}")
         if CMD_SET_KEYBOARD_MAPPING not in hello.commands:
             print("  read-only, as the board's settings do not allow hosts to change them")
 

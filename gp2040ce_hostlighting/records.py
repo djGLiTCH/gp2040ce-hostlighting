@@ -21,8 +21,8 @@ from typing import Any, ClassVar, Generic, Optional, TypeVar, overload
 __all__ = ['AnimationRecord', 'BoardListing', 'BootHold', 'BootHoldRecord', 'BootTarget', 'Changes', 'ControlInput',
            'ControlInstances', 'ControlLights', 'ControlRecord', 'Effects', 'EnumValue', 'GridCell', 'Hello', 'Holder',
            'Identity', 'InputModeAuthentication', 'InputModeCapabilities', 'InputModeDeviceTypes', 'InputModeFlags',
-           'InputModeRecord', 'Instances', 'KeyboardButton', 'KeyboardMappingRecord', 'LedRange', 'LightKind',
-           'LightRecord', 'NameRecord', 'Owner', 'PageHeader', 'PageRead',
+           'InputModeRecord', 'Instances', 'KeyboardButton', 'KeyboardFlags', 'KeyboardMappingRecord', 'LedRange',
+           'LightKind', 'LightRecord', 'NameRecord', 'Owner', 'PageHeader', 'PageRead',
            'PaletteSlot', 'Position', 'Profile', 'ProfileRecord', 'Requirements', 'Settings', 'Speeds',
            'StageOutcome', 'State', 'StateChanged', 'StateRecord', 'Summary', 'SummaryRecord', 'jsonable']
 
@@ -517,23 +517,32 @@ class ControlRecord(_Record):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class KeyboardButton:
-    """Page 11's one group: a button of the Keyboard input mode's mapping and the code it sends."""
+    """Page 11's first group: a button of the Keyboard input mode's mapping and the code it sends."""
 
     action: int                 # the button's GpioAction, as page 10 carries a control's
     code: int                   # a HID keyboard usage, a media key above 0xE7, or 0 for none
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class KeyboardFlags:
+    """Page 11's second group: the button's flags."""
+
+    sends_key: bool             # the keyboard interface sends the code in place of the button's controller input
 
 
 class KeyboardMappingRecord(_Record):
     """A page 11 record."""
 
     PAGE = 11
-    GROUPS = ('button',)
-    __slots__ = ('_button',)
+    GROUPS = ('button', 'flags')
+    __slots__ = ('_button', '_flags')
     button = _Group[KeyboardButton]()
+    flags = _Group[KeyboardFlags]()
 
-    def __init__(self, *, ordinal: int, button: Optional[KeyboardButton] = None) -> None:
+    def __init__(self, *, ordinal: int, button: Optional[KeyboardButton] = None,
+                 flags: Optional[KeyboardFlags] = None) -> None:
         """Hold the groups a read returned, None for the others."""
-        super().__init__(ordinal, {'button': button})
+        super().__init__(ordinal, {'button': button, 'flags': flags})
 
 
 # page 12, Lights

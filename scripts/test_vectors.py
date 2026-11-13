@@ -397,9 +397,12 @@ def idle_and_set_animation(d: Driver) -> None:
 
 
 def keyboard_mapping(d: Driver) -> None:
-    """Page 11 in two reads, and SET_KEYBOARD_MAPPING refused at [4] or [6], or for profile 0, unwritten."""
-    first = d.req('page 11 from record 0: sixteen records', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
-    d.req('page 11 from record 16: the other sixteen', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING, 16))
+    """Page 11's codes in two reads, its flags in one, and SET_KEYBOARD_MAPPING refused or, for profile 0, unwritten."""
+    first = d.req('page 11 codes from record 0: sixteen records', hl.CMD_GET_PAGE,
+                  page(hl.PAGE_KEYBOARD_MAPPING, mask=0b01))
+    d.req('page 11 codes from record 16: the other sixteen', hl.CMD_GET_PAGE,
+          page(hl.PAGE_KEYBOARD_MAPPING, 16, mask=0b01))
+    d.req('page 11 flags from record 0: all thirty-two', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING, mask=0b10))
     # first records and counts past any board's records, which one report bounds, so a replay writes nothing
     d.req('SET_KEYBOARD_MAPPING from record 0xFFFF, past the last: status 2 at [4]', hl.CMD_SET_KEYBOARD_MAPPING,
           struct.pack('<BHB', 1, 0xFFFF, 1))
@@ -417,7 +420,8 @@ def keyboard_mapping(d: Driver) -> None:
 def keyboard_mapping_not_allowed(d: Driver) -> None:
     """No keyboard mapping changes allowed: HELLO without 0x34, page 11 read, 0x34 status 1, claimed or not."""
     d.req('HELLO: commands without 0x34', hl.CMD_HELLO)
-    first = d.req('page 11 from record 0: sixteen records', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
+    first = d.req('page 11 codes from record 0: sixteen records', hl.CMD_GET_PAGE,
+                  page(hl.PAGE_KEYBOARD_MAPPING, mask=0b01))
     # record 0's code as the board shows it, so even a board that ran it would write nothing new
     request = struct.pack('<BHB', 1, 0, 1) + bytes([first[RECORDS + 2]])
     d.req('SET_KEYBOARD_MAPPING of record 0 to its code shown: status 1', hl.CMD_SET_KEYBOARD_MAPPING, request)
@@ -435,7 +439,7 @@ def keyboard_code_change(d: Driver) -> None:
     d.req('SET_KEYBOARD_MAPPING record 4 to 0x04: OK, then one STATE_CHANGED with a new token',
           hl.CMD_SET_KEYBOARD_MAPPING, struct.pack('<BHB', 1, 4, 1) + bytes([0x04]))
     d.wait(0.05)
-    d.req('page 11: record 4 has code 0x04', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING))
+    d.req('page 11: record 4 has code 0x04', hl.CMD_GET_PAGE, page(hl.PAGE_KEYBOARD_MAPPING, mask=0b01))
     d.req("page 8: page 11's change counter stepped", hl.CMD_GET_PAGE, page(hl.PAGE_SUMMARY))
     d.req('SET_KEYBOARD_MAPPING record 4 back to 0xE1: OK, the token returns', hl.CMD_SET_KEYBOARD_MAPPING,
           struct.pack('<BHB', 1, 4, 1) + bytes([0xE1]))

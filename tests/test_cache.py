@@ -35,7 +35,7 @@ def test_the_first_refresh_reads_every_kept_page(hlp_fake_device, hlp_fake_board
     assert cache.refresh(hlp_fake_device) == EVERY_PAGE
     token = hlp_fake_board.token
     assert reads(hlp_fake_board) == [(hl.PAGE_SUMMARY, 0, 0b11), (hl.PAGE_PROFILES, token, 0b1),
-                                     (hl.PAGE_CONTROLS, token, 0b1111), (hl.PAGE_KEYBOARD_MAPPING, token, 0b1),
+                                     (hl.PAGE_CONTROLS, token, 0b1111), (hl.PAGE_KEYBOARD_MAPPING, token, 0b11),
                                      (hl.PAGE_LIGHTS, token, 0b111111), (hl.PAGE_ANIMATIONS, token, 0b11)]
     assert cache.token == token and cache.summary.led_extent == 19 and cache.counters == (0,) * 8
     assert len(cache.profiles) == 1 and len(cache.controls) == 3 and len(cache.lights) == 2
@@ -165,9 +165,32 @@ def test_the_keyboard_code_of_an_action_follows_the_mapping(hlp_fake_device):
     assert cache.refresh(device) == {hl.PAGE_KEYBOARD_MAPPING} and cache.moved == {hl.PAGE_KEYBOARD_MAPPING}
     assert cache.keyboard_code(5) == 0x04
     board.later_groups[hl.PAGE_KEYBOARD_MAPPING] = bytes([1])     # a group newer firmware adds, read alone
-    unread = ConfigurationCache(device.hello(), masks={hl.PAGE_KEYBOARD_MAPPING: 0b10})
+    unread = ConfigurationCache(device.hello(), masks={hl.PAGE_KEYBOARD_MAPPING: 0b100})
     unread.refresh(device)
     assert unread.keyboard_mapping and unread.keyboard_code(5) is None
+
+
+def test_sends_key_follows_the_flags_and_the_code():
+    """Test sends_key(): None until read, then the flag of the record with the action.
+
+    A masked button without a code is clear. An action without a record, or firmware without the flags group, is None.
+    """
+    board = ModelBoard()
+    board.keyboard_mask = {5, 41}                   # B1 has a code, action 41 none
+    device = fake_device(board)
+    cache = ConfigurationCache(device.hello())
+    assert cache.sends_key(5) is None
+    cache.refresh(device)
+    assert cache.sends_key(5) is True and cache.sends_key(41) is False and cache.sends_key(6) is False
+    assert cache.sends_key(55) is None
+    b1 = board.keyboard_actions.index(5)
+    device.set_keyboard_mapping(1, b1, [0])          # without a code, B1 stays on the controller
+    cache.refresh(device)
+    assert cache.sends_key(5) is False
+    board.older_groups[hl.PAGE_KEYBOARD_MAPPING] = 1
+    older = ConfigurationCache(device.hello())
+    older.refresh(device)
+    assert older.keyboard_code(5) == 0 and older.sends_key(5) is None
 
 
 def test_the_summary_gives_the_brightness_scale_and_a_stream_rate(hlp_fake_device, hlp_fake_board):

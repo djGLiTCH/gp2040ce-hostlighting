@@ -125,6 +125,18 @@ class ConfigurationCache:
             return None
         return next((record.button.code for record in mapping if record.button.action == action), None)
 
+    def sends_key(self, action: int) -> Optional[bool]:
+        """Say whether the keyboard interface sends a page 10 action's button as its key, from page 11's flags.
+
+        Such a button leaves the controller's input. Every flag is clear while the keyboard interface is not present.
+
+        :return: the flag, or None when page 11 has no record with the action or while its groups are not read
+        """
+        mapping = self.keyboard_mapping
+        if mapping is None or not all(record.has('button') and record.has('flags') for record in mapping):
+            return None
+        return next((record.flags.sends_key for record in mapping if record.button.action == action), None)
+
     @property
     def profiles(self) -> Optional[tuple[ProfileRecord, ...]]:
         """The page 9 records, or None until read."""

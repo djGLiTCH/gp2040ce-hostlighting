@@ -44,8 +44,8 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, INPUT_MODE_CATEGORY_MICROSOFT,
                                             INPUT_MODE_CONFIG, INPUT_MODE_LIGHTING_ALWAYS, INPUT_MODE_LIGHTING_NEVER,
                                             INPUT_MODE_LIGHTING_SETTING, INPUT_MODE_USB_HOST_REQUIRED, KEY_EXPANDER,
-                                            KEY_TRIGGER, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS, NAMES_AUTH_TYPE,
-                                            NAMES_BUTTON_LAYOUT, NAMES_BUTTON_LAYOUT_ORIENTATION,
+                                            KEY_TRIGGER, KEYBOARD_SENDS_KEY, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS,
+                                            NAMES_AUTH_TYPE, NAMES_BUTTON_LAYOUT, NAMES_BUTTON_LAYOUT_ORIENTATION,
                                             NAMES_BUTTON_LAYOUT_RIGHT, NAMES_DEVICE_TYPE, NAMES_DPAD_MODE,
                                             NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE, NAMES_NON_PRESSED_EFFECT,
                                             NAMES_PRESSED_EFFECT, PAGE_ANIMATIONS, PAGE_BOOT_HOLDS, PAGE_CONTROLS,
@@ -478,6 +478,10 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     actions = [record.button.action for record in tables[PAGE_KEYBOARD_MAPPING]]
     yield checks.check(len(set(actions)) == len(actions), f"page {PAGE_KEYBOARD_MAPPING} lists each action once",
                        f"{sorted(action for action in set(actions) if actions.count(action) > 1)}")
+    uncoded = [record.ordinal for record in tables[PAGE_KEYBOARD_MAPPING]
+               if record.has('flags') and record.flags.sends_key and not record.button.code]
+    yield checks.check(not uncoded, f"page {PAGE_KEYBOARD_MAPPING} flags a key only for a button with a code",
+                       f"records {uncoded}")
     yield from _check_names(device, checks, controls, lights, tables[PAGE_KEYBOARD_MAPPING], holds,
                             _carried_values(state, modes, summary, tables[PAGE_ANIMATIONS]))
     yield from _check_ranges(checks, state, summary, tables)
@@ -703,6 +707,7 @@ _FLAGS = (('Holder claim flags', PAGE_STATE, 0b010, 20, CLAIM_EXCLUSIVE),
           ('page 4 target flags', PAGE_BOOT_HOLDS, 0b01, 3, 0b1),
           ('page 9 flags', PAGE_PROFILES, 0b1, 1, 0b1),
           ('page 10 flags', PAGE_CONTROLS, 0b0001, 3, 0b11),
+          (f"page {PAGE_KEYBOARD_MAPPING} flags", PAGE_KEYBOARD_MAPPING, 0b10, 0, KEYBOARD_SENDS_KEY),
           (f"page {PAGE_LIGHTS} flags", PAGE_LIGHTS, 0b000010, 1, 0b1),
           (f"page {PAGE_ANIMATIONS} flags", PAGE_ANIMATIONS, 0b01, 0, 0b1))
 

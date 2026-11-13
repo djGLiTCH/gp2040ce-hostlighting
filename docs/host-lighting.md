@@ -153,7 +153,9 @@ devices and match the top-level collection:
 Then send `HELLO`. Require the `GPHL` magic (GP2040-CE Host Lighting) and
 protocol major version 2, and check that the reply lists the commands and pages
 the host uses. Bind a board persistently by the factory-unique board ID in the
-`HELLO` reply, never by device path. A device path changes with the USB port.
+`HELLO` reply, never by device path. A device path changes with the USB port,
+and with the lighting interface's number, which moves when the keyboard
+interface or the lighting report is turned on.
 
 On Linux a board's hidraw node is open only to root until a udev rule grants
 access. The [gp2040ce-hostlighting][tools] README gives a rule for the lighting
@@ -260,6 +262,7 @@ their change counters, which start again at 0 with each boot.
 | Hand single lights back to the animation | `UNSTAGE` in overlay takeover. No pages |
 | Configure host inputs from the board | 9, 10 |
 | Read or set the codes the Keyboard input mode and the keyboard interface send | `SET_KEYBOARD_MAPPING`, when `HELLO` lists it; 1, 10, 11 |
+| Find the buttons the keyboard interface sends as keys, which leave the controller's input | 10, 11 |
 | Switch the input profile | `SET_PROFILE`; 9 |
 | Dim for a session, or set the brightness | `SET_BRIGHTNESS`, unsaved or saved; 1 for the step shown, 8 for the step count |
 | Set an animation's speeds | `SET_ANIMATION_SPEED`; 13 for the speeds, 8 for the step count |
@@ -764,7 +767,7 @@ before it reboots. A host must confirm success by the device re-enumerating.
 | 8 | Summary | The sizes a host needs: LED extent and limit, render rate, colour format and white channel, brightness, grid size, the record counts of pages 9, 10, 12 and 13, the animation speed steps and the display's button layouts and orientation. Also a change counter for each configuration page | First, after `HELLO`, and after each change of the state token |
 | 9 | Profiles | The input profiles: number, enabled, label | To show or switch profiles (`SET_PROFILE`) |
 | 10 | Controls | Every control in the active profile, lit or not. A control is a GPIO pin or add-on input with an action. Each record gives which instance of its action it is, where it sits, and its lights | To configure host inputs, or to show where each control sits |
-| 11 | Keyboard mapping | The code the Keyboard input mode and the keyboard interface send for each button, from the active profile | To find the code each control sends (with page 10 and page 1's D-pad mode), or set the codes (`SET_KEYBOARD_MAPPING`, when `HELLO` lists it) |
+| 11 | Keyboard mapping | The code the Keyboard input mode and the keyboard interface send for each button, from the active profile, and which buttons the keyboard interface sends as keys | To find the code each control sends (with page 10 and page 1's D-pad mode), which buttons leave the controller's input, or set the codes (`SET_KEYBOARD_MAPPING`, when `HELLO` lists it) |
 | 12 | Lights | Every light: its LEDs, kind, owning pin and action, grid position, palette slot | For per-light effects and geometry |
 | 13 | Animations | The on-board animations: enabled, idle, pressed and case effects, and their speeds | To show or pick the idle animation (`SET_ANIMATION`) or set its speeds (`SET_ANIMATION_SPEED`) |
 | 14-15 | - | Free for configuration pages | - |
@@ -1193,19 +1196,22 @@ without a position.
 **Page 11 - Keyboard mapping**, one record per button of the Keyboard input
 mode's mapping (`KeyboardMapping`), in `KeyboardMapping` field order, from the
 active profile. The records' actions and total are fixed for the firmware, and
-only their codes change. Page 8 does not count them. Each reply gives the
-total.
+only their codes and flags change. Page 8 does not count them. Each reply gives
+the total.
 
 | Bit | Group | Bytes |
 |---|---|---|
 | 0 | Action (signed 16-bit), code | 3 |
+| 1 | Flags | 1 |
 
-The group makes a 3-byte record, sixteen per reply.
+All groups make a 4-byte record, twelve per reply. Bit 0 alone gives 16 per
+reply.
 
 | Field | Meaning |
 |---|---|
 | Action | The `GpioAction` of the button, verbatim: `BUTTON_PRESS_UP` for `keyDpadUp` to `BUTTON_PRESS_E12` for `keyButtonE12` |
 | Code | The code the Keyboard input mode and the keyboard interface send for the button, 8-bit, as `KeyboardDriver` presses it. 4-0xE7 a HID keyboard usage (usage page 0x07, the modifiers 0xE0-0xE7 included). 1-3 HID's keyboard error usages, which are not keys. Above 0xE7 a media key where GP2040-CE defines one (`KEYBOARD_MULTIMEDIA_*`) and none otherwise. 0 none |
+| Flags | Bit 0 sends key: the keyboard interface sends the button's code in place of its controller input (below); rest zero |
 
 Profile 1 has the base mapping and each other profile its own. The page gives
 the active profile's codes in every input mode, so a host can read them before
@@ -1236,7 +1242,11 @@ exceptions.
 
 The keyboard interface sends a button's code from the same gamepad state, with
 the same exceptions, while the button is in the active profile's keyboard
-button mask and its code is not 0.
+button mask and its code is not 0. Flag bit 0 marks those buttons. They leave
+the controller's input, so a host that reads the controller can tell from the
+flag which buttons it will not see. The flag is clear in every record while
+the keyboard interface is not present. A profile switch or
+`SET_KEYBOARD_MAPPING` can change it, and the state token with it.
 
 One media key is sent at a time. A pending volume step of the Rotary Encoder
 add-on sends its own. Otherwise it is that of the last pressed button in field
@@ -1531,7 +1541,7 @@ reserved range.
 | Commands | `0x01-0x0F` session and discovery, `0x10-0x1F` frame staging, `0x20-0x2F` frame lifecycle, `0x30-0x4F` board features, `0x50-0x6F` reserved for new groups, `0x70-0x7F` privileged management; `0x00` is never a command | `0x06-0x0F`, `0x14-0x1F`, `0x22-0x2F`, `0x35-0x4F`, `0x72-0x7F` |
 | `HELLO` reply | `[3..16]` identity, `[17]` limits, `[18..44]` capabilities, `[45..46]` session | `[47..63]` |
 | Pages, 0-31 | 0-7 board, 8-15 configuration, 16-23 diagnostics, 24-31 reserved for new groups | 5-7, 14-15, 16-23 |
-| Page 2 categories, 0-255 | - | 2-255 |
+| Page 2 categories, 0-255 | - | 5-255 |
 | Page 3 enums, 0-255 | - | 10-255 |
 | Page 4 kinds, 0-255 | - | 3-255 |
 | Field groups, bits 0-15 of each page | In the order of the page's record | After each page's last group |
