@@ -25,6 +25,12 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
   <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-TBC-lightgrey" alt="GP2040-CE version: to be confirmed"></a>
 </p>
 
+The library implements the full Host Lighting Protocol, which the Host Lighting
+add-on carries over its own interface. The Lighting Report add-on is a
+separate, simpler interface for lighting software that drives standard HID
+output values. It needs neither this library nor the protocol, and the library
+does not drive it.
+
 ## Installation
 
 ```
@@ -453,7 +459,8 @@ access. The rule below lets the logged-in user reach the lighting interface in
 each mode that carries it, at the mode's USB ID. A USB ID override in the web
 configurator changes that ID. The rule matches only HID interfaces with two
 endpoints, so the board's keyboards, which have one, stay closed. It also opens
-the board's lighting report, which has two. Put the rule in
+the Lighting Report add-on's interface, which has two, for lighting software
+that drives it. The library itself does not use that interface. Put the rule in
 `/etc/udev/rules.d/70-gp2040ce-host-lighting.rules`, run
 `sudo udevadm control --reload-rules` and replug the board.
 
