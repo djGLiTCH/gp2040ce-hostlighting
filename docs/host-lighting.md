@@ -924,7 +924,7 @@ Capabilities:
 | Off | Field |
 |---|---|
 | +0 | Lighting interface: 0 never, 1 always, 2 by the `XInput Lighting` setting |
-| +1 | Category, as the web configurator lists the mode: 0 primary, 1 console mini |
+| +1 | Category, as the web configurator groups the mode: 0 primary, 1 console mini, 2 Sony, 3 Nintendo, 4 Microsoft |
 | +2 | Bit 0 player: page 1's player field carries a number in the mode; bit 1 keyboard codes: the mode sends page 11's codes; rest zero |
 
 USB host and authentication:
@@ -952,9 +952,9 @@ while it is enabled (page 8 flag bit 1), as the web configurator allows.
 
 Capability bit 0, player, follows page 1's player table: XInput and SInput.
 The selected authentication method is `GamepadOptions.ps4AuthType` for PS4,
-`ps5AuthType` for PS5 and `xinputAuthType` for XInput. P5 General supports USB
-alone. One device type setting serves every mode that supports one, so the
-selected value can be one a mode does not support.
+`ps5AuthType` for PS5 and `xinputAuthType` for XInput. P5 General runs PS5's
+driver and has PS5's attributes. One device type setting serves every mode that
+supports one, so the selected value can be one a mode does not support.
 
 A host that offers a mode switch should list the modes with flag bit 2, warn
 for one without flag bit 0, and show how to return from it (page 4). A host

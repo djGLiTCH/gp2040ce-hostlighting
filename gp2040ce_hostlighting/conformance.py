@@ -41,25 +41,25 @@ from gp2040ce_hostlighting.protocol import (ACTION_NONE, ADDRESSING_ACTION, ADDR
                                             CMD_SET_PROFILE, CMD_STAGE, CMD_SUBSCRIBE, CMD_UNSTAGE, COMMAND_RANGES,
                                             EVENT_STATE_CHANGED, FLAG_COMMIT_AFTER, FLAG_GENERATION,
                                             FLAG_GENERATION_SHIFT, FLAG_HOLDER, FLAG_KEEPALIVE, FLAG_NO_REPLY,
-                                            GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, INPUT_MODE_CATEGORY_MINI,
-                                            INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_CONFIG, INPUT_MODE_LIGHTING_ALWAYS,
-                                            INPUT_MODE_LIGHTING_NEVER, INPUT_MODE_LIGHTING_SETTING,
-                                            INPUT_MODE_USB_HOST_REQUIRED, KEY_EXPANDER, KEY_TRIGGER, MAGIC_INPUT_MODE,
-                                            MAGIC_REBOOT, NAME_ENUMS, NAMES_AUTH_TYPE, NAMES_BUTTON_LAYOUT,
-                                            NAMES_BUTTON_LAYOUT_ORIENTATION, NAMES_BUTTON_LAYOUT_RIGHT,
-                                            NAMES_DEVICE_TYPE, NAMES_DPAD_MODE, NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE,
-                                            NAMES_NON_PRESSED_EFFECT, NAMES_PRESSED_EFFECT, PAGE_ANIMATIONS,
-                                            PAGE_BOOT_HOLDS, PAGE_CONTROLS, PAGE_GROUPS, PAGE_IDENTITY,
-                                            PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING, PAGE_LIGHTS, PAGE_NAMES,
-                                            PAGE_PROFILES, PAGE_RANGES, PAGE_STATE, PAGE_SUMMARY, PIN_NONE, PIXEL_RGB,
-                                            PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES, PROTOCOL_MAJOR, RECORD_AREA,
-                                            REPLY_FLAG, STATE_IDLE, STATE_LIVE, STATE_UNSAVED, STATUS_CLAIMED,
-                                            STATUS_INVALID, STATUS_OK, STATUS_STALE, STATUS_UNSUPPORTED,
-                                            SUMMARY_USB_HOST, SUMMARY_WHITE_CHANNEL, TAKEOVER_OVERLAY,
-                                            HostLightingClaimedError, HostLightingDevice, HostLightingDisconnectedError,
-                                            HostLightingError, HostLightingIncompatibleError, HostLightingRejectedError,
-                                            decode_holder, decode_key, decode_page_header, decode_records,
-                                            decode_state_changed, is_event, key_name, stage_capacity)
+                                            GENERATION_MAX, HEADER_RECORDS, HOLDER_SIZE, INPUT_MODE_CATEGORY_MICROSOFT,
+                                            INPUT_MODE_CONFIG, INPUT_MODE_LIGHTING_ALWAYS, INPUT_MODE_LIGHTING_NEVER,
+                                            INPUT_MODE_LIGHTING_SETTING, INPUT_MODE_USB_HOST_REQUIRED, KEY_EXPANDER,
+                                            KEY_TRIGGER, MAGIC_INPUT_MODE, MAGIC_REBOOT, NAME_ENUMS, NAMES_AUTH_TYPE,
+                                            NAMES_BUTTON_LAYOUT, NAMES_BUTTON_LAYOUT_ORIENTATION,
+                                            NAMES_BUTTON_LAYOUT_RIGHT, NAMES_DEVICE_TYPE, NAMES_DPAD_MODE,
+                                            NAMES_GPIO_ACTION, NAMES_LIGHT_TYPE, NAMES_NON_PRESSED_EFFECT,
+                                            NAMES_PRESSED_EFFECT, PAGE_ANIMATIONS, PAGE_BOOT_HOLDS, PAGE_CONTROLS,
+                                            PAGE_GROUPS, PAGE_IDENTITY, PAGE_INPUT_MODES, PAGE_KEYBOARD_MAPPING,
+                                            PAGE_LIGHTS, PAGE_NAMES, PAGE_PROFILES, PAGE_RANGES, PAGE_STATE,
+                                            PAGE_SUMMARY, PIN_NONE, PIXEL_RGB, PIXEL_RGB565, PIXEL_RGBW, PIXEL_SIZES,
+                                            PROTOCOL_MAJOR, RECORD_AREA, REPLY_FLAG, STATE_IDLE, STATE_LIVE,
+                                            STATE_UNSAVED, STATUS_CLAIMED, STATUS_INVALID, STATUS_OK, STATUS_STALE,
+                                            STATUS_UNSUPPORTED, SUMMARY_USB_HOST, SUMMARY_WHITE_CHANNEL,
+                                            TAKEOVER_OVERLAY, HostLightingClaimedError, HostLightingDevice,
+                                            HostLightingDisconnectedError, HostLightingError,
+                                            HostLightingIncompatibleError, HostLightingRejectedError, decode_holder,
+                                            decode_key, decode_page_header, decode_records, decode_state_changed,
+                                            is_event, key_name, stage_capacity)
 from gp2040ce_hostlighting.records import (AnimationRecord, BootHoldRecord, ControlInstances, ControlLights,
                                            ControlRecord, Hello, Holder, InputModeRecord, Instances,
                                            KeyboardMappingRecord, LightRecord, Position, Settings, StateRecord, Summary)
@@ -505,8 +505,8 @@ def _check_input_modes(checks: _Checker, modes: tuple[InputModeRecord, ...], sum
                            for mode in full), 'page 2: flag bit 1 only for a lit mode lit by the setting')
     yield checks.check(all(not mode.capabilities.player or mode.capabilities.lighting != INPUT_MODE_LIGHTING_NEVER
                            for mode in full), 'page 2: the player bit only for a mode that can present the interface')
-    yield checks.check(all(mode.capabilities.category in (INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_CATEGORY_MINI)
-                           for mode in full), 'page 2: categories 0 and 1')
+    yield checks.check(all(mode.capabilities.category <= INPUT_MODE_CATEGORY_MICROSOFT
+                           for mode in full), 'page 2: categories 0 to 4')
     required = [mode for mode in full if mode.authentication.usb_host == INPUT_MODE_USB_HOST_REQUIRED]
     yield checks.check(all(not mode.mode.accepted or summary.usb_host for mode in required),
                        'page 2: a mode that requires the USB host peripheral accepted only while it is enabled',

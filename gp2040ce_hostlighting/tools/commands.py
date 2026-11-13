@@ -35,8 +35,10 @@ from gp2040ce_hostlighting.protocol import (ADDRESS_RANGES, ADDRESSING_ACTION, A
                                             ADDRESSING_LIGHT, ADDRESSING_LIGHT_RUN, ADDRESSING_PIN, ANIMATION_OFF,
                                             BOOT_HOLD_INPUT_MODE, BOOT_HOLD_PINS, BOOT_HOLD_UF2_BOOTLOADER,
                                             BOOT_HOLD_WEB_CONFIGURATOR, BRIGHTNESS_SAVED, CMD_HELLO,
-                                            CMD_SET_KEYBOARD_MAPPING, EVENT_STATE_CHANGED, INPUT_MODE_CATEGORY_MINI,
-                                            INPUT_MODE_CATEGORY_PRIMARY, INPUT_MODE_LIGHTING_ALWAYS,
+                                            CMD_SET_KEYBOARD_MAPPING, EVENT_STATE_CHANGED,
+                                            INPUT_MODE_CATEGORY_MICROSOFT, INPUT_MODE_CATEGORY_MINI,
+                                            INPUT_MODE_CATEGORY_NINTENDO, INPUT_MODE_CATEGORY_PRIMARY,
+                                            INPUT_MODE_CATEGORY_SONY, INPUT_MODE_LIGHTING_ALWAYS,
                                             INPUT_MODE_LIGHTING_NEVER, INPUT_MODE_LIGHTING_SETTING,
                                             INPUT_MODE_USB_HOST_OPTIONAL, INPUT_MODE_USB_HOST_REQUIRED,
                                             INPUT_MODE_USB_HOST_UNUSED, KIND_BUTTON, KIND_CASE, KIND_PLAYERS,
@@ -456,7 +458,9 @@ def _print_state(device: HostLightingDevice, names: dict[str, dict[int, str]]) -
 
 _LIGHTING_SUPPORT = {INPUT_MODE_LIGHTING_NEVER: 'never', INPUT_MODE_LIGHTING_ALWAYS: 'always',
                      INPUT_MODE_LIGHTING_SETTING: 'by setting'}
-_CATEGORIES = {INPUT_MODE_CATEGORY_PRIMARY: 'primary', INPUT_MODE_CATEGORY_MINI: 'console mini'}
+_CATEGORIES = {INPUT_MODE_CATEGORY_PRIMARY: 'primary', INPUT_MODE_CATEGORY_MINI: 'console mini',
+               INPUT_MODE_CATEGORY_SONY: 'Sony', INPUT_MODE_CATEGORY_NINTENDO: 'Nintendo',
+               INPUT_MODE_CATEGORY_MICROSOFT: 'Microsoft'}
 _USB_HOST = {INPUT_MODE_USB_HOST_UNUSED: 'not used', INPUT_MODE_USB_HOST_OPTIONAL: 'optional',
              INPUT_MODE_USB_HOST_REQUIRED: 'required'}
 

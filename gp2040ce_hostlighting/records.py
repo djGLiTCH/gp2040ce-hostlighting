@@ -232,7 +232,7 @@ class InputModeCapabilities:
     """Page 2's Capabilities group."""
 
     lighting: int                           # INPUT_MODE_LIGHTING_NEVER, _ALWAYS or _SETTING
-    category: int                           # INPUT_MODE_CATEGORY_PRIMARY or _MINI, as the web configurator lists it
+    category: int                           # INPUT_MODE_CATEGORY_*, as the web configurator groups the mode
     player: bool                            # page 1's player field carries a number in the mode
     keyboard_codes: bool                    # the mode sends page 11's codes
 
