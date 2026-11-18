@@ -34,7 +34,7 @@ does not drive it.
 ## Installation
 
 ```
-pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc8
+pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc9
 ```
 
 The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
