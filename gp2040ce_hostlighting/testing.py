@@ -233,6 +233,9 @@ _SUMMARY_LIGHTS = 26
 # the configuration pages' change counters the fakes step: Controls and Lights
 _CHANGES_CONTROLS = hl.PAGE_CONTROLS - hl.PAGE_SUMMARY
 _CHANGES_LIGHTS = hl.PAGE_LIGHTS - hl.PAGE_SUMMARY
+# page 11's D-pad records, BUTTON_PRESS_UP to BUTTON_PRESS_RIGHT, which the keyboard interface sends only in the
+# digital D-pad mode (page 1's State +9 DPAD_MODE_DIGITAL, 0)
+_DIRECTION_ACTIONS = frozenset(range(1, 5))
 
 
 def _pixel(data: bytes, pixel_format: int) -> tuple[int, ...]:
@@ -342,7 +345,8 @@ class FakeBoard:
         self.keyboard_actions = [action for action, _ in _KEYBOARD_BUTTONS]
         self.keyboard_codes: dict[int, list[int]] = {1: [code for _, code in _KEYBOARD_BUTTONS]}
         # the actions of the buttons in the keyboard interface's mask while it is present, none while it is not. A
-        # button in it with a code sends that code in place of its controller input
+        # button in it with a code sends that code in place of its controller input, a direction only in the
+        # digital D-pad mode
         self.keyboard_mask: set[int] = set()
         self.identity = ['Haute42 COSMOX M Ultra', 'Haute42COSMOXMUltra', 'rp2040', 'v0.7.12-88-ga83f820',
                          '0.7.12', 'a83f820', 'Release', 'GP2040-CE_0.7.12_Haute42COSMOXMUltra']
@@ -598,7 +602,9 @@ class FakeBoard:
 
     def keyboard_records(self) -> list[list[bytes]]:
         """Build page 11's records: each button's action, the applied profile's code, and whether it sends it."""
-        return [keyboard_record(action, code, action in self.keyboard_mask and code != 0)
+        digital = self.state[0][9] == 0
+        return [keyboard_record(action, code, action in self.keyboard_mask and code != 0
+                                and (digital or action not in _DIRECTION_ACTIONS))
                 for action, code in zip(self.keyboard_actions, self.profile_codes(self.applied_profile()))]
 
     def profile_codes(self, profile: int) -> list[int]:

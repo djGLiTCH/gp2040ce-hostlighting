@@ -301,6 +301,36 @@ def test_a_dpad_mode_change_shows_on_page_1_with_one_event():
         assert [hl.decode_state_changed(event).record.state.dpad_mode for event in device.take_events()] == events
 
 
+def test_a_dpad_mode_change_clears_the_direction_flags():
+    """Test page 11's flags in the analog D-pad modes: no direction is sent as a key, B1 still is.
+
+    The first analog mode steps page 11's counter alone and changes the token. Left to right analog changes no flag,
+    so nothing moves, and the digital mode gives the first token again.
+    """
+    board = ModelBoard()
+    board.keyboard_mask = {1, 2, 5}                 # Up, Down and B1, each with a code
+    device = fake_device(board)
+
+    def read() -> tuple[list[int], tuple[int, ...], int]:
+        summary = device.read_record(hl.PAGE_SUMMARY)
+        sent = [record.button.action for record in device.read_table(hl.PAGE_KEYBOARD_MAPPING).records
+                if record.flags.sends_key]
+        return sent, summary.records[0].changes.counters, summary.token
+
+    sent, counters, digital = read()
+    assert sent == [1, 2, 5]
+    board.set_dpad_mode(1)
+    sent, after, analog = read()
+    stepped = list(counters)
+    stepped[hl.PAGE_KEYBOARD_MAPPING - hl.PAGE_SUMMARY] += 1
+    assert sent == [5] and after == tuple(stepped) and analog != digital
+    board.set_dpad_mode(2)
+    assert read() == ([5], after, analog)
+    board.set_dpad_mode(0)
+    sent, _, token = read()
+    assert sent == [1, 2, 5] and token == digital
+
+
 def test_a_change_while_a_switch_is_pending_raises_its_own_event():
     """Test a page 1 change while a profile switch is pending: its event is due at once, and carries the switch.
 

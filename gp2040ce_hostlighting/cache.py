@@ -128,7 +128,8 @@ class ConfigurationCache:
     def sends_key(self, action: int) -> Optional[bool]:
         """Say whether the keyboard interface sends a page 10 action's button as its key, from page 11's flags.
 
-        Such a button leaves the controller's input. Every flag is clear while the keyboard interface is not present.
+        Such a button leaves the controller's input. Every flag is clear while the keyboard interface is not present,
+        and a direction's flag is clear in the analog D-pad modes, where it stays on the controller.
 
         :return: the flag, or None when page 11 has no record with the action or while its groups are not read
         """

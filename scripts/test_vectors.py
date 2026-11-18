@@ -44,7 +44,12 @@ SETUP_NO_KEYBOARD_CHANGES = 'no_keyboard_mapping_changes'
 KEYBOARD_SETUPS = (SETUP_KEYBOARD_CHANGES, SETUP_NO_KEYBOARD_CHANGES)
 # HELLO's byte and bit for SET_KEYBOARD_MAPPING in the commands bitmap, compared only under KEYBOARD_SETUPS
 KEYBOARD_BYTE, KEYBOARD_BIT = 19 + hl.CMD_SET_KEYBOARD_MAPPING // 8, 1 << hl.CMD_SET_KEYBOARD_MAPPING % 8
+# setup: the keyboard interface is present, with Up to Right and B1 in its mask, each with a code
+SETUP_DIRECTIONS_SENT = 'keyboard_interface_directions'
+DIRECTIONS_AND_B1 = {1, 2, 3, 4, 5}          # page 11's actions BUTTON_PRESS_UP to BUTTON_PRESS_RIGHT, and B1
 BOARD_IDLE_TIMEOUT = 'idle_timeout'          # board_before: the animations' idle timeout fires
+# board_before: a D-pad hotkey or a held SUSTAIN_DP_MODE_* button sets the D-pad mode, DpadMode's value given
+BOARD_DPAD_MODES = {'dpad_mode_digital': 0, 'dpad_mode_left_analog': 1, 'dpad_mode_right_analog': 2}
 FILL_RED = bytes([hl.PIXEL_RGB << 4]) + bytes([8, 0, 0])
 
 
@@ -75,6 +80,10 @@ class Driver:
         """Have the animations' idle timeout turn them off."""
         raise NotImplementedError
 
+    def set_dpad_mode(self, mode: int) -> None:
+        """Have the board apply this D-pad mode."""
+        raise NotImplementedError
+
     def wait(self, seconds: float) -> None:
         """Let time pass, recorded as the next step's wait_before."""
         self.wait_before += seconds
@@ -84,6 +93,11 @@ class Driver:
         """Have the animations go idle, recorded as the next step's board_before."""
         self.board_before = BOARD_IDLE_TIMEOUT
         self.set_idle()
+
+    def dpad_mode(self, code: str) -> None:
+        """Have the board apply a D-pad mode, recorded as the next step's board_before."""
+        self.board_before = code
+        self.set_dpad_mode(BOARD_DPAD_MODES[code])
 
     def record(self, label: str, report: bytes, read: bool, got: list[bytes]) -> None:
         """Record a step with what came before it, then clear that."""
@@ -118,12 +132,18 @@ class Driver:
 class Model(Driver):
     """The library's ModelBoard, read without waiting."""
 
-    def __init__(self, animations: int = 1, keyboard_changes: bool = True) -> None:
-        """Make a model board, with a second animation and without SET_KEYBOARD_MAPPING when asked."""
+    def __init__(self, animations: int = 1, keyboard_changes: bool = True, directions_sent: bool = False) -> None:
+        """Make a model board with the setup a vector gives.
+
+        That is a second animation, no keyboard mapping changes, or the keyboard interface sending Up to Right and B1.
+        """
         super().__init__()
         self.board = ModelBoard()
         if not keyboard_changes:
             self.board.commands.discard(hl.CMD_SET_KEYBOARD_MAPPING)
+        if directions_sent:
+            self.board.keyboard_mask = set(DIRECTIONS_AND_B1)
+            self.board._refresh()
         if animations == 2:
             self.board.animations.append([list(group) for group in self.board.animations[0]][0:1] +
                                          self.board.animations[0][1:])
@@ -151,6 +171,10 @@ class Model(Driver):
     def set_idle(self) -> None:
         """Set the model's idle flag."""
         self.board.idle(True)
+
+    def set_dpad_mode(self, mode: int) -> None:
+        """Set the model's D-pad mode."""
+        self.board.set_dpad_mode(mode)
 
 
 class Board(Driver):
@@ -187,6 +211,10 @@ class Board(Driver):
     def set_idle(self) -> None:
         """Refuse: a board goes idle only by its own timeout."""
         raise NotImplementedError('a board goes idle only by its own timeout')
+
+    def set_dpad_mode(self, mode: int) -> None:
+        """Refuse: a host cannot set a board's D-pad mode."""
+        raise NotImplementedError("a host cannot set a board's D-pad mode")
 
 
 def claim(d: Driver, label: str, action: int, token: int, name: bytes, flags: int = 0, cflags: int = 0) -> bytes:
@@ -446,6 +474,24 @@ def keyboard_code_change(d: Driver) -> None:
     d.wait(0.05)
 
 
+def dpad_mode_flags(d: Driver) -> None:
+    """Model only. In the analog D-pad modes page 11 flags no direction. Its counter and the token follow the flags."""
+    d.req('SUBSCRIBE to STATE_CHANGED', hl.CMD_SUBSCRIBE, struct.pack('<H', 1 << hl.EVENT_STATE_CHANGED))
+    d.req('page 11 flags, digital D-pad mode: Up to Right and B1', hl.CMD_GET_PAGE,
+          page(hl.PAGE_KEYBOARD_MAPPING, mask=0b10))
+    d.req('page 8: the change counters', hl.CMD_GET_PAGE, page(hl.PAGE_SUMMARY))
+    d.dpad_mode('dpad_mode_left_analog')
+    d.req('page 11 flags, left analog: B1 alone, with a new token', hl.CMD_GET_PAGE,
+          page(hl.PAGE_KEYBOARD_MAPPING, mask=0b10))
+    d.req("page 8: page 11's change counter stepped", hl.CMD_GET_PAGE, page(hl.PAGE_SUMMARY))
+    d.dpad_mode('dpad_mode_right_analog')
+    d.req('page 11 flags, right analog: B1 alone, the token unchanged', hl.CMD_GET_PAGE,
+          page(hl.PAGE_KEYBOARD_MAPPING, mask=0b10))
+    d.dpad_mode('dpad_mode_digital')
+    d.req('page 11 flags, digital again: Up to Right and B1, the first token', hl.CMD_GET_PAGE,
+          page(hl.PAGE_KEYBOARD_MAPPING, mask=0b10))
+
+
 def full_reply_queue(d: Driver) -> None:
     """Model only. 16 replies wait unread; the 17th request needing a reply is discarded, neither run nor answered."""
     for i in range(16):
@@ -457,13 +503,14 @@ SCENARIOS: list[Callable[[Driver], None]] = [
     hello, claim_echo, other_token_under_shared_claim, change_of_holder_resets, exclusive_claim, keepalive_by_holder,
     other_claims_flags, other_claims_flags_exclusive, lost_claim_reply, takeover_between_claim_and_configure,
     lapse_taken_again_by_a_renewal, led_limit, stale_token, state_changed, idle_and_set_animation, keyboard_mapping,
-    keyboard_mapping_not_allowed, keyboard_code_change, full_reply_queue]
+    keyboard_mapping_not_allowed, keyboard_code_change, dpad_mode_flags, full_reply_queue]
 NAMES = {other_claims_flags: 'other_claims_flags_shared'}
-MODEL_ONLY = {idle_and_set_animation, keyboard_code_change, full_reply_queue}
-EVENTS_COMPARED = {state_changed, keyboard_code_change}
+MODEL_ONLY = {idle_and_set_animation, keyboard_code_change, dpad_mode_flags, full_reply_queue}
+EVENTS_COMPARED = {state_changed, keyboard_code_change, dpad_mode_flags}
 IDLE_COMPARED = {idle_and_set_animation}
 SETUP = {idle_and_set_animation: SETUP_SECOND_ANIMATION, keyboard_mapping: SETUP_KEYBOARD_CHANGES,
-         keyboard_mapping_not_allowed: SETUP_NO_KEYBOARD_CHANGES, keyboard_code_change: SETUP_KEYBOARD_CHANGES}
+         keyboard_mapping_not_allowed: SETUP_NO_KEYBOARD_CHANGES, keyboard_code_change: SETUP_KEYBOARD_CHANGES,
+         dpad_mode_flags: SETUP_DIRECTIONS_SENT}
 
 
 def name_of(scenario: Callable[[Driver], None]) -> str:
@@ -478,7 +525,8 @@ def generate() -> dict[str, Any]:
     vectors = []
     for scenario in SCENARIOS:
         d = Model(animations=2 if scenario is idle_and_set_animation else 1,
-                  keyboard_changes=SETUP.get(scenario) != SETUP_NO_KEYBOARD_CHANGES)
+                  keyboard_changes=SETUP.get(scenario) != SETUP_NO_KEYBOARD_CHANGES,
+                  directions_sent=SETUP.get(scenario) == SETUP_DIRECTIONS_SENT)
         gen0, number0 = start_of(d)
         scenario(d)
         vectors.append({'name': name_of(scenario), 'situation': (scenario.__doc__ or '').strip(),

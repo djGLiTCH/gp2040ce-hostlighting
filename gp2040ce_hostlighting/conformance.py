@@ -86,6 +86,8 @@ _ADDRESSING = {ADDRESSING_LED_RUN, ADDRESSING_LIGHT_RUN, ADDRESSING_LIGHT, ADDRE
 _PIXEL_FORMATS = set(PIXEL_SIZES)
 _EVENTS = {EVENT_STATE_CHANGED}
 _KEEPALIVE_MS = 300              # the timeout the timing checks run with
+# page 3's names of the D-pad directions, which the keyboard interface sends only in DPAD_MODE_DIGITAL
+_DIRECTION_NAMES = {'BUTTON_PRESS_UP', 'BUTTON_PRESS_DOWN', 'BUTTON_PRESS_LEFT', 'BUTTON_PRESS_RIGHT'}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -483,7 +485,7 @@ def _check_tables(device: HostLightingDevice, checks: _Checker, token: int) -> G
     yield checks.check(not uncoded, f"page {PAGE_KEYBOARD_MAPPING} flags a key only for a button with a code",
                        f"records {uncoded}")
     yield from _check_names(device, checks, controls, lights, tables[PAGE_KEYBOARD_MAPPING], holds,
-                            _carried_values(state, modes, summary, tables[PAGE_ANIMATIONS]))
+                            _carried_values(state, modes, summary, tables[PAGE_ANIMATIONS]), state.state.dpad_mode)
     yield from _check_ranges(checks, state, summary, tables)
     yield from _check_flags(device, checks)
     yield checks.check(decode_page_header(device.get_page(PAGE_CONTROLS)).token == token,
@@ -1197,10 +1199,20 @@ def _check_staging(device: HostLightingDevice, checks: _Checker, tables: _Tables
 
 def _check_names(device: HostLightingDevice, checks: _Checker, controls: tuple[ControlRecord, ...],
                  lights: tuple[LightRecord, ...], keyboard: tuple[KeyboardMappingRecord, ...],
-                 holds: tuple[BootHoldRecord, ...], carried: dict[int, set[int]]) -> Iterator[CheckResult]:
-    """Check page 3: each enum listed, each value once, and a name for every value the other pages carry."""
+                 holds: tuple[BootHoldRecord, ...], carried: dict[int, set[int]],
+                 dpad_mode: int) -> Iterator[CheckResult]:
+    """Check page 3: each enum listed, each value once, and a name for every value the other pages carry.
+
+    Also page 11's direction flags against page 1's D-pad mode, by the names page 3 gives them.
+    """
     records = device.read_table(PAGE_NAMES).records
     pairs = [(record.entry.enum, record.entry.value) for record in records]
+    names = {(record.entry.enum, record.entry.value): record.name for record in records}
+    analog = names.get((NAMES_DPAD_MODE, dpad_mode), 'DPAD_MODE_DIGITAL') != 'DPAD_MODE_DIGITAL'
+    flagged = [record.ordinal for record in keyboard if analog and record.has('flags') and record.flags.sends_key
+               and names.get((NAMES_GPIO_ACTION, record.button.action)) in _DIRECTION_NAMES]
+    yield checks.check(not flagged, f"page {PAGE_KEYBOARD_MAPPING} flags no direction in an analog D-pad mode",
+                       f"records {flagged}")
     yield checks.check(set(NAME_ENUMS) <= {enum for enum, _ in pairs}, 'page 3 lists every enum the pages carry',
                        f"enums {sorted({enum for enum, _ in pairs})}")
     yield checks.check(len(set(pairs)) == len(pairs), 'page 3 lists each value once')

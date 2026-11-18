@@ -55,15 +55,19 @@ def test_the_vectors_file_alone_replays_on_the_model():
         vectors = json.load(f)['vectors']
     for vector in vectors:
         assert vector['setup'] in (None, 'second_animation', 'keyboard_mapping_changes',
-                                   'no_keyboard_mapping_changes'), vector['name']
+                                   'no_keyboard_mapping_changes', 'keyboard_interface_directions'), vector['name']
         model = script.Model(animations=2 if vector['setup'] == 'second_animation' else 1,
-                             keyboard_changes=vector['setup'] != 'no_keyboard_mapping_changes')
+                             keyboard_changes=vector['setup'] != 'no_keyboard_mapping_changes',
+                             directions_sent=vector['setup'] == 'keyboard_interface_directions')
         model.recording = False
         model.page1()
+        dpad_modes = {'dpad_mode_digital': 0, 'dpad_mode_left_analog': 1, 'dpad_mode_right_analog': 2}
         for step in vector['steps']:
-            assert step['board_before'] in (None, 'idle_timeout'), (vector['name'], step['label'])
+            assert step['board_before'] in (None, 'idle_timeout', *dpad_modes), (vector['name'], step['label'])
             if step['board_before'] == 'idle_timeout':
                 model.set_idle()
+            elif step['board_before'] in dpad_modes:
+                model.set_dpad_mode(dpad_modes[step['board_before']])
             model.sleep(step['wait_before'])
             model.write(bytes.fromhex(step['request']))
             got = [r.hex() for r in model.collect(True, 0)] if step['read'] else []

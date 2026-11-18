@@ -776,7 +776,8 @@ before it reboots. A host must confirm success by the device re-enumerating.
 
 A host should cache the configuration pages. The state token changes whenever
 anything on them changes, a change by a profile switch or an animation speed
-included. The Summary's change counters say which pages changed.
+included. A D-pad mode change (State `+9`) changes page 11's flags, and the
+state token with them. The Summary's change counters say which pages changed.
 
 Every reply has the same header:
 
@@ -867,6 +868,7 @@ before `SUSTAIN_DP_MODE_LS` and `SUSTAIN_DP_MODE_RS`. With none held it is
 `GamepadOptions.dpadMode`, which the D-pad hotkeys change and save.
 `proto/enums.proto` lists the modes, and page 3 names them. Which controls send
 page 11's D-pad codes depends only on whether the mode is `DPAD_MODE_DIGITAL`.
+Flag bit 0 of page 11's D-pad records depends on the same condition.
 
 The player number is the one the input mode's driver records.
 
@@ -1211,7 +1213,7 @@ reply.
 |---|---|
 | Action | The `GpioAction` of the button, verbatim: `BUTTON_PRESS_UP` for `keyDpadUp` to `BUTTON_PRESS_E12` for `keyButtonE12` |
 | Code | The code the Keyboard input mode and the keyboard interface send for the button, 8-bit, as `KeyboardDriver` presses it. 4-0xE7 a HID keyboard usage (usage page 0x07, the modifiers 0xE0-0xE7 included). 1-3 HID's keyboard error usages, which are not keys. Above 0xE7 a media key where GP2040-CE defines one (`KEYBOARD_MULTIMEDIA_*`) and none otherwise. 0 none |
-| Flags | Bit 0 sends key: the keyboard interface sends the button's code in place of its controller input (below); rest zero |
+| Flags | Bit 0 sends key: the keyboard interface sends the button's code in place of its controller input in the current D-pad mode (below); rest zero |
 
 Profile 1 has the base mapping and each other profile its own. The page gives
 the active profile's codes in every input mode, so a host can read them before
@@ -1242,11 +1244,23 @@ exceptions.
 
 The keyboard interface sends a button's code from the same gamepad state, with
 the same exceptions, while the button is in the active profile's keyboard
-button mask and its code is not 0. Flag bit 0 marks those buttons. They leave
-the controller's input, so a host that reads the controller can tell from the
-flag which buttons it will not see. The flag is clear in every record while
-the keyboard interface is not present. A profile switch or
-`SET_KEYBOARD_MAPPING` can change it, and the state token with it.
+button mask and its code is not 0. In the analog modes it sends no code for
+the buttons of `BUTTON_PRESS_UP` to `BUTTON_PRESS_RIGHT`. Their directions stay
+on the controller, on the stick or the D-pad as the exceptions above give.
+
+Flag bit 0 marks the buttons the keyboard interface sends. They leave the
+controller's input, so a host that reads the controller can tell from the flag
+which buttons it will not see.
+
+The flag is clear in every record while the keyboard interface is not present,
+in these cases:
+
+- the keyboard interface is disabled
+- the input mode is Keyboard
+- the input mode is XInput and XInput Keyboard is Off
+
+A profile switch or `SET_KEYBOARD_MAPPING` can change the flag, and the state
+token with it. So can a D-pad mode change (State `+9`).
 
 One media key is sent at a time. A pending volume step of the Rotary Encoder
 add-on sends its own. Otherwise it is that of the last pressed button in field

@@ -247,9 +247,11 @@ action or kind, leaving out a light with no LED below the addressable limit.
 send for an action's button, from page 11, and `sends_key()` whether the
 keyboard interface sends that code in place of the button's controller input.
 Up to Right on a GPIO pin or Hall-effect trigger send their codes only in the
-digital D-pad mode (page 1). The Summary's `brightness_scale()` gives the
-scale the board applies at a brightness step, and `stream_rate()` the render
-rate, past which frames are not shown.
+digital D-pad mode (page 1). In the analog D-pad modes the keyboard interface
+sends no direction, and `sends_key()` gives False for Up to Right. The
+Summary's `brightness_scale()` gives the scale the board applies at a
+brightness step, and `stream_rate()` the render rate, past which frames are not
+shown.
 
 A `Session` runs the specification's whole host flow on these parts. `start()`,
 or a `with` block, checks the board's capabilities, reads the configuration,
