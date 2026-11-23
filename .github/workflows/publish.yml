@@ -1,0 +1,53 @@
+# gp2040ce-hostlighting (GP2040-CE Host Lighting library and tools)
+# Filename: publish.yml
+# Folder: .github/workflows
+# https://github.com/djGLiTCH/gp2040ce-hostlighting
+# SPDX-FileCopyrightText: (C) 2026 Jacob Simpson (DJ GLiTCH)
+# SPDX-License-Identifier: GPL-3.0-or-later
+# See LICENSES/GPL-3.0-or-later.txt at the repository root.
+
+# Upload a published release's wheel and sdist to PyPI with trusted publishing, so the repository holds no token.
+# The upload waits for the owner to approve the run (the pypi environment's required reviewer), as a PyPI version can
+# never be reused. A pre-release or an rc tag never reaches PyPI. Run by hand from a release's tag, it retries that
+# release's upload.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pypi:
+    name: PyPI
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease) ||
+      (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gp2040ce-hostlighting/
+    permissions:
+      contents: read
+      id-token: write          # trusted publishing: PyPI trusts this workflow's identity, no token
+    steps:
+      - name: Download the release's wheel and sdist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          case "$TAG" in *rc*) echo "an rc never goes to PyPI" >&2; exit 1 ;; esac
+          # The release's own files, the ones checked before it was published; the apps' tarballs are left out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'gp2040ce_hostlighting-*.whl' --pattern 'gp2040ce_hostlighting-*.tar.gz' --pattern SHA256SUMS.txt
+          cd dist
+          sha256sum -c --ignore-missing SHA256SUMS.txt
+          rm SHA256SUMS.txt
+          version=${TAG#v}
+          ls "gp2040ce_hostlighting-$version-py3-none-any.whl" "gp2040ce_hostlighting-$version.tar.gz"
+          [ "$(ls | wc -l)" = 2 ] || { echo "expected the wheel and the sdist alone" >&2; exit 1; }
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3

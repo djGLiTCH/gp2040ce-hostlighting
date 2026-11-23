@@ -8,7 +8,9 @@
 
 # Build the hlp app for Windows (x64), macOS (x64 and ARM64) and Linux (x64 and ARM64), and the wheel and sdist.
 # A v* tag also makes a draft GitHub release with them, a pre-release for an rc, for the owner to write up and
-# publish. Run by hand, it builds and keeps the files as the run's artifacts.
+# publish, and uploads the wheel and sdist to TestPyPI with trusted publishing, so the repository holds no token.
+# publish.yml uploads a published release to PyPI. Run by hand, it builds and keeps the files as the run's
+# artifacts.
 
 name: Release
 
@@ -143,3 +145,22 @@ jobs:
             --title "gp2040ce-hostlighting $GITHUB_REF_NAME" \
             --notes "Draft made by the Release workflow. The release notes are written before it is published." \
             assets/*
+
+  testpypi:
+    name: TestPyPI
+    if: github.ref_type == 'tag'
+    needs: [app, dist]
+    runs-on: ubuntu-22.04
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/gp2040ce-hostlighting/
+    permissions:
+      id-token: write          # trusted publishing: TestPyPI trusts this workflow's identity, no token
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
