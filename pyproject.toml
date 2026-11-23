@@ -36,6 +36,8 @@ classifiers = [
 [project.urls]
 "Homepage" = "https://github.com/djGLiTCH/gp2040ce-hostlighting"
 "Bug Tracker" = "https://github.com/djGLiTCH/gp2040ce-hostlighting/issues"
+"Release Notes" = "https://github.com/djGLiTCH/gp2040ce-hostlighting/releases"
+"Specification" = "https://github.com/djGLiTCH/gp2040ce-hostlighting/blob/main/docs/host-lighting.md"
 
 [project.optional-dependencies]
 dev = ["bandit", "flake8", "flake8-blind-except", "flake8-builtins", "flake8-docstrings", "flake8-executable",

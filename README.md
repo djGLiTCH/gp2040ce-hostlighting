@@ -20,6 +20,7 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/gp2040ce-hostlighting/"><img src="https://img.shields.io/pypi/v/gp2040ce-hostlighting" alt="PyPI version"></a>
   <a href="https://github.com/djGLiTCH/gp2040ce-hostlighting/blob/main/LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue" alt="Python 3.14 or later"></a>
   <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-0.8.0%2B-blue" alt="GP2040-CE 0.8.0 or later"></a>
@@ -36,6 +37,10 @@ does not drive it.
 ```
 pip install gp2040ce-hostlighting
 ```
+
+The package is on [PyPI](https://pypi.org/project/gp2040ce-hostlighting/).
+From 1.0.1, the repository's workflows upload each release there with trusted
+publishing, so PyPI shows where each file was built.
 
 It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
 3.15 pip builds it from source, which needs a C compiler, and on Linux the
@@ -110,7 +115,7 @@ Each folder's README says what the folder is for and what each file in it does.
 | [`tests/vectors/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/tests/vectors/) | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
 | [`scripts/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
 | [`packaging/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
-| [`.github/workflows/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release |
+| [`.github/workflows/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release, and the Publish workflow, which uploads each published release to PyPI |
 | `.github/ISSUE_TEMPLATE/` | The issue forms: bug report, enhancement request and documentation |
 | `LICENSES/` | The licence text, `GPL-3.0-or-later.txt`, where REUSE keeps it |
 
