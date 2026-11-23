@@ -9,7 +9,7 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 -->
 
 <p align="center">
-  <img src="packaging/icons/hlp.svg" alt="The hlp icon: a leverless controller's buttons" width="128">
+  <img src="https://raw.githubusercontent.com/djGLiTCH/gp2040ce-hostlighting/main/packaging/icons/hlp.svg" alt="The hlp icon: a leverless controller's buttons" width="128">
 </p>
 
 <h1 align="center">gp2040ce-hostlighting</h1>
@@ -20,9 +20,9 @@ See LICENSES/GPL-3.0-or-later.txt at the repository root.
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
+  <a href="https://github.com/djGLiTCH/gp2040ce-hostlighting/blob/main/LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.14%2B-blue" alt="Python 3.14 or later"></a>
-  <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-TBC-lightgrey" alt="GP2040-CE version: to be confirmed"></a>
+  <a href="https://github.com/OpenStickCommunity/GP2040-CE"><img src="https://img.shields.io/badge/GP2040--CE-0.8.0%2B-blue" alt="GP2040-CE 0.8.0 or later"></a>
 </p>
 
 The library implements the full Host Lighting Protocol, which the Host Lighting
@@ -34,12 +34,8 @@ does not drive it.
 ## Installation
 
 ```
-pip install git+https://github.com/djGLiTCH/gp2040ce-hostlighting@v1.0.0rc9
+pip install gp2040ce-hostlighting
 ```
-
-The library goes on PyPI as `gp2040ce-hostlighting` at version 1.0.0, when
-Host Lighting Protocol 2.0 is final. Until then each release candidate is a tag
-in this repository. pip installs it from the tag, which needs git.
 
 It needs Python 3.14 or later. hidapi has no wheels for Python 3.15 yet, so on
 3.15 pip builds it from source, which needs a C compiler, and on Linux the
@@ -48,7 +44,8 @@ development packages hidapi's README lists.
 From a clone, `pip install -e .[dev]` installs the commands and the development
 tools.
 
-The hlp app needs no Python: each release on the repository's Releases page
+The hlp app needs no Python: each release on the repository's
+[Releases page](https://github.com/djGLiTCH/gp2040ce-hostlighting/releases)
 carries it for Windows (x64), macOS (x64 and ARM64) and Linux (x64 and
 ARM64), built by the Release workflow (`.github/workflows/`).
 
@@ -106,14 +103,14 @@ Each folder's README says what the folder is for and what each file in it does.
 
 | Folder | Holds |
 |---|---|
-| [`gp2040ce_hostlighting/`](gp2040ce_hostlighting/) | The library: the protocol, the claim, frames, the session and the test boards |
-| [`gp2040ce_hostlighting/tools/`](gp2040ce_hostlighting/tools/) | The `hlp` command and the `hlp-*` commands |
-| [`docs/`](docs/) | The Host Lighting specification |
-| [`tests/`](tests/) | The tests, run with pytest |
-| [`tests/vectors/`](tests/vectors/) | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
-| [`scripts/`](scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
-| [`packaging/`](packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
-| [`.github/workflows/`](.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release |
+| [`gp2040ce_hostlighting/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/gp2040ce_hostlighting/) | The library: the protocol, the claim, frames, the session and the test boards |
+| [`gp2040ce_hostlighting/tools/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/gp2040ce_hostlighting/tools/) | The `hlp` command and the `hlp-*` commands |
+| [`docs/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/docs/) | The Host Lighting specification |
+| [`tests/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/tests/) | The tests, run with pytest |
+| [`tests/vectors/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/tests/vectors/) | Exact request and reply reports from `ModelBoard`, for hosts with a board model of their own |
+| [`scripts/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/scripts/) | Scripts that build the hlp app, draw its icons, and write or replay the test vectors |
+| [`packaging/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/packaging/) | What the hlp app is built from: the PyInstaller spec, the pinned build requirements, the third-party notices, the icons and the macOS and Linux files |
+| [`.github/workflows/`](https://github.com/djGLiTCH/gp2040ce-hostlighting/tree/main/.github/workflows/) | The Release workflow, which builds the app on each platform and drafts each release |
 | `.github/ISSUE_TEMPLATE/` | The issue forms: bug report, enhancement request and documentation |
 | `LICENSES/` | The licence text, `GPL-3.0-or-later.txt`, where REUSE keeps it |
 
@@ -130,11 +127,9 @@ document the Host Lighting add-on adds to GP2040-CE as `docs/host-lighting.md`.
 
 ## Firmware
 
-A board needs GP2040-CE with the Host Lighting add-on, which
-[OpenStickCommunity/GP2040-CE#1691](https://github.com/OpenStickCommunity/GP2040-CE/pull/1691)
-proposes; its review can be followed there. Until it merges, test builds for
-every board are pre-releases on
-[djGLiTCH/GP2040-CE](https://github.com/djGLiTCH/GP2040-CE/releases), and each
+A board needs GP2040-CE 0.8.0 or later with the Host Lighting add-on. Until
+0.8.0 is released, builds for every board are on
+[djGLiTCH/GP2040-CE](https://github.com/djGLiTCH/GP2040-CE/releases). Each
 library release names the firmware it supports.
 
 ## Host implementations
